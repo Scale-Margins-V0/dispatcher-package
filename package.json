@@ -1,0 +1,24 @@
+{
+  "name": "scalemargin-dispatch-handler",
+  "version": "1.0.0",
+  "description": "Reference implementation for ScaleMargin webhook dispatch handler and analytics reporter. Supports AWS SES and SendGrid.",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ses": "^3.700.0",
+    "@aws-sdk/client-sns": "^3.700.0",
+    "@sendgrid/mail": "^8.1.4",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
