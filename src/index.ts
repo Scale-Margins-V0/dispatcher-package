@@ -31,22 +31,51 @@ import { getProvider } from "./providers/index.js";
 import { lookupUsers } from "./user-lookup.js";
 import { personalize } from "./personalize.js";
 import { reportAnalytics, buildBatchPayload } from "./analytics-reporter.js";
+import { processImages, type ImageMapping } from "./image-handler.js";
+import { rewriteImageUrls } from "./image-rewriter.js";
 import type { EmailMessage } from "./providers/types.js";
+
+// ---------------------------------------------------------------------------
+// Startup validation — fail fast on missing config
+// ---------------------------------------------------------------------------
+
+const REQUIRED_ENV = ["SCALEMARGIN_DISPATCH_SECRET", "SCALEMARGIN_ANALYTICS_SECRET"];
+const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
+if (missing.length > 0) {
+  console.error(`[FATAL] Missing required env vars: ${missing.join(", ")}`);
+  console.error("See .env.example for all required variables.");
+  process.exit(1);
+}
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
+
+if (FROM_EMAIL === "noreply@example.com") {
+  console.warn("[WARN] FROM_EMAIL not set — using default noreply@example.com. Emails will likely bounce.");
+}
 
 // ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
 
 // Parse body as text first (needed for HMAC verification), then as JSON
-app.use("/api/scalemargin/dispatch", express.text({ type: "application/json" }));
+// Limit raised to 10MB to accommodate base64-encoded campaign images
+app.use("/api/scalemargin/dispatch", express.text({ type: "application/json", limit: "10mb" }));
+
+// Serve locally-stored campaign images (for IMAGE_STORAGE_PROVIDER=local)
+if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
+  const imgDir = process.env.IMAGE_LOCAL_DIR || "./public/images";
+  app.use("/images", express.static(imgDir));
+}
 
 // Health check
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", provider: process.env.EMAIL_PROVIDER || "ses" });
+  res.json({
+    status: "ok",
+    provider: process.env.EMAIL_PROVIDER || "ses",
+    image_storage: process.env.IMAGE_STORAGE_PROVIDER || "none",
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -88,10 +117,20 @@ app.post(
     // Handle SNS subscription confirmation
     if (req.headers["x-amz-sns-message-type"] === "SubscriptionConfirmation") {
       const subscribeUrl = req.body.SubscribeURL;
-      if (subscribeUrl) {
-        console.log("[SES-SNS] Confirming subscription...");
-        await fetch(subscribeUrl);
-        console.log("[SES-SNS] Subscription confirmed");
+      // Validate URL belongs to AWS SNS before confirming
+      if (subscribeUrl && typeof subscribeUrl === "string") {
+        try {
+          const parsed = new URL(subscribeUrl);
+          if (parsed.hostname.endsWith(".amazonaws.com")) {
+            console.log("[SES-SNS] Confirming subscription...");
+            await fetch(subscribeUrl);
+            console.log("[SES-SNS] Subscription confirmed");
+          } else {
+            console.warn(`[SES-SNS] Rejected non-AWS SubscribeURL: ${parsed.hostname}`);
+          }
+        } catch {
+          console.warn("[SES-SNS] Invalid SubscribeURL, skipping");
+        }
       }
       res.status(200).json({ confirmed: true });
       return;
@@ -160,6 +199,14 @@ async function processDispatch(payload: {
     text_body?: string;
   };
   personalization_fields?: string[];
+  images?: Array<{
+    placeholder: string;
+    url: string;        // Decoded URL for downloading
+    raw_url: string;    // URL as it appears in HTML — use for replaceAll
+    content_type: string;
+    alt_text?: string;
+    base64_data?: string;
+  }>;
   metadata: {
     organization_id: string;
     analytics_callback_url: string;
@@ -179,10 +226,18 @@ async function processDispatch(payload: {
   // 1. Look up users from your database
   const users = await lookupUsers(user_ids);
 
-  // 2. Get the email provider
+  // 2. Process images: download from ScaleMargin, upload to our storage
+  let imageMappings: ImageMapping[] = [];
+  if (payload.images && payload.images.length > 0) {
+    imageMappings = await processImages(payload.images, campaign_id);
+  }
+
+  // 3. Get the email provider
   const provider = getProvider();
 
-  // 3. Build personalized messages
+  // 4. Build personalized messages
+  // DEV_RECIPIENT_EMAIL: override all recipients to a single test address (local/staging)
+  const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
   const messages: Array<{ userId: string; message: EmailMessage }> = [];
 
   for (const userId of user_ids) {
@@ -195,14 +250,21 @@ async function processDispatch(payload: {
     const subject = content.subject
       ? personalize(content.subject, user)
       : "No Subject";
-    const html = content.html_body
+    let html = content.html_body
       ? personalize(content.html_body, user)
       : "";
+
+    // Rewrite image URLs to customer-hosted versions
+    if (imageMappings.length > 0) {
+      html = rewriteImageUrls(html, imageMappings);
+    }
+
+    const recipientEmail = devRecipient || user.email;
 
     messages.push({
       userId,
       message: {
-        to: user.email,
+        to: recipientEmail,
         from: FROM_EMAIL,
         subject,
         html,
@@ -211,6 +273,14 @@ async function processDispatch(payload: {
         }),
       },
     });
+
+    // In dev mode, send only ONE email (to the test recipient), not N duplicates
+    if (devRecipient) {
+      console.log(
+        `[Dispatch] DEV mode — routing all ${user_ids.length} recipients to ${devRecipient}`
+      );
+      break;
+    }
   }
 
   console.log(

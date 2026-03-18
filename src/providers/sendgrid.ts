@@ -7,7 +7,11 @@
  *   SENDGRID_API_KEY
  */
 
-import sgMail from "@sendgrid/mail";
+import * as sgMailModule from "@sendgrid/mail";
+
+// @sendgrid/mail exports MailService as both default and named.
+// Handle both CJS and ESM resolution patterns.
+const sgMail = (sgMailModule as unknown as { default?: typeof sgMailModule }).default || sgMailModule;
 import type { EmailProvider, EmailMessage, SendResult, BulkSendResult } from "./types.js";
 
 export class SendGridProvider implements EmailProvider {
