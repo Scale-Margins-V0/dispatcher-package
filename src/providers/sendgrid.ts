@@ -13,6 +13,7 @@ import * as sgMailModule from "@sendgrid/mail";
 // Handle both CJS and ESM resolution patterns.
 const sgMail = (sgMailModule as unknown as { default?: typeof sgMailModule }).default || sgMailModule;
 import type { EmailProvider, EmailMessage, SendResult, BulkSendResult } from "./types.js";
+import { applySendGridCustomArgs } from "../events/outbound/sendgrid-tagger.js";
 
 export class SendGridProvider implements EmailProvider {
   name = "sendgrid";
@@ -27,14 +28,18 @@ export class SendGridProvider implements EmailProvider {
 
   async send(message: EmailMessage): Promise<SendResult> {
     try {
-      const [response] = await sgMail.send({
+      const base: Record<string, unknown> = {
         to: message.to,
         from: message.from,
         subject: message.subject,
         html: message.html,
         ...(message.text && { text: message.text }),
         ...(message.replyTo && { replyTo: message.replyTo }),
-      });
+      };
+      const payload = message.context
+        ? applySendGridCustomArgs(base, message.context)
+        : base;
+      const [response] = await sgMail.send(payload as unknown as Parameters<typeof sgMail.send>[0]);
 
       return {
         success: response.statusCode >= 200 && response.statusCode < 300,

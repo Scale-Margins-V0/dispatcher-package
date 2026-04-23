@@ -1,0 +1,10 @@
+{
+  "Type": "Notification",
+  "MessageId": "sns-msg-bounce-1",
+  "TopicArn": "arn:aws:sns:us-east-1:123456789012:ses-events",
+  "Timestamp": "2021-01-01T12:00:00.000Z",
+  "SignatureVersion": "1",
+  "Signature": "PLACEHOLDER_SIGNATURE",
+  "SigningCertURL": "https://sns.us-east-1.amazonaws.com/cert.pem",
+  "Message": "{\"eventType\":\"Bounce\",\"mail\":{\"timestamp\":\"2021-01-01T12:00:00.000Z\",\"messageId\":\"ses-001\",\"source\":\"from@example.com\",\"sourceArn\":\"arn:aws:ses:us-east-1:123:identity/from@example.com\",\"sendingAccountId\":\"123\",\"destination\":[\"bounce@example.com\"],\"headersTruncated\":false,\"headers\":[],\"commonHeaders\":{\"from\":[\"from@example.com\"],\"to\":[\"bounce@example.com\"]},\"tags\":{\"campaign_id\":[\"c_test_1\"],\"user_id\":[\"u_42\"],\"organization_id\":[\"org_1\"]}},\"bounce\":{\"bounceType\":\"Permanent\",\"bounceSubType\":\"General\",\"bouncedRecipients\":[{\"emailAddress\":\"bounce@example.com\",\"action\":\"failed\",\"status\":\"5.1.1\",\"diagnosticCode\":\"smtp; 550 user unknown\"}],\"timestamp\":\"2021-01-01T12:00:00.000Z\",\"feedbackId\":\"fb-1\"}}"
+}

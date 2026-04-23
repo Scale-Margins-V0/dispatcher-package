@@ -30,11 +30,15 @@
 
 import express, { type Express } from "express";
 import { verifyHmacSignature } from "./middleware/hmac.js";
+import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
+import { createEventTestCsvCaptureHandler } from "./event-test-csv-capture.js";
 import { getProvider } from "./providers/index.js";
 import { lookupUsers } from "./user-lookup.js";
 import { personalize } from "./personalize.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
-import { reportAnalytics, buildBatchPayload } from "./analytics-reporter.js";
+import { emitEvent, initializeEventPipeline, createInboundWebhookHandler, getInboundAdapter, isProviderEnabled } from "./events/index.js";
+import { registerCampaignCallback } from "./events/campaign-callback-registry.js";
+import { verifySnsMessage } from "./events/sns-verify.js";
 import { processImages, type ImageMapping } from "./image-handler.js";
 import { rewriteImageUrls } from "./image-rewriter.js";
 import type { EmailMessage } from "./providers/types.js";
@@ -88,6 +92,15 @@ try {
   process.exit(1);
 }
 
+if (process.env.VITEST !== "true") {
+  try {
+    initializeEventPipeline();
+  } catch (e) {
+    console.error("[FATAL] Event pipeline configuration invalid:", e);
+    process.exit(1);
+  }
+}
+
 const app: Express = express();
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
@@ -118,8 +131,31 @@ app.get("/health", (_req, res) => {
     status: "ok",
     provider: process.env.EMAIL_PROVIDER || "ses",
     image_storage: process.env.IMAGE_STORAGE_PROVIDER || "none",
+    event_test_csv_capture: Boolean(process.env.EVENT_TEST_CSV_PATH),
   });
 });
+
+// ---------------------------------------------------------------------------
+// Dev: capture signed analytics POSTs to CSV (dual-secret / pipeline smoke test)
+// Enable with EVENT_TEST_CSV_PATH=./data/event-test-capture.csv
+// Dispatch metadata.analytics_callback_url must point here, e.g.
+// http://127.0.0.1:3100/api/webhooks/campaign-analytics/capture (or your ngrok URL).
+// ---------------------------------------------------------------------------
+
+if (process.env.EVENT_TEST_CSV_PATH) {
+  const csvHandler = createEventTestCsvCaptureHandler(process.env.EVENT_TEST_CSV_PATH);
+  app.post(
+    "/api/webhooks/campaign-analytics/capture",
+    express.text({ type: "application/json", limit: "10mb" }),
+    verifyAnalyticsHmacSignature,
+    csvHandler
+  );
+  if (process.env.VITEST !== "true") {
+    console.log(
+      `[EventTest] CSV capture enabled → ${process.env.EVENT_TEST_CSV_PATH} (POST /api/webhooks/campaign-analytics/capture)`
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/scalemargin/dispatch — Campaign Dispatch Handler
@@ -155,76 +191,96 @@ app.post(
 
 app.post(
   "/api/scalemargin/ses-notifications",
-  express.json(),
-  async (req, res) => {
-    // Handle SNS subscription confirmation
-    if (req.headers["x-amz-sns-message-type"] === "SubscriptionConfirmation") {
-      const subscribeUrl = req.body.SubscribeURL;
-      // Validate URL belongs to AWS SNS before confirming
+  express.text({ type: () => true, limit: "1mb" }),
+  async (req, res, next) => {
+    const rawBody = Buffer.from(
+      typeof req.body === "string" ? req.body : JSON.stringify(req.body ?? {}),
+      "utf-8"
+    );
+    let sns: Record<string, unknown>;
+    try {
+      sns = JSON.parse(rawBody.toString("utf-8").trimEnd()) as Record<string, unknown>;
+    } catch {
+      res.status(400).json({ error: "Invalid JSON" });
+      return;
+    }
+
+    if (!(await verifySnsMessage(sns))) {
+      res.status(401).json({ error: "invalid SNS signature" });
+      return;
+    }
+
+    if (sns.Type === "SubscriptionConfirmation") {
+      const subscribeUrl = sns.SubscribeURL as string | undefined;
       if (subscribeUrl && typeof subscribeUrl === "string") {
         try {
           const parsed = new URL(subscribeUrl);
           if (parsed.hostname.endsWith(".amazonaws.com")) {
-            console.log("[SES-SNS] Confirming subscription...");
+            logUnlessVitest("[SES-SNS] Confirming subscription...");
             await fetch(subscribeUrl);
-            console.log("[SES-SNS] Subscription confirmed");
+            logUnlessVitest("[SES-SNS] Subscription confirmed");
           } else {
-            console.warn(`[SES-SNS] Rejected non-AWS SubscribeURL: ${parsed.hostname}`);
+            warnUnlessVitest(`[SES-SNS] Rejected non-AWS SubscribeURL: ${parsed.hostname}`);
           }
         } catch {
-          console.warn("[SES-SNS] Invalid SubscribeURL, skipping");
+          warnUnlessVitest("[SES-SNS] Invalid SubscribeURL, skipping");
         }
       }
       res.status(200).json({ confirmed: true });
       return;
     }
 
-    // Handle notification
-    if (req.headers["x-amz-sns-message-type"] === "Notification") {
-      try {
-        const message = JSON.parse(req.body.Message);
-        console.log(
-          `[SES-SNS] Event: ${message.eventType || message.notificationType}`
-        );
-        // Store/queue for batch reporting — see analytics-reporter.ts
-        // In production, you'd aggregate these and batch-report to ScaleMargin
-      } catch (error) {
-        console.error("[SES-SNS] Failed to parse notification:", error);
-      }
-    }
-
-    res.status(200).json({ received: true });
+    const sesHandler = createInboundWebhookHandler(
+      getInboundAdapter("ses"),
+      isProviderEnabled("ses")
+    );
+    await sesHandler(req, res, next);
   }
 );
 
 // ---------------------------------------------------------------------------
-// POST /api/scalemargin/sendgrid-events — SendGrid Event Webhook
+// POST /api/scalemargin/sendgrid-events — SendGrid Event Webhook (raw body for ECDSA verify)
 // ---------------------------------------------------------------------------
 
+let sendGridWebhookHandler: ReturnType<typeof createInboundWebhookHandler> | undefined;
 app.post(
   "/api/scalemargin/sendgrid-events",
-  express.json(),
-  async (req, res) => {
-    const events = req.body;
-    if (!Array.isArray(events)) {
-      res.status(400).json({ error: "Expected array of events" });
+  express.text({ type: () => true, limit: "6mb" }),
+  async (req, res, next) => {
+    if (!isProviderEnabled("sendgrid")) {
+      res.status(404).json({ error: "not found" });
       return;
     }
-
-    console.log(`[SendGrid-Events] Received ${events.length} events`);
-
-    // Map SendGrid event types to ScaleMargin event types
-    // In production, aggregate and batch-report to ScaleMargin
-    for (const event of events) {
-      const eventType = mapSendGridEvent(event.event);
-      if (eventType) {
-        console.log(
-          `[SendGrid-Events] ${event.email}: ${event.event} → ${eventType}`
-        );
-      }
+    if (!sendGridWebhookHandler) {
+      sendGridWebhookHandler = createInboundWebhookHandler(
+        getInboundAdapter("sendgrid"),
+        true
+      );
     }
+    await sendGridWebhookHandler(req, res, next);
+  }
+);
 
-    res.status(200).json({ received: true, count: events.length });
+// ---------------------------------------------------------------------------
+// POST /api/scalemargin/gupshup-events — Gupshup WhatsApp event webhook
+// ---------------------------------------------------------------------------
+
+let gupshupWebhookHandler: ReturnType<typeof createInboundWebhookHandler> | undefined;
+app.post(
+  "/api/scalemargin/gupshup-events",
+  express.text({ type: () => true, limit: "1mb" }),
+  async (req, res, next) => {
+    if (!isProviderEnabled("gupshup")) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
+    if (!gupshupWebhookHandler) {
+      gupshupWebhookHandler = createInboundWebhookHandler(
+        getInboundAdapter("gupshup"),
+        true
+      );
+    }
+    await gupshupWebhookHandler(req, res, next);
   }
 );
 
@@ -264,6 +320,12 @@ async function processDispatch(payload: {
 
   logUnlessVitest(
     `[Dispatch] Processing campaign ${campaign_id}: ${user_ids.length} users`
+  );
+
+  registerCampaignCallback(
+    campaign_id,
+    metadata.organization_id,
+    metadata.analytics_callback_url
   );
 
   // 1. Look up users from your database
@@ -315,6 +377,12 @@ async function processDispatch(payload: {
         ...(content.text_body && {
           text: personalize(content.text_body, user),
         }),
+        context: {
+          campaign_id,
+          user_id: userId,
+          organization_id: metadata.organization_id,
+          analytics_callback_url: metadata.analytics_callback_url,
+        },
       },
     });
 
@@ -347,55 +415,36 @@ async function processDispatch(payload: {
       messageId: result.messageId,
       error: result.error,
     });
+
+    const emailProvider = (process.env.EMAIL_PROVIDER || "ses").toLowerCase();
+    const inboundProvider =
+      emailProvider === "sendgrid" ? "sendgrid" : "ses";
+
+    await emitEvent({
+      callbackUrl: metadata.analytics_callback_url,
+      event: {
+        campaign_id,
+        user_id: userId,
+        organization_id: metadata.organization_id,
+        analytics_callback_url: metadata.analytics_callback_url,
+        channel: "email",
+        event: result.success ? "dispatched" : "failed",
+        provider: inboundProvider,
+        provider_message_id: result.messageId ?? "unknown",
+        occurred_at: new Date().toISOString(),
+        ...(result.error && {
+          metadata: { bounce_reason: result.error },
+        }),
+      },
+    });
   }
 
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;
 
   logUnlessVitest(
-    `[Dispatch] Campaign ${campaign_id}: ${sent} sent, ${failed} failed`
+    `[Dispatch] Campaign ${campaign_id}: ${sent} sent, ${failed} failed (events emitted via pipeline)`
   );
-
-  // 6. Report batch results to ScaleMargin analytics callback
-  const analyticsPayload = buildBatchPayload({
-    campaignId: campaign_id,
-    organizationId: metadata.organization_id,
-    results: sendResults,
-  });
-
-  const analyticsResult = await reportAnalytics(
-    metadata.analytics_callback_url,
-    analyticsPayload
-  );
-
-  if (analyticsResult.success) {
-    logUnlessVitest(
-      `[Dispatch] Analytics reported successfully for ${campaign_id}`
-    );
-  } else {
-    console.error(
-      `[Dispatch] Failed to report analytics for ${campaign_id}: ${analyticsResult.error}`
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// SendGrid event type mapping
-// ---------------------------------------------------------------------------
-
-function mapSendGridEvent(
-  sgEvent: string
-): string | null {
-  const mapping: Record<string, string> = {
-    delivered: "delivered",
-    open: "opened",
-    click: "clicked",
-    bounce: "bounced",
-    dropped: "bounced",
-    spamreport: "complained",
-    unsubscribe: "unsubscribed",
-  };
-  return mapping[sgEvent] || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,13 +452,33 @@ function mapSendGridEvent(
 // ---------------------------------------------------------------------------
 
 if (process.env.VITEST !== "true") {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`[Server] ScaleMargin Dispatch Handler running on port ${PORT}`);
     console.log(`[Server] Email provider: ${process.env.EMAIL_PROVIDER || "ses"}`);
     console.log(`[Server] Dispatch endpoint: POST /api/scalemargin/dispatch`);
     console.log(`[Server] SES notifications: POST /api/scalemargin/ses-notifications`);
     console.log(`[Server] SendGrid events: POST /api/scalemargin/sendgrid-events`);
+    console.log(`[Server] Gupshup events: POST /api/scalemargin/gupshup-events`);
     console.log(`[Server] Health check: GET /health`);
+    if (process.env.EVENT_TEST_CSV_PATH) {
+      const base =
+        process.env.EVENT_TEST_PUBLIC_BASE_URL || `http://127.0.0.1:${PORT}`;
+      console.log(
+        `[Server] Event test capture URL (use as analytics_callback_url): ${base}/api/webhooks/campaign-analytics/capture`
+      );
+    }
+  });
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(
+        `[FATAL] Port ${PORT} is already in use. Stop the other process (e.g. \`pnpm dev\` in another terminal) or use a free port:\n` +
+          `  PORT=3101 pnpm run dev:event-test\n` +
+          `Then run ngrok against that port (\`ngrok http 3101\`) and set EVENT_TEST_PUBLIC_BASE_URL to the ngrok HTTPS URL.`
+      );
+      process.exit(1);
+    }
+    console.error("[Server] listen error:", err);
+    process.exit(1);
   });
 }
 

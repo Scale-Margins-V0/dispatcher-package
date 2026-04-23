@@ -2,6 +2,11 @@
 node_modules/
 dist/
 
+# pnpm — https://pnpm.io/npmrc#store-dir
+# Local store when `store-dir` (or PNPM_HOME) points inside the repo (common in sandboxes / CI caches).
+.pnpm-store/
+# Keep **pnpm-lock.yaml** and **package.json** committed for reproducible installs — do not ignore them.
+
 # Env & local secrets (use .env.example as template)
 .env
 .env.*
@@ -19,9 +24,12 @@ data/
 *.log
 npm-debug.log*
 pnpm-debug.log*
+.pnpm-debug.log
 .vite/
 coverage/
 .vitest-attachments/
+*.tsbuildinfo
+.eslintcache
 
 # OS & editors
 .DS_Store

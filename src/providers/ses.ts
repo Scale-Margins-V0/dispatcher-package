@@ -12,6 +12,7 @@
 
 import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 import type { EmailProvider, EmailMessage, SendResult, BulkSendResult } from "./types.js";
+import { applySesMessageTags } from "../events/outbound/ses-tagger.js";
 
 export class SESProvider implements EmailProvider {
   name = "ses";
@@ -25,7 +26,7 @@ export class SESProvider implements EmailProvider {
 
   async send(message: EmailMessage): Promise<SendResult> {
     try {
-      const command = new SendEmailCommand({
+      const baseInput = {
         Source: message.from,
         Destination: {
           ToAddresses: [message.to],
@@ -51,8 +52,11 @@ export class SESProvider implements EmailProvider {
         ...(message.replyTo && {
           ReplyToAddresses: [message.replyTo],
         }),
-      });
-
+      };
+      const input = message.context
+        ? applySesMessageTags(baseInput, message.context)
+        : baseInput;
+      const command = new SendEmailCommand(input);
       const result = await this.client.send(command);
 
       return {

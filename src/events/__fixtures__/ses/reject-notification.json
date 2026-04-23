@@ -1,0 +1,10 @@
+{
+  "Type": "Notification",
+  "MessageId": "sns-msg-reject-1",
+  "TopicArn": "arn:aws:sns:us-east-1:123456789012:ses-events",
+  "Timestamp": "2021-01-01T12:05:00.000Z",
+  "SignatureVersion": "1",
+  "Signature": "PLACEHOLDER_SIGNATURE",
+  "SigningCertURL": "https://sns.us-east-1.amazonaws.com/cert.pem",
+  "Message": "{\"eventType\":\"Reject\",\"mail\":{\"timestamp\":\"2021-01-01T12:05:00.000Z\",\"messageId\":\"ses-006\",\"destination\":[\"bad@example.com\"],\"tags\":{\"campaign_id\":[\"c_test_1\"],\"user_id\":[\"u_42\"],\"organization_id\":[\"org_1\"]}},\"reject\":{\"reason\":\"Rejected content\"}}"
+}

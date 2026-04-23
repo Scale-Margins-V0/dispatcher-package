@@ -1,0 +1,37 @@
+# ScaleMargin event pipeline — copy to config/events.yaml and tune.
+# If this file is missing, the server uses safe defaults (SES inbound on; SendGrid/Gupshup off).
+
+events:
+  forward:
+    mode: batched # batched | sync — sync = await ScaleMargin POST before 200 to provider
+    batch_size: 100
+    batch_interval_ms: 5000
+
+  delivery:
+    mode: at_least_once # at_least_once | best_effort — affects idempotency_key + buffer retry behavior
+    buffer:
+      kind: memory # memory | disk
+      # When kind: disk, set dir (or set EVENT_BUFFER_DIR env to force disk + path)
+      # dir: ./data/event-buffer
+      max_events_memory: 10000
+
+  providers:
+    # Inbound POST /api/scalemargin/sendgrid-events — ECDSA verify + custom_args correlation
+    sendgrid:
+      enabled: false
+      # Env var holding SendGrid’s Event Webhook verification public key (base64)
+      signing_key_env: SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY
+      # Optional: which SendGrid `event` wire values to forward (omit = default: processed, delivered,
+      # bounce, dropped, deferred, spamreport — no open/click). Use ["*"] for every mapped type.
+      # inbound_event_types: [processed, delivered, bounce, open, click]
+
+    # Inbound POST /api/scalemargin/ses-notifications — SNS envelope; correlation via message tags
+    ses:
+      enabled: true
+      # Outbound: SES message tags + configuration set (see SES_EVENT_CONFIG_SET in .env.example)
+      configuration_set_env: SES_EVENT_CONFIG_SET
+
+    # Inbound POST /api/scalemargin/gupshup-events — HMAC; WhatsApp outbound not in v1
+    gupshup:
+      enabled: false
+      secret_env: GUPSHUP_WEBHOOK_SECRET

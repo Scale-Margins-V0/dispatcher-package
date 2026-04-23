@@ -6,63 +6,14 @@
  *
  * Sign the payload with HMAC-SHA256 using the shared analytics secret.
  * Retries transient failures with exponential backoff.
+ *
+ * Core signing / POST / retry logic lives in `events/forwarder.ts` (shared with the event pipeline).
  */
 
-import { createHmac } from "node:crypto";
 import type { AnalyticsPayload, AnalyticsEvent, AnalyticsSummary } from "./providers/types.js";
+import { postAnalyticsWithRetry } from "./events/forwarder.js";
 
 const ANALYTICS_SECRET = process.env.SCALEMARGIN_ANALYTICS_SECRET || "";
-const MAX_RETRIES = 3;
-
-function signPayload(payload: string, secret: string): string {
-  return createHmac("sha256", secret).update(payload).digest("hex");
-}
-
-/**
- * Validate that the callback URL points to a trusted ScaleMargin endpoint.
- * Prevents SSRF via malicious analytics_callback_url in dispatch payload.
- */
-function validateCallbackUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname;
-    const isDockerHost = hostname === "host.docker.internal";
-
-    // Production: HTTPS only unless hitting host.docker.internal from a container
-    if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:" && !isDockerHost) {
-      return false;
-    }
-
-    // Must be HTTP or HTTPS
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-      return false;
-    }
-
-    // Block private/internal IPs (in production only, except Docker host)
-    const isPrivate =
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "0.0.0.0" ||
-      hostname.startsWith("10.") ||
-      hostname.startsWith("192.168.") ||
-      hostname.startsWith("172.");
-
-    if (isPrivate && !isDockerHost) {
-      if (process.env.NODE_ENV === "production") return false;
-    }
-
-    // Must end with expected ScaleMargin path
-    if (!parsed.pathname.includes("/api/webhooks/campaign-analytics")) {
-      console.warn(
-        `[Analytics] Unexpected callback path: ${parsed.pathname}. Proceeding anyway.`
-      );
-    }
-
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Report analytics to ScaleMargin with retry logic.
@@ -75,71 +26,7 @@ export async function reportAnalytics(
   callbackUrl: string,
   payload: AnalyticsPayload
 ): Promise<{ success: boolean; error?: string }> {
-  const secret = ANALYTICS_SECRET;
-  if (!secret) {
-    console.error("[Analytics] SCALEMARGIN_ANALYTICS_SECRET not configured");
-    return { success: false, error: "Analytics secret not configured" };
-  }
-
-  if (!validateCallbackUrl(callbackUrl)) {
-    console.error(`[Analytics] Invalid callback URL: ${callbackUrl}`);
-    return { success: false, error: "Invalid callback URL" };
-  }
-
-  const body = JSON.stringify(payload);
-  const timestamp = new Date().toISOString();
-  const signature = signPayload(body, secret);
-
-  let lastError: string | undefined;
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const response = await fetch(callbackUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-ScaleMargin-Signature": `sha256=${signature}`,
-          "X-ScaleMargin-Timestamp": timestamp,
-        },
-        body,
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        console.log(
-          `[Analytics] Reported to ScaleMargin: ${result.events_processed} events processed`
-        );
-        return { success: true };
-      }
-
-      // Non-retryable client errors (400-499 except 429)
-      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-        const errorText = await response.text();
-        console.error(
-          `[Analytics] ScaleMargin rejected analytics (${response.status}): ${errorText}`
-        );
-        return { success: false, error: `${response.status}: ${errorText}` };
-      }
-
-      // Retryable: 429 (rate limit) or 5xx (server error)
-      lastError = `HTTP ${response.status}`;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown error";
-    }
-
-    if (attempt < MAX_RETRIES) {
-      const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
-      console.warn(
-        `[Analytics] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed (${lastError}), retrying in ${delay}ms...`
-      );
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-
-  console.error(
-    `[Analytics] Failed to report after ${MAX_RETRIES + 1} attempts: ${lastError}`
-  );
-  return { success: false, error: lastError };
+  return postAnalyticsWithRetry(callbackUrl, payload, ANALYTICS_SECRET);
 }
 
 /**
@@ -147,6 +34,8 @@ export async function reportAnalytics(
  *
  * Call this after sending a campaign to report delivery results
  * back to ScaleMargin in a single batch.
+ *
+ * @deprecated Prefer the event pipeline (`emitEvent`) for standardized `dispatched` / `failed` events.
  */
 export function buildBatchPayload(params: {
   campaignId: string;
@@ -164,6 +53,7 @@ export function buildBatchPayload(params: {
     user_id: r.userId,
     event: r.success ? "delivered" : "bounced",
     timestamp: now,
+    channel: "email",
     ...(r.error && {
       metadata: {
         bounce_type: "hard",
@@ -171,9 +61,10 @@ export function buildBatchPayload(params: {
         message_id: r.messageId,
       },
     }),
-    ...(!r.error && r.messageId && {
-      metadata: { message_id: r.messageId },
-    }),
+    ...(!r.error &&
+      r.messageId && {
+        metadata: { message_id: r.messageId },
+      }),
   }));
 
   const delivered = params.results.filter((r) => r.success).length;

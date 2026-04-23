@@ -1,0 +1,10 @@
+{
+  "Type": "Notification",
+  "MessageId": "sns-msg-click-1",
+  "TopicArn": "arn:aws:sns:us-east-1:123456789012:ses-events",
+  "Timestamp": "2021-01-01T12:04:00.000Z",
+  "SignatureVersion": "1",
+  "Signature": "PLACEHOLDER_SIGNATURE",
+  "SigningCertURL": "https://sns.us-east-1.amazonaws.com/cert.pem",
+  "Message": "{\"eventType\":\"Click\",\"mail\":{\"timestamp\":\"2021-01-01T12:04:00.000Z\",\"messageId\":\"ses-005\",\"tags\":{\"campaign_id\":[\"c_test_1\"],\"user_id\":[\"u_42\"],\"organization_id\":[\"org_1\"]}},\"click\":{\"timestamp\":\"2021-01-01T12:04:10.000Z\",\"ipAddress\":\"198.51.100.2\",\"userAgent\":\"Mozilla/5.0\",\"link\":\"https://example.com/click\"}}"
+}

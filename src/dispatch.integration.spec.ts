@@ -28,14 +28,15 @@ vi.mock("./providers/index.js", () => ({
   }),
 }));
 
-const reportMock = vi.hoisted(() =>
-  vi.fn().mockResolvedValue({ success: true })
+const fetchMock = vi.hoisted(() =>
+  vi.fn(() =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ events_processed: 1 }),
+    })
+  )
 );
-
-vi.mock("./analytics-reporter.js", () => ({
-  reportAnalytics: reportMock,
-  buildBatchPayload: vi.fn().mockReturnValue({ events: [] }),
-}));
 
 describe("POST /api/scalemargin/dispatch (integration)", () => {
   let app: import("express").Express;
@@ -47,6 +48,9 @@ describe("POST /api/scalemargin/dispatch (integration)", () => {
     process.env.SCALEMARGIN_DISPATCH_SECRET = "dispatch-secret";
     process.env.SCALEMARGIN_ANALYTICS_SECRET = "analytics-secret";
     process.env.NODE_ENV = "test";
+    process.env.EVENT_FORWARD_MODE = "sync";
+    process.env.EVENT_DELIVERY_MODE = "best_effort";
+    vi.stubGlobal("fetch", fetchMock);
 
     workDir = mkdtempSync(join(tmpdir(), "dispatch-e2e-"));
     const dbPath = join(workDir, "campaign.sqlite");
@@ -118,17 +122,19 @@ placeholders:
 
     vi.resetModules();
     sendMock.mockClear();
-    reportMock.mockClear();
+    fetchMock.mockClear();
     const mod = await import("./index.js");
     app = mod.app;
+    const { initializeEventPipeline } = await import("./events/index.js");
+    initializeEventPipeline();
   });
 
   beforeEach(() => {
     sendMock.mockClear();
-    reportMock.mockClear();
+    fetchMock.mockClear();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     try {
       rmSync(workDir, { recursive: true });
     } catch {
@@ -136,6 +142,12 @@ placeholders:
     }
     delete process.env.USER_LOOKUP_CONFIG_PATH;
     delete process.env.UNSUBSCRIBE_URL_BASE;
+    delete process.env.EVENT_FORWARD_MODE;
+    delete process.env.EVENT_DELIVERY_MODE;
+    vi.unstubAllGlobals();
+    const { shutdownEventPipeline, resetEventPipelineForTests } = await import("./events/index.js");
+    shutdownEventPipeline();
+    resetEventPipelineForTests();
   });
 
   it("returns 202 and sends personalized email (user rows read through a SQL view)", async () => {
@@ -174,7 +186,10 @@ placeholders:
     expect(msg.subject).toBe("Hi Ada");
     expect(msg.html).toContain("Ada Lovelace");
     expect(msg.html).toContain("ada@example.com");
-    expect(reportMock).toHaveBeenCalled();
+    expect((sendMock.mock.calls[0]![0] as { context?: { user_id: string } }).context?.user_id).toBe(
+      "u1"
+    );
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   it("multi-recipient dispatch: one send per user with a rich HTML template", async () => {
@@ -229,7 +244,7 @@ placeholders:
     const alan = byTo.get("alan@example.com")!;
     expect(alan.subject).toBe("Bletchley — hello Alan");
     expect(alan.html).toContain("Alan Turing");
-    expect(reportMock).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   it("second template shape: text_body + different subject tokens", async () => {
