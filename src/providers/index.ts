@@ -37,7 +37,9 @@ export function getProvider(): EmailProvider {
   }
 
   _instance = factory();
-  console.log(`[Provider] Using email provider: ${_instance.name}`);
+  if (process.env.VITEST !== "true") {
+    console.log(`[Provider] Using email provider: ${_instance.name}`);
+  }
   return _instance;
 }
 

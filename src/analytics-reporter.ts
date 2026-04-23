@@ -25,12 +25,10 @@ function signPayload(payload: string, secret: string): string {
 function validateCallbackUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-
-    // Must be HTTPS in production
     const hostname = parsed.hostname;
     const isDockerHost = hostname === "host.docker.internal";
 
-    // Must be HTTPS in production (except Docker-to-host networking)
+    // Production: HTTPS only unless hitting host.docker.internal from a container
     if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:" && !isDockerHost) {
       return false;
     }

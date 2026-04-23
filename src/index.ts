@@ -6,8 +6,8 @@
  * configured provider (AWS SES or SendGrid), and reports analytics back.
  *
  * SETUP:
- *   1. Set environment variables (see .env.example)
- *   2. Replace user-lookup.ts with your actual database queries
+ *   1. Set environment variables (see .env.example), or `pnpm run dev:local` for insecure local placeholders
+ *   2. Optional: add config/dispatch.yaml for user lookup + placeholders (see config/dispatch.example.yaml)
  *   3. Deploy to your cloud (AWS Lambda, Cloud Run, Docker, etc.)
  *   4. Configure the webhook URL in ScaleMargin Atlas
  *
@@ -23,21 +23,55 @@
  *
  *   For SendGrid:
  *     SENDGRID_API_KEY
+ *
+ *   Local-only (never production):
+ *     LOCAL_DEV=1 — if SCALEMARGIN_* secrets are unset, uses insecure placeholders so you can run `pnpm run dev:local` without Atlas secrets (e.g. HTTP profile mock testing).
  */
 
-import express from "express";
+import express, { type Express } from "express";
 import { verifyHmacSignature } from "./middleware/hmac.js";
 import { getProvider } from "./providers/index.js";
 import { lookupUsers } from "./user-lookup.js";
 import { personalize } from "./personalize.js";
+import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 import { reportAnalytics, buildBatchPayload } from "./analytics-reporter.js";
 import { processImages, type ImageMapping } from "./image-handler.js";
 import { rewriteImageUrls } from "./image-rewriter.js";
 import type { EmailMessage } from "./providers/types.js";
 
+/** Suppress dispatch/provider info logs when Vitest imports `app` (integration tests). */
+function logUnlessVitest(...args: unknown[]): void {
+  if (process.env.VITEST === "true") return;
+  console.log(...args);
+}
+
+function warnUnlessVitest(...args: unknown[]): void {
+  if (process.env.VITEST === "true") return;
+  console.warn(...args);
+}
+
 // ---------------------------------------------------------------------------
 // Startup validation — fail fast on missing config
 // ---------------------------------------------------------------------------
+
+const localDev =
+  process.env.LOCAL_DEV === "1" || process.env.LOCAL_DEV === "true";
+if (
+  localDev &&
+  process.env.NODE_ENV !== "production" &&
+  (!process.env.SCALEMARGIN_DISPATCH_SECRET ||
+    !process.env.SCALEMARGIN_ANALYTICS_SECRET)
+) {
+  process.env.SCALEMARGIN_DISPATCH_SECRET ??=
+    "local-dev-placeholder-dispatch-secret";
+  process.env.SCALEMARGIN_ANALYTICS_SECRET ??=
+    "local-dev-placeholder-analytics-secret";
+  if (process.env.VITEST !== "true") {
+    console.warn(
+      "[LOCAL_DEV] Placeholder SCALEMARGIN_* secrets in use — set real values for Atlas HMAC. Not for production."
+    );
+  }
+}
 
 const REQUIRED_ENV = ["SCALEMARGIN_DISPATCH_SECRET", "SCALEMARGIN_ANALYTICS_SECRET"];
 const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
@@ -47,12 +81,21 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-const app = express();
+try {
+  ensureDispatchConfigLoaded();
+} catch (e) {
+  console.error("[FATAL] Dispatch configuration invalid:", e);
+  process.exit(1);
+}
+
+const app: Express = express();
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
 
-if (FROM_EMAIL === "noreply@example.com") {
-  console.warn("[WARN] FROM_EMAIL not set — using default noreply@example.com. Emails will likely bounce.");
+if (FROM_EMAIL === "noreply@example.com" && process.env.VITEST !== "true") {
+  console.warn(
+    "[WARN] FROM_EMAIL not set — using default noreply@example.com. Emails will likely bounce."
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -88,9 +131,9 @@ app.post(
   async (req, res) => {
     const payload = req.body;
 
-    console.log(
+    logUnlessVitest(
       `[Dispatch] Received campaign ${payload.campaign_id} — ` +
-      `${payload.user_ids?.length || 0} recipients, channel: ${payload.channel}`
+        `${payload.user_ids?.length || 0} recipients, channel: ${payload.channel}`
     );
 
     // Acknowledge immediately
@@ -219,7 +262,7 @@ async function processDispatch(payload: {
     metadata,
   } = payload;
 
-  console.log(
+  logUnlessVitest(
     `[Dispatch] Processing campaign ${campaign_id}: ${user_ids.length} users`
   );
 
@@ -232,18 +275,19 @@ async function processDispatch(payload: {
     imageMappings = await processImages(payload.images, campaign_id);
   }
 
-  // 3. Get the email provider
+  // 3. Email provider (SES or SendGrid)
   const provider = getProvider();
 
-  // 4. Build personalized messages
-  // DEV_RECIPIENT_EMAIL: override all recipients to a single test address (local/staging)
+  // 4. Build one outbound message per recipient (optional DEV_RECIPIENT_EMAIL routes all to one inbox)
   const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
   const messages: Array<{ userId: string; message: EmailMessage }> = [];
 
   for (const userId of user_ids) {
     const user = users.get(userId);
     if (!user) {
-      console.warn(`[Dispatch] User ${userId} not found in database, skipping`);
+      warnUnlessVitest(
+        `[Dispatch] User ${userId} not found in database, skipping`
+      );
       continue;
     }
 
@@ -276,18 +320,18 @@ async function processDispatch(payload: {
 
     // In dev mode, send only ONE email (to the test recipient), not N duplicates
     if (devRecipient) {
-      console.log(
+      logUnlessVitest(
         `[Dispatch] DEV mode — routing all ${user_ids.length} recipients to ${devRecipient}`
       );
       break;
     }
   }
 
-  console.log(
+  logUnlessVitest(
     `[Dispatch] Sending ${messages.length} emails via ${provider.name}`
   );
 
-  // 4. Send all emails
+  // 5. Send all emails
   const sendResults: Array<{
     userId: string;
     success: boolean;
@@ -308,11 +352,11 @@ async function processDispatch(payload: {
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;
 
-  console.log(
+  logUnlessVitest(
     `[Dispatch] Campaign ${campaign_id}: ${sent} sent, ${failed} failed`
   );
 
-  // 5. Report analytics back to ScaleMargin
+  // 6. Report batch results to ScaleMargin analytics callback
   const analyticsPayload = buildBatchPayload({
     campaignId: campaign_id,
     organizationId: metadata.organization_id,
@@ -325,7 +369,9 @@ async function processDispatch(payload: {
   );
 
   if (analyticsResult.success) {
-    console.log(`[Dispatch] Analytics reported successfully for ${campaign_id}`);
+    logUnlessVitest(
+      `[Dispatch] Analytics reported successfully for ${campaign_id}`
+    );
   } else {
     console.error(
       `[Dispatch] Failed to report analytics for ${campaign_id}: ${analyticsResult.error}`
@@ -353,16 +399,19 @@ function mapSendGridEvent(
 }
 
 // ---------------------------------------------------------------------------
-// Start server
+// Start server (skip listen under Vitest — integration tests import `app`)
 // ---------------------------------------------------------------------------
 
-app.listen(PORT, () => {
-  console.log(`[Server] ScaleMargin Dispatch Handler running on port ${PORT}`);
-  console.log(`[Server] Email provider: ${process.env.EMAIL_PROVIDER || "ses"}`);
-  console.log(`[Server] Dispatch endpoint: POST /api/scalemargin/dispatch`);
-  console.log(`[Server] SES notifications: POST /api/scalemargin/ses-notifications`);
-  console.log(`[Server] SendGrid events: POST /api/scalemargin/sendgrid-events`);
-  console.log(`[Server] Health check: GET /health`);
-});
+if (process.env.VITEST !== "true") {
+  app.listen(PORT, () => {
+    console.log(`[Server] ScaleMargin Dispatch Handler running on port ${PORT}`);
+    console.log(`[Server] Email provider: ${process.env.EMAIL_PROVIDER || "ses"}`);
+    console.log(`[Server] Dispatch endpoint: POST /api/scalemargin/dispatch`);
+    console.log(`[Server] SES notifications: POST /api/scalemargin/ses-notifications`);
+    console.log(`[Server] SendGrid events: POST /api/scalemargin/sendgrid-events`);
+    console.log(`[Server] Health check: GET /health`);
+  });
+}
 
 export default app;
+export { app };

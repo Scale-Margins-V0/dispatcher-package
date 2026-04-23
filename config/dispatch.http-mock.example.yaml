@@ -1,0 +1,38 @@
+# Use with: pnpm run dev:http-profile-mock (see docs/testing.md)
+# Copy to dispatch.yaml or set USER_LOOKUP_CONFIG_PATH to this file.
+
+user_lookup:
+  backend: http
+  fields:
+    email: contact.primaryEmail
+    first_name: first_name
+    last_name: last_name
+    company_name: company_name
+    phone: phone
+  http:
+    base_url: http://127.0.0.1:4310
+    path: /v1/users:batchGet
+    method: POST
+    auth:
+      type: bearer
+      token_env: PROFILE_API_TOKEN
+    request:
+      id_field: user_ids
+    response:
+      root: users
+      id_field: id
+    timeout_ms: 5000
+    retries: 1
+  batch:
+    max_ids_per_query: 500
+    dedupe: true
+
+placeholders:
+  first_name: { source: field, field: first_name, fallback: "there" }
+  last_name: { source: field, field: last_name, fallback: "" }
+  full_name:
+    { source: computed, expr: "first_name + ' ' + last_name", fallback: "there" }
+  company_name: { source: field, field: company_name, fallback: "" }
+  email: { source: field, field: email, fallback: "" }
+  unsubscribe_url:
+    { source: computed, expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id", fallback: "#" }

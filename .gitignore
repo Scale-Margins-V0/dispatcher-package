@@ -1,0 +1,30 @@
+# Dependencies & build
+node_modules/
+dist/
+
+# Env & local secrets (use .env.example as template)
+.env
+.env.*
+!.env.example
+
+# Local SQLite / data dir (seeded DBs)
+data/
+*.sqlite
+*.sqlite3
+
+# Cursor — ephemeral plan files (keep .cursor/rules if you version them)
+.cursor/plans/
+
+# Logs & caches
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.vite/
+coverage/
+.vitest-attachments/
+
+# OS & editors
+.DS_Store
+Thumbs.db
+*.swp
+*~
