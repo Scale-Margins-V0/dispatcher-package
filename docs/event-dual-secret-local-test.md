@@ -1,5 +1,7 @@
 # Local dual-secret + SendGrid event test
 
+SendGrid dashboard and env overview: **[`sendgrid.readme.md`](sendgrid.readme.md)**. This document focuses on the **dual-secret + ngrok + CSV** flow.
+
 This flow exercises **two different HMAC secrets** on the same running server:
 
 1. **`SCALEMARGIN_DISPATCH_SECRET`** — verifies `POST /api/scalemargin/dispatch` (`X-ScaleMargin-Signature` over the raw JSON body).

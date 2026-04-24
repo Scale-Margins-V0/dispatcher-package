@@ -157,7 +157,9 @@ More detail: [`docs/testing.md`](docs/testing.md).
 
 ## Optional: dual-secret + SendGrid local smoke test
 
-End-to-end style flow (ngrok, real sends, CSV capture of signed analytics) is documented here:
+SendGrid-focused setup (API key, Event Webhook, env vars, troubleshooting) lives in **[`docs/sendgrid.readme.md`](docs/sendgrid.readme.md)**.
+
+End-to-end flow (ngrok, real sends, CSV capture of signed analytics) is documented here:
 
 [`docs/event-dual-secret-local-test.md`](docs/event-dual-secret-local-test.md)
 
@@ -202,6 +204,7 @@ See [`docs/testing.md`](docs/testing.md) for paths and env vars.
 | [`docs/user-lookup-contract.md`](docs/user-lookup-contract.md) | Dispatch YAML and user lookup backends. |
 | [`docs/event-pipeline-contract.md`](docs/event-pipeline-contract.md) | Standardized events, forwarding, SendGrid allowlist. |
 | [`docs/pii-guarantees.md`](docs/pii-guarantees.md) | What is stripped before analytics POSTs. |
+| [`docs/sendgrid.readme.md`](docs/sendgrid.readme.md) | SendGrid: env, dashboard, webhooks, local testing, troubleshooting. |
 | [`docs/event-dual-secret-local-test.md`](docs/event-dual-secret-local-test.md) | ngrok, SendGrid webhook, CSV capture, `dev:event-test`. |
 | [`docs/testing.md`](docs/testing.md) | Vitest, seeds, mocks. |
 
