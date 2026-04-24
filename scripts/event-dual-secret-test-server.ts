@@ -182,7 +182,7 @@ placeholders:
   phone: { source: field, field: phone, fallback: "" }
   unsubscribe_url:
     source: computed
-    expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id"
+    expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id"
 `
 );
 
@@ -276,9 +276,13 @@ curl -sS -X POST ${publicBase}/api/scalemargin/dispatch \\
   -H "X-ScaleMargin-Signature: ${dispatchSig}" \\
   --data-binary @${stablePayloadPath}
 
-3) Watch ${csvAbs} — each event’s metadata_json includes campaign_id + organization_id. Rows: dispatched, then delivered/processed, and opens/clicks if you enable them in SendGrid (see below).
+3) Watch ${csvAbs} — each event’s metadata_json includes campaign_id + organization_id. Rows: dispatched, then delivered/processed, unsubscribes (if the recipient unsubscribes), and opens/clicks if you enable them in SendGrid (see below).
 
 4) Opens / clicks: In SendGrid Event Webhook settings, enable **Open** and **Click** (and any other types you want). This script sets EVENT_SENDGRID_INBOUND_EVENTS=* on the child process unless you override it in .env (use default or a comma list to reduce noise).
+
+5) Unsubscribe (double proxy): Same ngrok host as SendGrid + analytics — child defaults \`UNSUBSCRIBE_URL_BASE\` to \`<EVENT_TEST_PUBLIC_BASE_URL>/api/unsubscribe\` (client-facing path, no \`/scalemargin/\`) and \`UNSUBSCRIBE_LINK_ANALYTICS_URL\` to the CSV capture URL. Mail links include \`uid\`, \`campaign_id\`, \`organization_id\`; GET hits this app, then a PII-free signed POST mirrors SendGrid webhook forwarding. Optional \`UNSUBSCRIBE_LINK_REDIRECT_URL\` = 302 to your main product page. Override \`UNSUBSCRIBE_URL_BASE\` in .env if links should go straight to production instead.
+
+   SendGrid Event Webhook: enable **Unsubscribed** / **Group Unsubscribed** so provider-generated unsubscribes still flow through \`/api/scalemargin/sendgrid-events\` (same analytics secret). Set EVENT_PREFERENCE_SIMULATION_LOG=0 to silence \`[Events][PreferenceSimulation]\` logs.
 
 SendGrid UI "Test Integration" events lack custom_args and are dropped in one summary log line — ignore those.
 
@@ -299,7 +303,10 @@ const childEnv = {
   EVENT_DELIVERY_MODE: "best_effort",
   /** Forward all mapped SendGrid wires (open, click, …) unless overridden in .env. */
   EVENT_SENDGRID_INBOUND_EVENTS: process.env.EVENT_SENDGRID_INBOUND_EVENTS ?? "*",
-  UNSUBSCRIBE_URL_BASE: process.env.UNSUBSCRIBE_URL_BASE || "https://example.com/unsub",
+  UNSUBSCRIBE_URL_BASE:
+    process.env.UNSUBSCRIBE_URL_BASE || `${publicBase}/api/unsubscribe`,
+  /** Same signed destination as dispatch metadata.analytics_callback_url (CSV capture in this test). */
+  UNSUBSCRIBE_LINK_ANALYTICS_URL: process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL || captureUrl,
   FROM_EMAIL: fromEmail,
 };
 

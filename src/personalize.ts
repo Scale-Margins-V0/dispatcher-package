@@ -9,6 +9,12 @@ import type { PlaceholderEntry } from "./user-lookup/config.js";
 import { getPlaceholderRegistry } from "./user-lookup/config.js";
 import type { UserRecord } from "./user-lookup/types.js";
 
+/** Optional dispatch row context for computed placeholders (e.g. `campaign_id` in `unsubscribe_url`). */
+export type PersonalizeDispatchContext = {
+  campaign_id: string;
+  organization_id: string;
+};
+
 /** Block obvious code-injection tokens in YAML `computed` expressions (not a full sandbox). */
 const REJECT_SEGMENT = /eval|Function|import|require|__proto__|prototype/i;
 
@@ -49,7 +55,8 @@ const ENV_KEY = /^env\.([A-Za-z][A-Za-z0-9_]*)$/;
  */
 export function evaluateComputedExpression(
   expr: string,
-  user: UserRecord
+  user: UserRecord,
+  dispatchCtx?: PersonalizeDispatchContext
 ): string {
   if (REJECT_SEGMENT.test(expr)) {
     throw new Error("unsupported expression");
@@ -65,6 +72,20 @@ export function evaluateComputedExpression(
     }
     if (p === "user_id") {
       out += user.user_id;
+      continue;
+    }
+    if (p === "campaign_id") {
+      if (!dispatchCtx) {
+        throw new Error("campaign_id in expression requires dispatch context (internal error)");
+      }
+      out += dispatchCtx.campaign_id;
+      continue;
+    }
+    if (p === "organization_id") {
+      if (!dispatchCtx) {
+        throw new Error("organization_id in expression requires dispatch context (internal error)");
+      }
+      out += dispatchCtx.organization_id;
       continue;
     }
     if (p === "email") {
@@ -89,7 +110,11 @@ export function evaluateComputedExpression(
   return out;
 }
 
-function resolvePlaceholder(def: PlaceholderEntry, user: UserRecord): string {
+function resolvePlaceholder(
+  def: PlaceholderEntry,
+  user: UserRecord,
+  dispatchCtx?: PersonalizeDispatchContext
+): string {
   if (def.source === "field") {
     const raw = user.fields[def.field];
     if (raw !== undefined && raw.length > 0) {
@@ -98,7 +123,7 @@ function resolvePlaceholder(def: PlaceholderEntry, user: UserRecord): string {
     return def.fallback ?? "";
   }
   try {
-    const v = evaluateComputedExpression(def.expr, user);
+    const v = evaluateComputedExpression(def.expr, user, dispatchCtx);
     if (v.length === 0 && def.fallback !== undefined) {
       return def.fallback;
     }
@@ -112,11 +137,15 @@ function resolvePlaceholder(def: PlaceholderEntry, user: UserRecord): string {
  * Personalize content for a specific user.
  * Replaces all {{placeholder}} patterns with user data.
  */
-export function personalize(content: string, user: UserRecord): string {
+export function personalize(
+  content: string,
+  user: UserRecord,
+  dispatchCtx?: PersonalizeDispatchContext
+): string {
   let result = content;
   const registry = getPlaceholderRegistry();
   for (const [name, def] of Object.entries(registry)) {
-    const value = resolvePlaceholder(def, user);
+    const value = resolvePlaceholder(def, user, dispatchCtx);
     result = result.replaceAll(
       new RegExp(`\\{\\{${escapeReg(name)}\\}\\}`, "g"),
       value

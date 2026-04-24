@@ -15,6 +15,24 @@ const sgMail = (sgMailModule as unknown as { default?: typeof sgMailModule }).de
 import type { EmailProvider, EmailMessage, SendResult, BulkSendResult } from "./types.js";
 import { applySendGridCustomArgs } from "../events/outbound/sendgrid-tagger.js";
 
+/**
+ * SendGrid replaces this token with the open-tracking pixel when `substitution_tag` is set on
+ * `tracking_settings.open_tracking` (Mail Send v3). If the tag is missing from HTML, SendGrid
+ * will not record opens for that message.
+ * @see https://docs.sendgrid.com/api-reference/mail-send/mail-send (tracking_settings)
+ */
+const OPEN_TRACK_SUBSTITUTION_TAG = "%open-track%";
+
+function ensureOpenTrackingPixelPlaceholder(payload: Record<string, unknown>): void {
+  const ts = payload.tracking_settings as Record<string, unknown> | undefined;
+  const ot = ts?.open_tracking as Record<string, unknown> | undefined;
+  if (!ot?.enable) return;
+  const html = payload.html;
+  if (typeof html !== "string" || html.length === 0) return;
+  if (html.includes(OPEN_TRACK_SUBSTITUTION_TAG)) return;
+  payload.html = `${html}\n<span style="display:none;font-size:0;line-height:0;max-height:0;overflow:hidden" aria-hidden="true">${OPEN_TRACK_SUBSTITUTION_TAG}</span>`;
+}
+
 export class SendGridProvider implements EmailProvider {
   name = "sendgrid";
 
@@ -35,10 +53,24 @@ export class SendGridProvider implements EmailProvider {
         html: message.html,
         ...(message.text && { text: message.text }),
         ...(message.replyTo && { replyTo: message.replyTo }),
+        // Per-message: still respect account defaults if omitted; explicit true helps when
+        // Settings → Tracking has open/click off but you want Activity + Event Webhook opens.
+        ...(message.html
+          ? {
+              tracking_settings: {
+                open_tracking: {
+                  enable: true,
+                  substitution_tag: OPEN_TRACK_SUBSTITUTION_TAG,
+                },
+                click_tracking: { enable: true, enable_text: false },
+              },
+            }
+          : {}),
       };
       const payload = message.context
         ? applySendGridCustomArgs(base, message.context)
         : base;
+      ensureOpenTrackingPixelPlaceholder(payload as Record<string, unknown>);
       const [response] = await sgMail.send(payload as unknown as Parameters<typeof sgMail.send>[0]);
 
       return {

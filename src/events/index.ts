@@ -17,6 +17,7 @@ import { createSesInboundAdapter } from "./adapters/ses.js";
 import { createGupshupInboundAdapter } from "./adapters/gupshup.js";
 import { sendGridInboundWireAllowed } from "./sendgrid-inbound-filter.js";
 import { explainSendGridCorrelationDrop } from "./correlator.js";
+import { logPreferenceSideEffectSimulation } from "./preference-side-effect-log.js";
 
 let buffer: EventBuffer | null = null;
 let runtimeConfig: EventsConfig | null = null;
@@ -207,6 +208,7 @@ export function createInboundWebhookHandler(
       if (std.metadata) {
         std.metadata = scrubPii(std.metadata) as StandardizedEvent["metadata"];
       }
+      logPreferenceSideEffectSimulation(std);
       envelopes.push({ callbackUrl: url, event: std });
     }
 

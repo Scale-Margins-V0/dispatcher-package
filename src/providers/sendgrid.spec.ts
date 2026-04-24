@@ -30,8 +30,15 @@ describe("SendGridProvider", () => {
       },
     });
     expect(sendMock).toHaveBeenCalledTimes(1);
-    const arg = sendMock.mock.calls[0]![0] as { customArgs?: Record<string, string> };
+    const arg = sendMock.mock.calls[0]![0] as {
+      customArgs?: Record<string, string>;
+      tracking_settings?: { open_tracking?: { enable?: boolean; substitution_tag?: string } };
+      html?: string;
+    };
     expect(arg.customArgs?.campaign_id).toBe("c1");
     expect(arg.customArgs?.user_id).toBe("u1");
+    expect(arg.tracking_settings?.open_tracking?.enable).toBe(true);
+    expect(arg.tracking_settings?.open_tracking?.substitution_tag).toBe("%open-track%");
+    expect(arg.html).toContain("%open-track%");
   });
 });

@@ -120,6 +120,30 @@ describe("POST /api/scalemargin/sendgrid-events (integration)", () => {
     expect(bodyStr).not.toMatch(/recipient@example/);
   });
 
+  it("forwards unsubscribe fixture as unsubscribed analytics without raw email", async () => {
+    const one = JSON.parse(
+      readFileSync(join(__dirname, "__fixtures__/sendgrid", "unsubscribe.json"), "utf-8")
+    );
+    const body = JSON.stringify([one]) + "\r\n";
+    const res = await request(app)
+      .post("/api/scalemargin/sendgrid-events")
+      .set("Content-Type", "application/json")
+      .set("X-Twilio-Email-Event-Webhook-Signature", "sig")
+      .set("X-Twilio-Email-Event-Webhook-Timestamp", "1234567890")
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes("campaign-analytics"));
+    expect(call).toBeDefined();
+    const init = call![1] as RequestInit | undefined;
+    const bodyStr = String(init?.body ?? "");
+    const posted = JSON.parse(bodyStr) as { events?: Array<{ event: string; user_id: string }> };
+    expect(posted.events?.[0]?.event).toBe("unsubscribed");
+    expect(posted.events?.[0]?.user_id).toBe("u_42");
+    expect(bodyStr).not.toMatch(/recipient@example/);
+  });
+
   it("returns 401 when signature verify fails", async () => {
     verifySpy.mockReturnValueOnce(false);
     const res = await request(app)

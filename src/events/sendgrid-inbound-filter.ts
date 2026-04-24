@@ -1,12 +1,13 @@
 /**
  * Which SendGrid webhook `event` wire values we forward to ScaleMargin.
  * When SendGrid Event Webhook is not configured, nothing arrives here — dispatch still emits `dispatched`.
- * When it is configured, a **default minimal set** avoids noise (opens/clicks) unless you opt in via YAML or env.
+ * When it is configured, a **default minimal set** avoids engagement noise (opens/clicks) but still
+ * forwards **unsubscribe** / **group_unsubscribe** (suppression-relevant) unless you opt in via YAML or env.
  */
 
 import { mapSendGridEventType } from "./adapters/sendgrid.js";
 
-/** Lifecycle + deliverability + abuse — no open/click/unsubscribe by default. */
+/** Lifecycle + deliverability + abuse + unsubscribe (global + ASM) — no open/click by default. */
 export const DEFAULT_SENDGRID_INBOUND_WIRE_EVENTS = [
   "processed",
   "delivered",
@@ -14,6 +15,8 @@ export const DEFAULT_SENDGRID_INBOUND_WIRE_EVENTS = [
   "dropped",
   "deferred",
   "spamreport",
+  "unsubscribe",
+  "group_unsubscribe",
 ] as const;
 
 function readWire(item: unknown): string {

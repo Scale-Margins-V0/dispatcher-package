@@ -6,7 +6,8 @@ import type { AnalyticsEventType } from "../providers/types.js";
 
 export type Channel = "email" | "whatsapp" | "sms";
 
-export type InboundProviderName = "sendgrid" | "ses" | "gupshup";
+/** `link_click` = synthetic unsubscribe recorded from GET /api/unsubscribe (no provider webhook). */
+export type InboundProviderName = "sendgrid" | "ses" | "gupshup" | "link_click";
 
 export interface Correlation {
   campaign_id: string;
@@ -27,6 +28,9 @@ export interface StandardizedEvent extends Correlation {
     bounce_type?: "hard" | "soft" | "block";
     bounce_reason?: string;
     click_url?: string;
+    /** SendGrid: subscription tracking vs ASM group. */
+    unsubscribe_source?: "global" | "asm";
+    asm_group_id?: number;
     user_agent_family?: string;
     country?: string;
     provider_event_id?: string;

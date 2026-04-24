@@ -5,6 +5,18 @@ This flow exercises **two different HMAC secrets** on the same running server:
 1. **`SCALEMARGIN_DISPATCH_SECRET`** — verifies `POST /api/scalemargin/dispatch` (`X-ScaleMargin-Signature` over the raw JSON body).
 2. **`SCALEMARGIN_ANALYTICS_SECRET`** — signs outbound analytics POSTs from the event pipeline, and verifies **`POST /api/webhooks/campaign-analytics/capture`** when you enable CSV capture for local testing.
 
+## Same ngrok host (“double proxy”): webhooks, analytics, and unsubscribe links
+
+Use **one** public HTTPS origin for everything SendGrid and the browser must reach:
+
+| Path | Role |
+| ---- | ---- |
+| `/api/scalemargin/sendgrid-events` | SendGrid Event Webhook (signed POST, raw provider JSON → PII strip → signed analytics POST) |
+| `/api/webhooks/campaign-analytics/capture` | Dev CSV capture (or your main ScaleMargin analytics URL in production) |
+| `/api/unsubscribe` | Optional **GET** unsubscribe link target (client-facing path; no `/scalemargin/`). Records **`unsubscribed`** with **no email in the URL** (only `uid`, `campaign_id`, `organization_id` query params from the mail template) and POSTs the **same** signed analytics shape as the event pipeline when **`UNSUBSCRIBE_LINK_ANALYTICS_URL`** is set |
+
+With **`pnpm run dev:event-test`**, the child process defaults **`UNSUBSCRIBE_URL_BASE`** to `<EVENT_TEST_PUBLIC_BASE_URL>/api/unsubscribe` and **`UNSUBSCRIBE_LINK_ANALYTICS_URL`** to the same capture URL as dispatch’s `metadata.analytics_callback_url`, so link clicks and SendGrid webhooks both produce CSV rows without sending raw PII to ScaleMargin. SendGrid may still emit a separate **`unsubscribe`** webhook after subscription tracking — you may see two rows (link vs webhook); `metadata.source` distinguishes **`unsubscribe_link_click`** from provider-forwarded events.
+
 ## Configure ngrok and test
 
 1. **Install** [ngrok](https://ngrok.com/download) and run `ngrok config add-authtoken <token>` once (token from the ngrok dashboard).
@@ -66,17 +78,31 @@ This flow exercises **two different HMAC secrets** on the same running server:
 
 ### Engagement events (opened, clicked)
 
-Two things must be true:
+**Tracking vs webhook (two different SendGrid screens)**  
+**Settings → Tracking** (Open Tracking = Enabled, like your screenshot) only controls whether SendGrid **records** opens and **injects** the pixel. It does **not** by itself POST `open` events to your HTTP URL.
 
-1. **SendGrid** — In Event Webhook configuration, enable the event types you want (e.g. **Open**, **Click**). Otherwise SendGrid never POSTs them.
-2. **This app** — Default `config/events.yaml` uses a **minimal** inbound allowlist (no open/click). For `pnpm run dev:event-test`, the child process sets **`EVENT_SENDGRID_INBOUND_EVENTS=*`** unless you set it in `.env` (use `default` for the minimal set, or a comma-separated wire list).
+You also need **Mail Settings → Event Webhook** (or **Messaging → Event Webhook**, depending on product): the URL you gave SendGrid must have **Open** (and **Click**, if needed) **checked in the list of event types** to send. If only *Processed* / *Delivered* are checked, you will see **delivered** in your app but **never** `open`, even with Tracking enabled.
 
-You must **open the HTML email** (or load tracking pixels) and **click a link** in a real client for open/click events to fire.
+**Then this app must allow the `open` wire** — two things must be true:
+
+1. **SendGrid** — Event Webhook: enable **Open** / **Click** so SendGrid POSTs those payloads to your tunnel.
+2. **This app** — Default `config/events.yaml` (or no `EVENT_SENDGRID_INBOUND_EVENTS`) uses a **minimal** inbound allowlist that **drops** `open` and `click` before correlation. Fix one of:
+   - **`pnpm run dev:event-test`** — child sets **`EVENT_SENDGRID_INBOUND_EVENTS=*`** unless you override it in `.env`; or
+   - **`EVENT_SENDGRID_INBOUND_EVENTS=*`** (or `open,click`) in `.env`, or
+   - **`config/events.yaml`**: `providers.sendgrid.inbound_event_types: ["*"]` or include `open` / `click`.
+
+If opens are still missing after that, check **ngrok** (`http://127.0.0.1:4040`) for POST bodies containing `"event":"open"`. No such requests → SendGrid or the client; requests present but no CSV rows → signature, correlation, or allowlist (server log will say).
+
+You must **open the HTML email** in a client that **loads remote images** (SendGrid open tracking uses a tracking pixel). “Ask before loading images”, many mobile clients, and some corporate scanners either block the pixel or prefetch it once, so you may see **no** or **weird** open counts. Prefer a desktop client with images allowed, or use **SendGrid → Activity** / **Email Testing** to confirm the message has the pixel. Outbound sends from this repo set **per-message** open/click tracking on HTML mail (`tracking_settings` in the Mail Send API). The SendGrid provider also injects the **`%open-track%`** substitution token into HTML when it is absent so SendGrid can replace it with the tracking pixel (required when `substitution_tag` is set).
+
+**Event Webhook subscription:** In the same SendGrid screen where you set the POST URL, ensure **Open** (and **Click** if you test links) are checked so SendGrid actually emits those event types to your URL.
 
 ## SendGrid: few events by default (extensible)
 
 - If you **do not** configure SendGrid’s Event Webhook, **no** SendGrid delivery events reach this app. You still get **`dispatched`** (and **`failed`** if send fails) from the **dispatch** path, signed with the analytics secret when forwarded.
-- If you **do** configure the webhook, this repo **defaults** to forwarding only a **small set** of SendGrid wire `event` values: `processed`, `delivered`, `bounce`, `dropped`, `deferred`, `spamreport` — lifecycle and deliverability, **not** `open` / `click` / `unsubscribe` unless you opt in.
+- If you **do** configure the webhook, this repo **defaults** to forwarding a **small set** of SendGrid wire `event` values: `processed`, `delivered`, `bounce`, `dropped`, `deferred`, `spamreport`, `unsubscribe`, `group_unsubscribe` — lifecycle, deliverability, abuse, and **unsubscribe** (mapped to analytics `unsubscribed`). **`open` / `click`** still require opt-in unless you use `["*"]` or `EVENT_SENDGRID_INBOUND_EVENTS=*`.
+
+Unsubscribe webhooks are PII-stripped like other events; the server also prints **`[Events][PreferenceSimulation]`** (correlation + scrubbed metadata) as a stub for a future suppression webhook — disable with **`EVENT_PREFERENCE_SIMULATION_LOG=0`**. Enable **Unsubscribed** / **Group Unsubscribed** in SendGrid’s Event Webhook checklist.
 
 Override in **`config/events.yaml`**:
 

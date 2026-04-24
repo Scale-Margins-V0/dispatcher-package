@@ -22,7 +22,7 @@ events:
       # Env var holding SendGrid’s Event Webhook verification public key (base64)
       signing_key_env: SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY
       # Optional: which SendGrid `event` wire values to forward (omit = default: processed, delivered,
-      # bounce, dropped, deferred, spamreport — no open/click). Use ["*"] for every mapped type.
+      # bounce, dropped, deferred, spamreport, unsubscribe, group_unsubscribe — no open/click). Use ["*"] for every mapped type.
       # inbound_event_types: [processed, delivered, bounce, open, click]
 
     # Inbound POST /api/scalemargin/ses-notifications — SNS envelope; correlation via message tags

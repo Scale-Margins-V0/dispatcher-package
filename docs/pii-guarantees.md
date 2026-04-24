@@ -17,6 +17,8 @@ Together, unit tests require that **after both layers**, `JSON.stringify` of the
 
 Operational logs (e.g. `[Dispatch]`, provider SDK responses) may include **sender** or configuration hints. Do not log full recipient payloads in production; this reference app avoids logging full webhook bodies at info level.
 
+For **`unsubscribed`** / **`complained`**, the event pipeline may emit **`[Events][PreferenceSimulation]`** with correlation ids and **scrubbed** `metadata` only (no raw provider body). Turn off with **`EVENT_PREFERENCE_SIMULATION_LOG=0`**.
+
 ## Auditing a new adapter
 
 1. List every field the provider can send on webhooks; classify PII vs operational.

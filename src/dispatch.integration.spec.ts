@@ -144,6 +144,7 @@ placeholders:
     delete process.env.UNSUBSCRIBE_URL_BASE;
     delete process.env.EVENT_FORWARD_MODE;
     delete process.env.EVENT_DELIVERY_MODE;
+    delete process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL;
     vi.unstubAllGlobals();
     const { shutdownEventPipeline, resetEventPipelineForTests } = await import("./events/index.js");
     shutdownEventPipeline();
@@ -290,5 +291,31 @@ placeholders:
     )![0] as { subject: string; text: string };
     expect(ada.subject).toBe("Weekly: Lovelace, Ada");
     expect(ada.text).toContain("Ada Lovelace");
+  });
+
+  it("GET /api/unsubscribe forwards PII-free unsubscribed analytics when UNSUBSCRIBE_LINK_ANALYTICS_URL is set", async () => {
+    process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL =
+      "http://127.0.0.1:9/api/webhooks/campaign-analytics/unsub-link";
+    fetchMock.mockClear();
+
+    const res = await request(app)
+      .get("/api/unsubscribe")
+      .query({ uid: "u1", campaign_id: "camp-unsub", organization_id: "org-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("recorded");
+    const call = fetchMock.mock.calls.find((c) =>
+      String(c[0]).includes("campaign-analytics/unsub-link")
+    );
+    expect(call).toBeDefined();
+    const init = call![1] as RequestInit | undefined;
+    const body = JSON.parse(String(init?.body ?? "")) as {
+      events?: Array<{ event: string; user_id: string; metadata?: { source?: string } }>;
+    };
+    expect(body.events?.[0]?.event).toBe("unsubscribed");
+    expect(body.events?.[0]?.user_id).toBe("u1");
+    expect(body.events?.[0]?.metadata?.source).toBe("unsubscribe_link_click");
+
+    delete process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL;
   });
 });

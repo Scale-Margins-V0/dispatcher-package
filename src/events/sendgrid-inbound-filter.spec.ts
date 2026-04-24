@@ -5,11 +5,14 @@ import {
 } from "./sendgrid-inbound-filter.js";
 
 describe("sendGridInboundWireAllowed", () => {
-  it("default list includes delivered and processed, excludes open", () => {
+  it("default list includes delivered, processed, and unsubscribe wires, excludes open", () => {
     expect(DEFAULT_SENDGRID_INBOUND_WIRE_EVENTS).toContain("delivered");
     expect(DEFAULT_SENDGRID_INBOUND_WIRE_EVENTS).toContain("processed");
+    expect(DEFAULT_SENDGRID_INBOUND_WIRE_EVENTS).toContain("unsubscribe");
+    expect(DEFAULT_SENDGRID_INBOUND_WIRE_EVENTS).toContain("group_unsubscribe");
     expect(DEFAULT_SENDGRID_INBOUND_WIRE_EVENTS).not.toContain("open");
     expect(sendGridInboundWireAllowed({ event: "delivered" }, undefined)).toBe(true);
+    expect(sendGridInboundWireAllowed({ event: "unsubscribe" }, undefined)).toBe(true);
     expect(sendGridInboundWireAllowed({ event: "open" }, undefined)).toBe(false);
   });
 

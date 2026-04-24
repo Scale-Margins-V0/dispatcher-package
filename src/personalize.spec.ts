@@ -41,6 +41,19 @@ describe("evaluateComputedExpression", () => {
     vi.unstubAllEnvs();
   });
 
+  it("includes campaign_id and organization_id when dispatch context is provided", () => {
+    vi.stubEnv("UNSUBSCRIBE_URL_BASE", "https://tunnel.example/unsub");
+    const u = baseUser();
+    expect(
+      evaluateComputedExpression(
+        "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
+        u,
+        { campaign_id: "cmp_9", organization_id: "org_9" }
+      )
+    ).toBe("https://tunnel.example/unsub?uid=u-1&campaign_id=cmp_9&organization_id=org_9");
+    vi.unstubAllEnvs();
+  });
+
   it("rejects eval-like input", () => {
     const u = baseUser();
     expect(() => evaluateComputedExpression("eval('x')", u)).toThrow();

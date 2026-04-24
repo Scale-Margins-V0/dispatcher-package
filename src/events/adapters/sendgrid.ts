@@ -52,6 +52,7 @@ export function mapSendGridEventType(sg: string): AnalyticsEventType | null {
     dropped: "bounced",
     spamreport: "complained",
     unsubscribe: "unsubscribed",
+    group_unsubscribe: "unsubscribed",
   };
   return m[sg] ?? null;
 }
@@ -132,6 +133,17 @@ export function createSendGridInboundAdapter(publicKeyBase64: string): InboundEv
       }
       if (sgEvent === "click" && typeof stripped.url === "string") {
         metadata.click_url = stripped.url;
+      }
+      if (sgEvent === "unsubscribe") {
+        metadata.unsubscribe_source = "global";
+      }
+      if (sgEvent === "group_unsubscribe") {
+        metadata.unsubscribe_source = "asm";
+        const gid = stripped.asm_group_id;
+        if (typeof gid === "number") metadata.asm_group_id = gid;
+        else if (typeof gid === "string" && gid.trim() !== "" && !Number.isNaN(Number(gid))) {
+          metadata.asm_group_id = Number(gid);
+        }
       }
       return {
         ...c,

@@ -35,6 +35,7 @@ import { createEventTestCsvCaptureHandler } from "./event-test-csv-capture.js";
 import { getProvider } from "./providers/index.js";
 import { lookupUsers } from "./user-lookup.js";
 import { personalize } from "./personalize.js";
+import { createUnsubscribeLinkGetHandler } from "./unsubscribe-link.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 import { emitEvent, initializeEventPipeline, createInboundWebhookHandler, getInboundAdapter, isProviderEnabled } from "./events/index.js";
 import { registerCampaignCallback } from "./events/campaign-callback-registry.js";
@@ -124,6 +125,9 @@ if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
   const imgDir = process.env.IMAGE_LOCAL_DIR || "./public/images";
   app.use("/images", express.static(imgDir));
 }
+
+// GET /api/unsubscribe — public unsubscribe link (no /scalemargin/ in client-facing URLs); PII-free analytics POST
+app.get("/api/unsubscribe", createUnsubscribeLinkGetHandler());
 
 // Health check
 app.get("/health", (_req, res) => {
@@ -328,6 +332,11 @@ async function processDispatch(payload: {
     metadata.analytics_callback_url
   );
 
+  const personalizeCtx = {
+    campaign_id,
+    organization_id: metadata.organization_id,
+  };
+
   // 1. Look up users from your database
   const users = await lookupUsers(user_ids);
 
@@ -354,10 +363,10 @@ async function processDispatch(payload: {
     }
 
     const subject = content.subject
-      ? personalize(content.subject, user)
+      ? personalize(content.subject, user, personalizeCtx)
       : "No Subject";
     let html = content.html_body
-      ? personalize(content.html_body, user)
+      ? personalize(content.html_body, user, personalizeCtx)
       : "";
 
     // Rewrite image URLs to customer-hosted versions
@@ -375,7 +384,7 @@ async function processDispatch(payload: {
         subject,
         html,
         ...(content.text_body && {
-          text: personalize(content.text_body, user),
+          text: personalize(content.text_body, user, personalizeCtx),
         }),
         context: {
           campaign_id,

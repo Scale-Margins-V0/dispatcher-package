@@ -38,6 +38,30 @@ describe("SendGridInboundAdapter", () => {
     expect(std?.event).toBe("dispatched");
   });
 
+  it("maps unsubscribe to unsubscribed with global source metadata", () => {
+    const raw = load("unsubscribe");
+    const c = adapter.extractCorrelation(raw)!;
+    const std = adapter.toStandardEvent(adapter.stripPii(raw), {
+      ...c,
+      analytics_callback_url: "http://x",
+    });
+    expect(std?.event).toBe("unsubscribed");
+    expect(std?.metadata?.unsubscribe_source).toBe("global");
+    expect(JSON.stringify(std)).not.toMatch(/recipient@/);
+  });
+
+  it("maps group_unsubscribe to unsubscribed with asm metadata", () => {
+    const raw = load("group-unsubscribe");
+    const c = adapter.extractCorrelation(raw)!;
+    const std = adapter.toStandardEvent(adapter.stripPii(raw), {
+      ...c,
+      analytics_callback_url: "http://x",
+    });
+    expect(std?.event).toBe("unsubscribed");
+    expect(std?.metadata?.unsubscribe_source).toBe("asm");
+    expect(std?.metadata?.asm_group_id).toBe(12892);
+  });
+
   it("returns null correlation when custom_args missing", () => {
     expect(adapter.extractCorrelation(load("missing-correlation"))).toBeNull();
   });
