@@ -4,7 +4,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createHttpProfileMockApp } from "../../http-profile-mock-app.js";
+import { createHttpProfileMockApp } from "../../devtools/http-profile-mock-app.js";
 import { parseDispatchConfig } from "../config.js";
 import { HttpAdapter } from "./http.js";
 

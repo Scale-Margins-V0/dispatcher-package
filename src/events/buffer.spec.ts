@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DiskEventBuffer, InMemoryEventBuffer } from "./buffer.js";
-import type { EventEnvelope } from "./types.js";
+import type { EventEnvelope } from "./common/types.js";
 
 function env(): EventEnvelope {
   return {

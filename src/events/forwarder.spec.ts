@@ -6,8 +6,9 @@ import {
   groupEnvelopesByDestination,
   standardizedToAnalyticsEvent,
   signPayload,
+  validateCallbackUrl,
 } from "./forwarder.js";
-import type { StandardizedEvent } from "./types.js";
+import type { StandardizedEvent } from "./common/types.js";
 
 function se(partial: Partial<StandardizedEvent> = {}): StandardizedEvent {
   return {
@@ -106,5 +107,45 @@ describe("flushEnvelopesSync with fetch mock", () => {
 
   it("signPayload matches HMAC hex", () => {
     expect(signPayload("{}", "k")).toHaveLength(64);
+  });
+});
+
+describe("validateCallbackUrl", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it("allows expected analytics callback path in test", () => {
+    process.env.NODE_ENV = "test";
+    expect(
+      validateCallbackUrl("http://127.0.0.1:3000/api/webhooks/campaign-analytics/capture")
+    ).toBe(true);
+  });
+
+  it("allows unexpected path outside production (with warning)", () => {
+    process.env.NODE_ENV = "test";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(validateCallbackUrl("http://127.0.0.1:3000/not-analytics")).toBe(true);
+      expect(warn).toHaveBeenCalledWith(
+        "[EventsForwarder] Unexpected callback path: /not-analytics. Proceeding anyway."
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("rejects unexpected path in production", () => {
+    process.env.NODE_ENV = "production";
+    expect(validateCallbackUrl("https://callbacks.example.com/not-analytics")).toBe(false);
+  });
+
+  it("rejects private host callback in production", () => {
+    process.env.NODE_ENV = "production";
+    expect(
+      validateCallbackUrl("https://127.0.0.1/api/webhooks/campaign-analytics/capture")
+    ).toBe(false);
   });
 });

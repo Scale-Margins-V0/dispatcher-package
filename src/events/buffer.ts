@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { EventBuffer, EventEnvelope } from "./types.js";
+import type { EventBuffer, EventEnvelope } from "./common/types.js";
 
 export interface InMemoryBufferOptions {
   maxSize: number;

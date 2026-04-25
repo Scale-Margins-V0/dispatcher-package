@@ -11,12 +11,12 @@ import {
 } from "./config.js";
 import { flushEnvelopesSync, buildIdempotencyKey } from "./forwarder.js";
 import { scrubPii } from "./scrubber.js";
-import type { EventBuffer, EventEnvelope, InboundEventAdapter, StandardizedEvent } from "./types.js";
-import { createSendGridInboundAdapter } from "./adapters/sendgrid.js";
-import { createSesInboundAdapter } from "./adapters/ses.js";
-import { createGupshupInboundAdapter } from "./adapters/gupshup.js";
-import { sendGridInboundWireAllowed } from "./sendgrid-inbound-filter.js";
-import { explainSendGridCorrelationDrop } from "./correlator.js";
+import type { EventBuffer, EventEnvelope, InboundEventAdapter, StandardizedEvent } from "./common/types.js";
+import { createSendGridInboundAdapter } from "./sendgrid/adapter.js";
+import { createSesInboundAdapter } from "./ses/adapter.js";
+import { createGupshupInboundAdapter } from "./gupshup/adapter.js";
+import { sendGridInboundWireAllowed } from "./sendgrid/inbound-filter.js";
+import { explainSendGridCorrelationDrop } from "./common/correlator.js";
 import { logPreferenceSideEffectSimulation } from "./preference-side-effect-log.js";
 
 let buffer: EventBuffer | null = null;
@@ -169,7 +169,13 @@ export function createInboundWebhookHandler(
       return;
     }
 
-    const items = adapter.parseEvents(rawBody);
+    let items: unknown[];
+    try {
+      items = adapter.parseEvents(rawBody);
+    } catch {
+      res.status(400).json({ error: "invalid webhook payload" });
+      return;
+    }
     const envelopes: EventEnvelope[] = [];
     const cfg = getRuntimeConfig();
     let sendgridUncorrelated = 0;
@@ -203,7 +209,20 @@ export function createInboundWebhookHandler(
       const fullC = { ...c, analytics_callback_url: url };
       const stripped = adapter.stripPii(item);
       const std = adapter.toStandardEvent(stripped, fullC);
-      if (!std) continue;
+      if (!std) {
+        if (adapter.name === "gupshup") {
+          const status =
+            typeof stripped.eventType === "string"
+              ? stripped.eventType
+              : typeof stripped.status === "string"
+                ? stripped.status
+                : "unknown";
+          console.warn(
+            `[Events][gupshup] Dropping event — unsupported status mapping: ${status}`
+          );
+        }
+        continue;
+      }
       ensureIdempotency(std);
       if (std.metadata) {
         std.metadata = scrubPii(std.metadata) as StandardizedEvent["metadata"];

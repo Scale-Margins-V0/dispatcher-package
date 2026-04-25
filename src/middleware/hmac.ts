@@ -8,20 +8,19 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 
-const DISPATCH_SECRET = process.env.SCALEMARGIN_DISPATCH_SECRET || "";
-
 export function verifyHmacSignature(
   req: Request,
   res: Response,
   next: NextFunction
 ): void {
+  const dispatchSecret = process.env.SCALEMARGIN_DISPATCH_SECRET || "";
   const signature = req.headers["x-scalemargin-signature"] as string;
   if (!signature || !signature.startsWith("sha256=")) {
     res.status(401).json({ error: "Invalid signature" });
     return;
   }
 
-  if (!DISPATCH_SECRET) {
+  if (!dispatchSecret) {
     console.error("[HMAC] SCALEMARGIN_DISPATCH_SECRET not configured");
     res.status(500).json({ error: "Server misconfigured: missing dispatch secret" });
     return;
@@ -30,7 +29,7 @@ export function verifyHmacSignature(
   // req.body should already be the raw string from express.text() middleware
   const rawBody = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
 
-  const expected = createHmac("sha256", DISPATCH_SECRET)
+  const expected = createHmac("sha256", dispatchSecret)
     .update(rawBody)
     .digest("hex");
   const provided = signature.slice("sha256=".length);

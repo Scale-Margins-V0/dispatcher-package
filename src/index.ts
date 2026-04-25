@@ -33,36 +33,21 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type Express } from "express";
+import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
+import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
+import { logUnlessVitest } from "./logging.js";
+import { registerInboundWebhookRoutes } from "./routes/inbound-webhooks.js";
+import { startServer } from "./server-start.js";
 
 if (process.env.VITEST !== "true") {
   loadRepoDotEnv(join(dirname(fileURLToPath(import.meta.url)), ".."));
 }
 import { verifyHmacSignature } from "./middleware/hmac.js";
 import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
-import { createEventTestCsvCaptureHandler } from "./event-test-csv-capture.js";
-import { getProvider } from "./providers/index.js";
-import { lookupUsers } from "./user-lookup.js";
-import { personalize } from "./personalize.js";
-import { createUnsubscribeLinkGetHandler } from "./unsubscribe-link.js";
+import { createEventTestCsvCaptureHandler } from "./devtools/event-test-csv-capture.js";
+import { createUnsubscribeLinkGetHandler } from "./unsubscribe/link.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
-import { emitEvent, initializeEventPipeline, createInboundWebhookHandler, getInboundAdapter, isProviderEnabled } from "./events/index.js";
-import { registerCampaignCallback } from "./events/campaign-callback-registry.js";
-import { verifySnsMessage } from "./events/sns-verify.js";
-import { processImages, type ImageMapping } from "./image-handler.js";
-import { rewriteImageUrls } from "./image-rewriter.js";
-import type { EmailMessage } from "./providers/types.js";
-
-/** Suppress dispatch/provider info logs when Vitest imports `app` (integration tests). */
-function logUnlessVitest(...args: unknown[]): void {
-  if (process.env.VITEST === "true") return;
-  console.log(...args);
-}
-
-function warnUnlessVitest(...args: unknown[]): void {
-  if (process.env.VITEST === "true") return;
-  console.warn(...args);
-}
 
 // ---------------------------------------------------------------------------
 // Startup validation — fail fast on missing config
@@ -178,7 +163,7 @@ app.post(
   "/api/scalemargin/dispatch",
   verifyHmacSignature,
   async (req, res) => {
-    const payload = req.body;
+    const payload = req.body as DispatchPayload;
 
     logUnlessVitest(
       `[Dispatch] Received campaign ${payload.campaign_id} — ` +
@@ -192,312 +177,15 @@ app.post(
     });
 
     // Process asynchronously
-    processDispatch(payload).catch((error) => {
+    processDispatch(payload, FROM_EMAIL).catch((error) => {
       console.error(`[Dispatch] Campaign ${payload.campaign_id} failed:`, error);
     });
   }
 );
-
-// ---------------------------------------------------------------------------
-// POST /api/scalemargin/ses-notifications — SES Delivery Notifications (SNS)
-// ---------------------------------------------------------------------------
-
-app.post(
-  "/api/scalemargin/ses-notifications",
-  express.text({ type: () => true, limit: "1mb" }),
-  async (req, res, next) => {
-    const rawBody = Buffer.from(
-      typeof req.body === "string" ? req.body : JSON.stringify(req.body ?? {}),
-      "utf-8"
-    );
-    let sns: Record<string, unknown>;
-    try {
-      sns = JSON.parse(rawBody.toString("utf-8").trimEnd()) as Record<string, unknown>;
-    } catch {
-      res.status(400).json({ error: "Invalid JSON" });
-      return;
-    }
-
-    if (!(await verifySnsMessage(sns))) {
-      res.status(401).json({ error: "invalid SNS signature" });
-      return;
-    }
-
-    if (sns.Type === "SubscriptionConfirmation") {
-      const subscribeUrl = sns.SubscribeURL as string | undefined;
-      if (subscribeUrl && typeof subscribeUrl === "string") {
-        try {
-          const parsed = new URL(subscribeUrl);
-          if (parsed.hostname.endsWith(".amazonaws.com")) {
-            logUnlessVitest("[SES-SNS] Confirming subscription...");
-            await fetch(subscribeUrl);
-            logUnlessVitest("[SES-SNS] Subscription confirmed");
-          } else {
-            warnUnlessVitest(`[SES-SNS] Rejected non-AWS SubscribeURL: ${parsed.hostname}`);
-          }
-        } catch {
-          warnUnlessVitest("[SES-SNS] Invalid SubscribeURL, skipping");
-        }
-      }
-      res.status(200).json({ confirmed: true });
-      return;
-    }
-
-    const sesHandler = createInboundWebhookHandler(
-      getInboundAdapter("ses"),
-      isProviderEnabled("ses")
-    );
-    await sesHandler(req, res, next);
-  }
-);
-
-// ---------------------------------------------------------------------------
-// POST /api/scalemargin/sendgrid-events — SendGrid Event Webhook (raw body for ECDSA verify)
-// ---------------------------------------------------------------------------
-
-let sendGridWebhookHandler: ReturnType<typeof createInboundWebhookHandler> | undefined;
-app.post(
-  "/api/scalemargin/sendgrid-events",
-  express.text({ type: () => true, limit: "6mb" }),
-  async (req, res, next) => {
-    if (!isProviderEnabled("sendgrid")) {
-      res.status(404).json({ error: "not found" });
-      return;
-    }
-    if (!sendGridWebhookHandler) {
-      sendGridWebhookHandler = createInboundWebhookHandler(
-        getInboundAdapter("sendgrid"),
-        true
-      );
-    }
-    await sendGridWebhookHandler(req, res, next);
-  }
-);
-
-// ---------------------------------------------------------------------------
-// POST /api/scalemargin/gupshup-events — Gupshup WhatsApp event webhook
-// ---------------------------------------------------------------------------
-
-let gupshupWebhookHandler: ReturnType<typeof createInboundWebhookHandler> | undefined;
-app.post(
-  "/api/scalemargin/gupshup-events",
-  express.text({ type: () => true, limit: "1mb" }),
-  async (req, res, next) => {
-    if (!isProviderEnabled("gupshup")) {
-      res.status(404).json({ error: "not found" });
-      return;
-    }
-    if (!gupshupWebhookHandler) {
-      gupshupWebhookHandler = createInboundWebhookHandler(
-        getInboundAdapter("gupshup"),
-        true
-      );
-    }
-    await gupshupWebhookHandler(req, res, next);
-  }
-);
-
-// ---------------------------------------------------------------------------
-// Dispatch Processing (async, after 202 response)
-// ---------------------------------------------------------------------------
-
-async function processDispatch(payload: {
-  campaign_id: string;
-  channel: string;
-  user_ids: string[];
-  content: {
-    subject?: string;
-    html_body?: string;
-    text_body?: string;
-  };
-  personalization_fields?: string[];
-  images?: Array<{
-    placeholder: string;
-    url: string;        // Decoded URL for downloading
-    raw_url: string;    // URL as it appears in HTML — use for replaceAll
-    content_type: string;
-    alt_text?: string;
-    base64_data?: string;
-  }>;
-  metadata: {
-    organization_id: string;
-    analytics_callback_url: string;
-  };
-}): Promise<void> {
-  const {
-    campaign_id,
-    user_ids,
-    content,
-    metadata,
-  } = payload;
-
-  logUnlessVitest(
-    `[Dispatch] Processing campaign ${campaign_id}: ${user_ids.length} users`
-  );
-
-  registerCampaignCallback(
-    campaign_id,
-    metadata.organization_id,
-    metadata.analytics_callback_url
-  );
-
-  const personalizeCtx = {
-    campaign_id,
-    organization_id: metadata.organization_id,
-  };
-
-  // 1. Look up users from your database
-  const users = await lookupUsers(user_ids);
-
-  // 2. Process images: download from ScaleMargin, upload to our storage
-  let imageMappings: ImageMapping[] = [];
-  if (payload.images && payload.images.length > 0) {
-    imageMappings = await processImages(payload.images, campaign_id);
-  }
-
-  // 3. Email provider (SES or SendGrid)
-  const provider = getProvider();
-
-  // 4. Build one outbound message per recipient (optional DEV_RECIPIENT_EMAIL routes all to one inbox)
-  const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
-  const messages: Array<{ userId: string; message: EmailMessage }> = [];
-
-  for (const userId of user_ids) {
-    const user = users.get(userId);
-    if (!user) {
-      warnUnlessVitest(
-        `[Dispatch] User ${userId} not found in database, skipping`
-      );
-      continue;
-    }
-
-    const subject = content.subject
-      ? personalize(content.subject, user, personalizeCtx)
-      : "No Subject";
-    let html = content.html_body
-      ? personalize(content.html_body, user, personalizeCtx)
-      : "";
-
-    // Rewrite image URLs to customer-hosted versions
-    if (imageMappings.length > 0) {
-      html = rewriteImageUrls(html, imageMappings);
-    }
-
-    const recipientEmail = devRecipient || user.email;
-
-    messages.push({
-      userId,
-      message: {
-        to: recipientEmail,
-        from: FROM_EMAIL,
-        subject,
-        html,
-        ...(content.text_body && {
-          text: personalize(content.text_body, user, personalizeCtx),
-        }),
-        context: {
-          campaign_id,
-          user_id: userId,
-          organization_id: metadata.organization_id,
-          analytics_callback_url: metadata.analytics_callback_url,
-        },
-      },
-    });
-
-    // In dev mode, send only ONE email (to the test recipient), not N duplicates
-    if (devRecipient) {
-      logUnlessVitest(
-        `[Dispatch] DEV mode — routing all ${user_ids.length} recipients to ${devRecipient}`
-      );
-      break;
-    }
-  }
-
-  logUnlessVitest(
-    `[Dispatch] Sending ${messages.length} emails via ${provider.name}`
-  );
-
-  // 5. Send all emails
-  const sendResults: Array<{
-    userId: string;
-    success: boolean;
-    messageId?: string;
-    error?: string;
-  }> = [];
-
-  for (const { userId, message } of messages) {
-    const result = await provider.send(message);
-    sendResults.push({
-      userId,
-      success: result.success,
-      messageId: result.messageId,
-      error: result.error,
-    });
-
-    const emailProvider = (process.env.EMAIL_PROVIDER || "ses").toLowerCase();
-    const inboundProvider =
-      emailProvider === "sendgrid" ? "sendgrid" : "ses";
-
-    await emitEvent({
-      callbackUrl: metadata.analytics_callback_url,
-      event: {
-        campaign_id,
-        user_id: userId,
-        organization_id: metadata.organization_id,
-        analytics_callback_url: metadata.analytics_callback_url,
-        channel: "email",
-        event: result.success ? "dispatched" : "failed",
-        provider: inboundProvider,
-        provider_message_id: result.messageId ?? "unknown",
-        occurred_at: new Date().toISOString(),
-        ...(result.error && {
-          metadata: { bounce_reason: result.error },
-        }),
-      },
-    });
-  }
-
-  const sent = sendResults.filter((r) => r.success).length;
-  const failed = sendResults.filter((r) => !r.success).length;
-
-  logUnlessVitest(
-    `[Dispatch] Campaign ${campaign_id}: ${sent} sent, ${failed} failed (events emitted via pipeline)`
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Start server (skip listen under Vitest — integration tests import `app`)
-// ---------------------------------------------------------------------------
+registerInboundWebhookRoutes(app);
 
 if (process.env.VITEST !== "true") {
-  const server = app.listen(PORT, () => {
-    console.log(`[Server] ScaleMargin Dispatch Handler running on port ${PORT}`);
-    console.log(`[Server] Email provider: ${process.env.EMAIL_PROVIDER || "ses"}`);
-    console.log(`[Server] Dispatch endpoint: POST /api/scalemargin/dispatch`);
-    console.log(`[Server] SES notifications: POST /api/scalemargin/ses-notifications`);
-    console.log(`[Server] SendGrid events: POST /api/scalemargin/sendgrid-events`);
-    console.log(`[Server] Gupshup events: POST /api/scalemargin/gupshup-events`);
-    console.log(`[Server] Health check: GET /health`);
-    if (process.env.EVENT_TEST_CSV_PATH) {
-      const base =
-        process.env.EVENT_TEST_PUBLIC_BASE_URL || `http://127.0.0.1:${PORT}`;
-      console.log(
-        `[Server] Event test capture URL (use as analytics_callback_url): ${base}/api/webhooks/campaign-analytics/capture`
-      );
-    }
-  });
-  server.on("error", (err: NodeJS.ErrnoException) => {
-    if (err.code === "EADDRINUSE") {
-      console.error(
-        `[FATAL] Port ${PORT} is already in use. Stop the other process (e.g. \`pnpm dev\` in another terminal) or use a free port:\n` +
-          `  PORT=3101 pnpm run dev:event-test\n` +
-          `Then run ngrok against that port (\`ngrok http 3101\`) and set EVENT_TEST_PUBLIC_BASE_URL to the ngrok HTTPS URL.`
-      );
-      process.exit(1);
-    }
-    console.error("[Server] listen error:", err);
-    process.exit(1);
-  });
+  startServer(app, PORT);
 }
 
 export default app;

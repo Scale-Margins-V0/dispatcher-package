@@ -177,6 +177,12 @@ SES equivalent (SNS → `/api/scalemargin/ses-notifications`, CSV capture):
 pnpm run dev:ses-event-test
 ```
 
+Gupshup WhatsApp (template send + `POST /api/scalemargin/gupshup-events`, CSV capture). Set `GUPSHUP_*` and `GUPSHUP_EVENT_TEST_*` env vars as in [`.env.example`](.env.example):
+
+```bash
+pnpm run dev:gupshup-event-test
+```
+
 ---
 
 ## Database seeding
@@ -200,7 +206,7 @@ See [`docs/testing.md`](docs/testing.md) for paths and env vars.
 | `src/providers/` | SES / SendGrid send implementations. |
 | `src/user-lookup/` | Dispatch-time user resolution. |
 | `config/*.example.yaml` | Copy to `config/*.yaml` for local/prod. |
-| `scripts/` | Seeds, HTTP profile mock, `event-dual-secret-test-server.ts`. |
+| `scripts/` | Seeds, HTTP profile mock, `event-dual-secret-test-server.ts`, `ses-dual-secret-test-server.ts`, `gupshup-dual-secret-test-server.ts`. |
 
 ---
 

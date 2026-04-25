@@ -4,7 +4,7 @@
  * Disable with EVENT_PREFERENCE_SIMULATION_LOG=0.
  */
 
-import type { StandardizedEvent } from "./types.js";
+import type { StandardizedEvent } from "./common/types.js";
 
 /** Types that typically trigger downstream user-preference updates. */
 const SIDE_EFFECT_TYPES = new Set<StandardizedEvent["event"]>(["unsubscribed", "complained"]);

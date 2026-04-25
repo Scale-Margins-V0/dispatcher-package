@@ -6,7 +6,7 @@
  * Wire the handler via `config/dispatch.http-mock.example.yaml` (see docs/testing.md).
  */
 
-import { createHttpProfileMockApp } from "../src/http-profile-mock-app.js";
+import { createHttpProfileMockApp } from "../src/devtools/http-profile-mock-app.js";
 
 const PORT = parseInt(process.env.PROFILE_MOCK_PORT || "4310", 10);
 const PATH = process.env.PROFILE_MOCK_PATH || "/v1/users:batchGet";

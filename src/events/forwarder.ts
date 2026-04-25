@@ -4,7 +4,7 @@
 
 import { createHash, createHmac } from "node:crypto";
 import type { AnalyticsEvent, AnalyticsPayload } from "../providers/types.js";
-import type { StandardizedEvent } from "./types.js";
+import type { StandardizedEvent } from "./common/types.js";
 
 const MAX_RETRIES = 3;
 
@@ -55,6 +55,9 @@ export function validateCallbackUrl(url: string): boolean {
     }
 
     if (!parsed.pathname.includes("/api/webhooks/campaign-analytics")) {
+      if (process.env.NODE_ENV === "production") {
+        return false;
+      }
       console.warn(
         `[EventsForwarder] Unexpected callback path: ${parsed.pathname}. Proceeding anyway.`
       );
