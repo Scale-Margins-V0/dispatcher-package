@@ -28,8 +28,8 @@ export interface StandardizedEvent extends Correlation {
     bounce_type?: "hard" | "soft" | "block";
     bounce_reason?: string;
     click_url?: string;
-    /** SendGrid: subscription tracking vs ASM group. */
-    unsubscribe_source?: "global" | "asm";
+    /** SendGrid: subscription tracking vs ASM group; SES: list-unsubscribe / Subscription event. */
+    unsubscribe_source?: "global" | "asm" | "ses_subscription";
     asm_group_id?: number;
     user_agent_family?: string;
     country?: string;

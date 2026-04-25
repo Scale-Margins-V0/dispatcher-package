@@ -151,6 +151,7 @@ pnpm exec vitest run src/events/adapters/sendgrid.spec.ts src/events/sendgrid.in
 
 | Doc | Topic |
 |-----|--------|
+| [`ses.readme.md`](ses.readme.md) | AWS SES configuration set, SNS, `dev:ses-event-test` |
 | [`event-dual-secret-local-test.md`](event-dual-secret-local-test.md) | ngrok, `dev:event-test`, CSV capture, opens vs allowlist |
 | [`event-pipeline-contract.md`](event-pipeline-contract.md) | Standardized events, allowlist, forwarding |
 | [`pii-guarantees.md`](pii-guarantees.md) | What is stripped before analytics |

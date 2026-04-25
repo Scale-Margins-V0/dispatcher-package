@@ -40,13 +40,21 @@ describe("forwarder helpers", () => {
   });
 
   it("standardizedToAnalyticsEvent maps metadata", () => {
-    const ev = se({ idempotency_key: "abc", metadata: { click_url: "https://x" } });
+    const ev = se({
+      idempotency_key: "abc",
+      metadata: { click_url: "https://x" },
+      analytics_callback_url: "https://cb.example/hook",
+    });
     const a = standardizedToAnalyticsEvent(ev);
     expect(a.idempotency_key).toBe("abc");
     expect(a.metadata?.provider).toBe("sendgrid");
     expect(a.metadata?.click_url).toBe("https://x");
     expect(a.metadata?.campaign_id).toBe("c1");
     expect(a.metadata?.organization_id).toBe("o1");
+    expect(a.metadata?.user_id).toBe("u1");
+    expect(a.metadata?.channel).toBe("email");
+    expect(a.metadata?.provider_message_id).toBe("mid");
+    expect(a.metadata?.analytics_callback_url).toBe("https://cb.example/hook");
   });
 
   it("buildPayloadForGroup shapes AnalyticsPayload", () => {

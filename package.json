@@ -10,6 +10,7 @@
     "dev:local": "LOCAL_DEV=1 tsx watch src/index.ts",
     "dev:http-profile-mock": "tsx scripts/http-profile-mock-server.ts",
     "dev:event-test": "tsx scripts/event-dual-secret-test-server.ts",
+    "dev:ses-event-test": "tsx scripts/ses-dual-secret-test-server.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run",

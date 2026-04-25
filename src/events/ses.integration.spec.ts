@@ -118,4 +118,27 @@ describe("POST /api/scalemargin/ses-notifications (integration)", () => {
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalled();
   });
+
+  it("processes Subscription event as unsubscribed analytics", async () => {
+    const buf = readFileSync(
+      join(__dirname, "__fixtures__/ses", "subscription-event-notification.json"),
+      "utf-8"
+    );
+    const res = await request(app)
+      .post("/api/scalemargin/ses-notifications")
+      .set("Content-Type", "application/json")
+      .send(buf);
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalled();
+    const call = (fetchMock.mock.calls as unknown[][]).find((c) =>
+      String(c[0]).includes("campaign-analytics")
+    );
+    expect(call).toBeDefined();
+    const init = (call as unknown as [string, RequestInit])[1];
+    const body = JSON.parse(String(init?.body ?? "")) as {
+      events?: Array<{ event: string; metadata?: { unsubscribe_source?: string } }>;
+    };
+    expect(body.events?.[0]?.event).toBe("unsubscribed");
+    expect(body.events?.[0]?.metadata?.unsubscribe_source).toBe("ses_subscription");
+  });
 });

@@ -119,7 +119,7 @@ If `config/events.yaml` is **missing**, built-in defaults apply (see example hea
 
 ## Run the server (development)
 
-**Watch mode** (TypeScript directly via `tsx`):
+**Watch mode** (TypeScript directly via `tsx`). Loads repo-root **`.env`** into the process (same rules as the event-test scripts: last duplicate key in the file wins; non-empty shell exports are not overwritten).
 
 ```bash
 pnpm run dev
@@ -159,6 +159,8 @@ More detail: [`docs/testing.md`](docs/testing.md).
 
 SendGrid-focused setup (API key, Event Webhook, env vars, troubleshooting) lives in **[`docs/sendgrid.readme.md`](docs/sendgrid.readme.md)**.
 
+SES-focused setup (configuration set, SNS, event types including **Subscriptions**, `pnpm run dev:ses-event-test`) lives in **[`docs/ses.readme.md`](docs/ses.readme.md)**.
+
 End-to-end flow (ngrok, real sends, CSV capture of signed analytics) is documented here:
 
 [`docs/event-dual-secret-local-test.md`](docs/event-dual-secret-local-test.md)
@@ -167,6 +169,12 @@ Entry point:
 
 ```bash
 pnpm run dev:event-test
+```
+
+SES equivalent (SNS → `/api/scalemargin/ses-notifications`, CSV capture):
+
+```bash
+pnpm run dev:ses-event-test
 ```
 
 ---
@@ -205,6 +213,7 @@ See [`docs/testing.md`](docs/testing.md) for paths and env vars.
 | [`docs/event-pipeline-contract.md`](docs/event-pipeline-contract.md) | Standardized events, forwarding, SendGrid allowlist. |
 | [`docs/pii-guarantees.md`](docs/pii-guarantees.md) | What is stripped before analytics POSTs. |
 | [`docs/sendgrid.readme.md`](docs/sendgrid.readme.md) | SendGrid: env, dashboard, webhooks, local testing, troubleshooting. |
+| [`docs/ses.readme.md`](docs/ses.readme.md) | SES: configuration set, SNS, event types, `dev:ses-event-test`. |
 | [`docs/event-dual-secret-local-test.md`](docs/event-dual-secret-local-test.md) | ngrok, SendGrid webhook, CSV capture, `dev:event-test`. |
 | [`docs/testing.md`](docs/testing.md) | Vitest, seeds, mocks. |
 

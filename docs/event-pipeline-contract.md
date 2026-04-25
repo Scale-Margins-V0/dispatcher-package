@@ -20,7 +20,7 @@ Defined in `src/events/types.ts` (extends correlation fields):
 
 ## Channel semantics
 
-- **SendGrid / SES**: `channel: "email"`.
+- **SendGrid / SES**: `channel: "email"`. SES **Subscription** events (list-unsubscribe) map to **`unsubscribed`** with `metadata.unsubscribe_source: ses_subscription` (see `src/events/adapters/ses.ts`).
 - **Gupshup**: `channel: "whatsapp"` (inbound-only in this reference implementation).
 
 ## Adapter interface (`InboundEventAdapter`)

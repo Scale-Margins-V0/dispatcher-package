@@ -26,9 +26,18 @@
  *
  *   Local-only (never production):
  *     LOCAL_DEV=1 — if SCALEMARGIN_* secrets are unset, uses insecure placeholders so you can run `pnpm run dev:local` without Atlas secrets (e.g. HTTP profile mock testing).
+ *
+ *   `pnpm dev` / `pnpm start`: repo-root `.env` is loaded automatically (unless `VITEST=true`).
  */
 
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import express, { type Express } from "express";
+import { loadRepoDotEnv } from "./load-repo-dotenv.js";
+
+if (process.env.VITEST !== "true") {
+  loadRepoDotEnv(join(dirname(fileURLToPath(import.meta.url)), ".."));
+}
 import { verifyHmacSignature } from "./middleware/hmac.js";
 import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
 import { createEventTestCsvCaptureHandler } from "./event-test-csv-capture.js";

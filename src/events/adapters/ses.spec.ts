@@ -41,10 +41,28 @@ describe("SesInboundAdapter", () => {
     expect(std?.provider).toBe("ses");
   });
 
-  it("parseEvents returns empty for subscription fixture", () => {
+  it("parseEvents returns empty for SNS SubscriptionConfirmation outer envelope", () => {
     const adapter = createSesInboundAdapter({ verify: async () => true });
     const items = adapter.parseEvents(loadSnsFixture("subscription-confirmation"));
     expect(items).toHaveLength(0);
+  });
+
+  it("maps SES Subscription event to unsubscribed with ses_subscription metadata", async () => {
+    const adapter = createSesInboundAdapter({ verify: async () => true });
+    const buf = loadSnsFixture("subscription-event-notification");
+    const items = adapter.parseEvents(buf);
+    expect(items).toHaveLength(1);
+    const inner = items[0] as Record<string, unknown>;
+    const c = adapter.extractCorrelation(inner)!;
+    const stripped = adapter.stripPii(inner);
+    expect(stripped.subscription).toBeUndefined();
+    const std = adapter.toStandardEvent(stripped, {
+      ...c,
+      analytics_callback_url: "http://127.0.0.1:19999/api/webhooks/campaign-analytics/test",
+    });
+    expect(std?.event).toBe("unsubscribed");
+    expect(std?.metadata?.unsubscribe_source).toBe("ses_subscription");
+    expect(JSON.stringify(std)).not.toMatch(/user@example/);
   });
 
   it("verify delegates to injected fn", async () => {

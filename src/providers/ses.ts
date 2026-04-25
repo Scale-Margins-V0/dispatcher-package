@@ -22,6 +22,19 @@ export class SESProvider implements EmailProvider {
     this.client = new SESClient({
       region: region || process.env.AWS_REGION || "ap-south-1",
     });
+    const akidCheck = process.env.AWS_ACCESS_KEY_ID?.trim();
+    if (
+      akidCheck &&
+      !/^(AKIA|ASIA)[A-Z0-9]{16}$/.test(akidCheck) &&
+      process.env.VITEST !== "true"
+    ) {
+      console.warn(
+        `[SES] WARNING: AWS_ACCESS_KEY_ID does not look like a real AWS access key ` +
+          `(expected 20 chars starting with AKIA or ASIA; got len=${akidCheck.length}, prefix="${akidCheck.slice(0, 4)}"). ` +
+          `Likely a leftover export in your shell rc (e.g. ~/.zshrc) overriding .env. ` +
+          `SES calls will fail with InvalidClientTokenId. Run: env | grep AWS_`
+      );
+    }
   }
 
   async send(message: EmailMessage): Promise<SendResult> {

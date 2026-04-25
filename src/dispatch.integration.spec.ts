@@ -304,11 +304,11 @@ placeholders:
 
     expect(res.status).toBe(200);
     expect(res.text).toContain("recorded");
-    const call = fetchMock.mock.calls.find((c) =>
+    const call = (fetchMock.mock.calls as unknown[][]).find((c) =>
       String(c[0]).includes("campaign-analytics/unsub-link")
     );
     expect(call).toBeDefined();
-    const init = call![1] as RequestInit | undefined;
+    const init = (call as unknown as [string, RequestInit])[1];
     const body = JSON.parse(String(init?.body ?? "")) as {
       events?: Array<{ event: string; user_id: string; metadata?: { source?: string } }>;
     };

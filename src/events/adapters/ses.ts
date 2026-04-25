@@ -35,6 +35,8 @@ function stripSesInner(inner: Record<string, unknown>): Record<string, unknown> 
     delete click.ipAddress;
     delete click.userAgent;
   }
+  /* List-Unsubscribe / subscription preference — may contain addresses; correlation lives on mail.tags. */
+  if ("subscription" in out) delete out.subscription;
   return out;
 }
 
@@ -47,6 +49,8 @@ function mapSesEventType(eventType: string): AnalyticsEventType | null {
     Click: "clicked",
     Reject: "bounced",
     Send: "dispatched",
+    /** SES v2 event publishing — recipient used List-Unsubscribe header or footer link. */
+    Subscription: "unsubscribed",
   };
   return m[eventType] ?? null;
 }
@@ -137,6 +141,9 @@ export function createSesInboundAdapter(opts?: { verify?: SesVerifyFn }): Inboun
       if (eventType === "Click") {
         const click = stripped.click as Record<string, unknown> | undefined;
         if (click && typeof click.link === "string") metadata.click_url = click.link;
+      }
+      if (eventType === "Subscription") {
+        metadata.unsubscribe_source = "ses_subscription";
       }
       return {
         ...c,

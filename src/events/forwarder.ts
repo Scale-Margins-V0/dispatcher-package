@@ -75,11 +75,17 @@ export function standardizedToAnalyticsEvent(e: StandardizedEvent): AnalyticsEve
     ...(e.idempotency_key && { idempotency_key: e.idempotency_key }),
     metadata: {
       ...(e.metadata ?? {}),
-      /** Duplicated from batch envelope so each event row is self-contained (CSV, logs). */
+      /**
+       * Duplicated from top-level / batch envelope so each event row is self-contained
+       * (CSV `metadata_json`, single-blob downstream parsers) — same shape for SES and SendGrid.
+       */
+      user_id: e.user_id,
       campaign_id: e.campaign_id,
       organization_id: e.organization_id,
+      channel: e.channel,
       provider: e.provider,
       provider_message_id: e.provider_message_id,
+      ...(e.analytics_callback_url && { analytics_callback_url: e.analytics_callback_url }),
     },
   };
 }
