@@ -50,11 +50,12 @@ placeholders:
     { source: computed, expr: "first_name + ' ' + last_name", fallback: "there" }
   company_name: { source: field, field: company_name, fallback: "" }
   email: { source: field, field: email, fallback: "" }
-  # For “double proxy” (link → this app → signed analytics), point UNSUBSCRIBE_URL_BASE at this server’s
-  # GET /api/unsubscribe (e.g. same ngrok origin as webhooks; client-facing, no /scalemargin/) and include correlation query params:
+  # Default: works for any personalize() caller (tests, scripts) with UNSUBSCRIBE_URL_BASE set.
+  # For “double proxy” correlation (campaign_id + organization_id on the link), use the longer expr
+  # only if every code path calls personalize(..., { campaign_id, organization_id }) — dispatch does.
   unsubscribe_url:
     {
       source: computed,
-      expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
+      expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id",
       fallback: "#",
     }
