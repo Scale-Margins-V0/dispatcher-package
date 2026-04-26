@@ -195,6 +195,12 @@ mkdirSync(dirname(csvAbs), { recursive: true });
 
 const userIds = recipients.map((_, i) => `event_test_u${i + 1}`);
 const campaignId = `evt_local_${Date.now()}`;
+const includeImages =
+  process.env.EVENT_TEST_INCLUDE_IMAGES === "1" ||
+  process.env.EVENT_TEST_INCLUDE_IMAGES === "true";
+const imageOriginalUrl = "https://assets.scalemargin.test/campaign/logo.png";
+const tinyPngBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Vf1YAAAAASUVORK5CYII=";
 const dispatchBody = {
   campaign_id: campaignId,
   channel: "email",
@@ -209,6 +215,7 @@ const dispatchBody = {
   <li>On-file email: {{email}}</li>
   <li>Phone: {{phone}}</li>
 </ul>
+${includeImages ? `<p><img src="${imageOriginalUrl}" alt="event-test-image"/></p>` : ""}
 <p><a href="{{unsubscribe_url}}">Unsubscribe</a></p>`,
     text_body:
       "Hi {{first_name}} — pipeline test for {{company_name}}. Email: {{email}}. Unsubscribe: {{unsubscribe_url}}",
@@ -217,6 +224,19 @@ const dispatchBody = {
     organization_id: "org_event_test",
     analytics_callback_url: captureUrl,
   },
+  ...(includeImages
+    ? {
+        images: [
+          {
+            placeholder: "event_test_logo",
+            url: imageOriginalUrl,
+            raw_url: imageOriginalUrl,
+            content_type: "image/png",
+            base64_data: tinyPngBase64,
+          },
+        ],
+      }
+    : {}),
 };
 const dispatchRaw = JSON.stringify(dispatchBody);
 const dispatchSig = "sha256=" + createHmac("sha256", dispatchSecret).update(dispatchRaw).digest("hex");
@@ -267,6 +287,7 @@ SendGrid UI "Test Integration" events lack custom_args and are dropped in one su
 
 Set EVENT_TEST_PUBLIC_BASE_URL to your ngrok/tunnel origin so analytics_callback_url is public.
 Override recipients: EVENT_TEST_RECIPIENTS="a@x.com,b@y.com"
+Image path test: EVENT_TEST_INCLUDE_IMAGES=${includeImages ? "1 (enabled)" : "0 (disabled)"}.
 `);
 
 const childEnv = {
@@ -282,6 +303,11 @@ const childEnv = {
   EVENT_DELIVERY_MODE: "best_effort",
   /** Forward all mapped SendGrid wires (open, click, …) unless overridden in .env. */
   EVENT_SENDGRID_INBOUND_EVENTS: process.env.EVENT_SENDGRID_INBOUND_EVENTS ?? "*",
+  IMAGE_STORAGE_PROVIDER:
+    process.env.IMAGE_STORAGE_PROVIDER || (includeImages ? "local" : ""),
+  IMAGE_LOCAL_DIR: process.env.IMAGE_LOCAL_DIR || "./public/images",
+  IMAGE_LOCAL_BASE_URL:
+    process.env.IMAGE_LOCAL_BASE_URL || `${publicBase}/images`,
   UNSUBSCRIBE_URL_BASE:
     process.env.UNSUBSCRIBE_URL_BASE || `${publicBase}/api/unsubscribe`,
   /** Same signed destination as dispatch metadata.analytics_callback_url (CSV capture in this test). */

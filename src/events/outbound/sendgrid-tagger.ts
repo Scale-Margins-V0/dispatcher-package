@@ -4,6 +4,7 @@ export type SendGridTaggedMessage<T extends Record<string, unknown>> = T & {
   customArgs: {
     campaign_id: string;
     user_id: string;
+    dispatch_id?: string;
     organization_id: string;
     analytics_callback_url: string;
   };
@@ -19,6 +20,7 @@ export function applySendGridCustomArgs<T extends Record<string, unknown>>(
     customArgs: {
       campaign_id: ctx.campaign_id,
       user_id: ctx.user_id,
+      ...(ctx.dispatch_id ? { dispatch_id: ctx.dispatch_id } : {}),
       organization_id: ctx.organization_id,
       analytics_callback_url: ctx.analytics_callback_url,
     },

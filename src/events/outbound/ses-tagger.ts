@@ -22,6 +22,9 @@ export function applySesMessageTags(
   const tags = [
     { Name: "campaign_id", Value: ctx.campaign_id.slice(0, 256) },
     { Name: "user_id", Value: ctx.user_id.slice(0, 256) },
+    ...(ctx.dispatch_id
+      ? [{ Name: "dispatch_id", Value: ctx.dispatch_id.slice(0, 256) }]
+      : []),
     { Name: "organization_id", Value: ctx.organization_id.slice(0, 256) },
   ];
   return {

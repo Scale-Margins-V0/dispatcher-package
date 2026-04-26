@@ -1,0 +1,34 @@
+[
+  {
+    "user_id": "test-user-001",
+    "first_name": "Preetham",
+    "last_name": "Velantris",
+    "email": "preetham@velantris.ai",
+    "phone_no": null,
+    "company_name": "Velantris"
+  },
+  {
+    "user_id": "test-user-002",
+    "first_name": "Preetham",
+    "last_name": "Sathyamurthy",
+    "email": "preethamsathyamurthy@gmail.com",
+    "phone_no": null,
+    "company_name": "ScaleMargin QA"
+  },
+  {
+    "user_id": "test-user-003",
+    "first_name": "Suppress",
+    "last_name": "Email1",
+    "email": "v@vv.com",
+    "phone_no": null,
+    "company_name": "QA Suppression"
+  },
+  {
+    "user_id": "test-user-004",
+    "first_name": "Suppress",
+    "last_name": "Email2",
+    "email": "goldenpi@gpi.com",
+    "phone_no": null,
+    "company_name": "QA Suppression"
+  }
+]

@@ -32,7 +32,7 @@ flowchart LR
 ```
 
 - **Outbound:** `SESProvider` sets **`ConfigurationSetName`** from `SES_EVENT_CONFIG_SET` and adds **message tags** `campaign_id`, `user_id`, `organization_id` (≤256 chars each). Tags appear on SNS events as `mail.tags`.
-- **Inbound:** SES publishes JSON to **SNS**. SNS wraps it in an outer envelope (`Type`, `Message`, signatures). This app verifies the **SNS** signature, then parses the inner SES event. **`analytics_callback_url`** is too long for tags; dispatch registers **`registerCampaignCallback`** so SES events resolve the ScaleMargin URL from **`campaign_id`**.
+- **Inbound:** SES publishes JSON to **SNS**. SNS wraps it in an outer envelope (`Type`, `Message`, signatures). This app verifies the **SNS** signature, then parses the inner SES event. **`analytics_callback_url`** is too long for tags; dispatch registers **`registerCampaignCallback`** so SES events resolve the ScaleMargin URL from **`campaign_id`**. If the process restarts before delayed events arrive, the in-memory registry is empty — set optional **`SCALEMARGIN_ANALYTICS_CALLBACK_URL`** to your platform **`/api/webhooks/campaign-analytics`** URL (same rules as `validateCallbackUrl`) so events still forward.
 
 ---
 
@@ -47,6 +47,7 @@ flowchart LR
 | `SES_EVENT_CONFIG_SET` | **Name** of the SES **Configuration set** that owns your event destination (must match console exactly). |
 | `SCALEMARGIN_DISPATCH_SECRET` | Verifies `POST /api/scalemargin/dispatch`. |
 | `SCALEMARGIN_ANALYTICS_SECRET` | Signs outbound analytics POSTs. |
+| `SCALEMARGIN_ANALYTICS_CALLBACK_URL` | Optional **fallback** when SES events have no per-campaign callback in memory (e.g. after restart). Must include `/api/webhooks/campaign-analytics`; org/campaign still come from signed payload. |
 | `EVENT_TEST_PUBLIC_BASE_URL` | **HTTPS** tunnel origin for `metadata.analytics_callback_url` in generated dispatch (required for SNS to reach you). |
 | `EVENT_TEST_RECIPIENTS` | Comma-separated test inboxes. In SES **sandbox**, each must be **verified** in SES. |
 | `EVENT_TEST_CSV_PATH` | Optional override for CSV path when using `dev:ses-event-test` (script sets a default; see script header for `SES_EVENT_TEST_CSV_PATH`). |

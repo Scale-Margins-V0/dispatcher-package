@@ -30,9 +30,10 @@
  *   `pnpm dev` / `pnpm start`: repo-root `.env` is loaded automatically (unless `VITEST=true`).
  */
 
+import express, { type Express } from "express";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import express, { type Express } from "express";
+
 import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
@@ -43,10 +44,11 @@ import { startServer } from "./server-start.js";
 if (process.env.VITEST !== "true") {
   loadRepoDotEnv(join(dirname(fileURLToPath(import.meta.url)), ".."));
 }
-import { verifyHmacSignature } from "./middleware/hmac.js";
-import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
 import { createEventTestCsvCaptureHandler } from "./devtools/event-test-csv-capture.js";
+import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
+import { verifyHmacSignature } from "./middleware/hmac.js";
 import { createUnsubscribeLinkGetHandler } from "./unsubscribe/link.js";
+import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 
 // ---------------------------------------------------------------------------
@@ -72,7 +74,10 @@ if (
   }
 }
 
-const REQUIRED_ENV = ["SCALEMARGIN_DISPATCH_SECRET", "SCALEMARGIN_ANALYTICS_SECRET"];
+const REQUIRED_ENV = [
+  "SCALEMARGIN_DISPATCH_SECRET",
+  "SCALEMARGIN_ANALYTICS_SECRET",
+];
 const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
 if (missing.length > 0) {
   console.error(`[FATAL] Missing required env vars: ${missing.join(", ")}`);
@@ -82,16 +87,16 @@ if (missing.length > 0) {
 
 try {
   ensureDispatchConfigLoaded();
-} catch (e) {
-  console.error("[FATAL] Dispatch configuration invalid:", e);
+} catch (error) {
+  console.error("[FATAL] Dispatch configuration invalid:", error);
   process.exit(1);
 }
 
 if (process.env.VITEST !== "true") {
   try {
     initializeEventPipeline();
-  } catch (e) {
-    console.error("[FATAL] Event pipeline configuration invalid:", e);
+  } catch (error) {
+    console.error("[FATAL] Event pipeline configuration invalid:", error);
     process.exit(1);
   }
 }
@@ -112,7 +117,14 @@ if (FROM_EMAIL === "noreply@example.com" && process.env.VITEST !== "true") {
 
 // Parse body as text first (needed for HMAC verification), then as JSON
 // Limit raised to 10MB to accommodate base64-encoded campaign images
-app.use("/api/scalemargin/dispatch", express.text({ type: "application/json", limit: "10mb" }));
+app.use(
+  "/api/scalemargin/dispatch",
+  express.text({ type: "application/json", limit: "10mb" })
+);
+app.use(
+  "/api/scalemargin/validate-pii",
+  express.text({ type: "application/json", limit: "1mb" })
+);
 
 // Serve locally-stored campaign images (for IMAGE_STORAGE_PROVIDER=local)
 if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
@@ -133,6 +145,58 @@ app.get("/health", (_req, res) => {
   });
 });
 
+// Signed lookup smoke test for Atlas. Returns counts and field names only.
+app.post(
+  "/api/scalemargin/validate-pii",
+  verifyHmacSignature,
+  async (req, res) => {
+    const userIds: string[] = Array.isArray(req.body?.user_ids)
+      ? req.body.user_ids.filter(
+          (value: unknown): value is string => typeof value === "string"
+        )
+      : [];
+
+    if (userIds.length === 0 || userIds.length > 25) {
+      res.status(400).json({
+        error: "Provide 1-25 user_ids",
+        pii_conversion_ok: false,
+      });
+      return;
+    }
+
+    try {
+      const users = await lookupUsers(userIds);
+      const missing = userIds.filter((userId) => !users.has(userId));
+      const fieldNames = new Set<string>();
+      let emailAvailableCount = 0;
+
+      for (const user of users.values()) {
+        if (user.email) {
+          emailAvailableCount += 1;
+        }
+        for (const fieldName of Object.keys(user.fields)) {
+          fieldNames.add(fieldName);
+        }
+      }
+
+      res.json({
+        pii_conversion_ok:
+          missing.length === 0 && emailAvailableCount === userIds.length,
+        requested_count: userIds.length,
+        found_count: users.size,
+        missing_user_ids: missing,
+        email_available_count: emailAvailableCount,
+        resolved_field_names: [...fieldNames],
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "User lookup failed",
+        pii_conversion_ok: false,
+      });
+    }
+  }
+);
+
 // ---------------------------------------------------------------------------
 // Dev: capture signed analytics POSTs to CSV (dual-secret / pipeline smoke test)
 // Enable with EVENT_TEST_CSV_PATH=./data/event-test-capture.csv
@@ -141,7 +205,9 @@ app.get("/health", (_req, res) => {
 // ---------------------------------------------------------------------------
 
 if (process.env.EVENT_TEST_CSV_PATH) {
-  const csvHandler = createEventTestCsvCaptureHandler(process.env.EVENT_TEST_CSV_PATH);
+  const csvHandler = createEventTestCsvCaptureHandler(
+    process.env.EVENT_TEST_CSV_PATH
+  );
   app.post(
     "/api/webhooks/campaign-analytics/capture",
     express.text({ type: "application/json", limit: "10mb" }),
@@ -159,29 +225,25 @@ if (process.env.EVENT_TEST_CSV_PATH) {
 // POST /api/scalemargin/dispatch — Campaign Dispatch Handler
 // ---------------------------------------------------------------------------
 
-app.post(
-  "/api/scalemargin/dispatch",
-  verifyHmacSignature,
-  async (req, res) => {
-    const payload = req.body as DispatchPayload;
+app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
+  const payload = req.body as DispatchPayload;
 
-    logUnlessVitest(
-      `[Dispatch] Received campaign ${payload.campaign_id} — ` +
-        `${payload.user_ids?.length || 0} recipients, channel: ${payload.channel}`
-    );
+  logUnlessVitest(
+    `[Dispatch] Received campaign ${payload.campaign_id} — ` +
+      `${payload.user_ids?.length || 0} recipients, channel: ${payload.channel}`
+  );
 
-    // Acknowledge immediately
-    res.status(202).json({
-      accepted: true,
-      message: "Campaign dispatch received",
-    });
+  // Acknowledge immediately
+  res.status(202).json({
+    accepted: true,
+    message: "Campaign dispatch received",
+  });
 
-    // Process asynchronously
-    processDispatch(payload, FROM_EMAIL).catch((error) => {
-      console.error(`[Dispatch] Campaign ${payload.campaign_id} failed:`, error);
-    });
-  }
-);
+  // Process asynchronously
+  processDispatch(payload, FROM_EMAIL).catch((error) => {
+    console.error(`[Dispatch] Campaign ${payload.campaign_id} failed:`, error);
+  });
+});
 registerInboundWebhookRoutes(app);
 
 if (process.env.VITEST !== "true") {

@@ -9,7 +9,7 @@ Defined in `src/events/types.ts` (extends correlation fields):
 | Field | Description |
 | ----- | ----------- |
 | `campaign_id`, `user_id`, `organization_id` | Required correlation (from provider metadata or SES tags + campaign registry). |
-| `analytics_callback_url` | Resolved before forward; may come from SendGrid `custom_args`, Gupshup `tag`, or **campaign callback registry** for SES. |
+| `analytics_callback_url` | Resolved before forward; may come from SendGrid `custom_args`, Gupshup `tag`, **campaign callback registry** for SES, or env **`SCALEMARGIN_ANALYTICS_CALLBACK_URL`** when the registry is empty (e.g. delayed SES after dispatcher restart). The env URL must pass the same `validateCallbackUrl` rules as dispatch-provided URLs. |
 | `channel` | `email` \| `whatsapp` \| `sms` |
 | `event` | Analytics type: `dispatched`, `delivered`, `opened`, `clicked`, `bounced`, `complained`, `failed`, `sent`, `read`, `deferred`, `expired`, … (see `AnalyticsEventType` in `src/providers/types.ts`). |
 | `provider` | `sendgrid` \| `ses` \| `gupshup` |

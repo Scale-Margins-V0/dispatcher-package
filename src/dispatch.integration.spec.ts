@@ -3,7 +3,7 @@
  */
 import { createHmac } from "node:crypto";
 import Database from "better-sqlite3";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
@@ -145,6 +145,9 @@ placeholders:
     delete process.env.EVENT_FORWARD_MODE;
     delete process.env.EVENT_DELIVERY_MODE;
     delete process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL;
+    delete process.env.IMAGE_STORAGE_PROVIDER;
+    delete process.env.IMAGE_LOCAL_DIR;
+    delete process.env.IMAGE_LOCAL_BASE_URL;
     vi.unstubAllGlobals();
     const { shutdownEventPipeline, resetEventPipelineForTests } = await import("./events/index.js");
     shutdownEventPipeline();
@@ -317,5 +320,61 @@ placeholders:
     expect(body.events?.[0]?.metadata?.source).toBe("unsubscribe_link_click");
 
     delete process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL;
+  });
+
+  it("processes inline campaign images and rewrites HTML URLs before send", async () => {
+    const imageDir = join(workDir, "images-local");
+    process.env.IMAGE_STORAGE_PROVIDER = "local";
+    process.env.IMAGE_LOCAL_DIR = imageDir;
+    process.env.IMAGE_LOCAL_BASE_URL = "http://test.local/images";
+    sendMock.mockClear();
+
+    const payload = {
+      campaign_id: "camp-images",
+      channel: "email",
+      user_ids: ["u1"],
+      content: {
+        subject: "Image test for {{first_name}}",
+        html_body:
+          '<p><img src="https://cdn.scalemargin.test/original/logo.png" alt="logo" /></p>',
+      },
+      images: [
+        {
+          placeholder: "logo",
+          url: "https://cdn.scalemargin.test/original/logo.png",
+          raw_url: "https://cdn.scalemargin.test/original/logo.png",
+          content_type: "image/png",
+          base64_data:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Vf1YAAAAASUVORK5CYII=",
+        },
+      ],
+      metadata: {
+        organization_id: "org-1",
+        analytics_callback_url:
+          "http://127.0.0.1:9/api/webhooks/campaign-analytics/test",
+      },
+    };
+    const raw = JSON.stringify(payload);
+    const sig =
+      "sha256=" +
+      createHmac("sha256", "dispatch-secret").update(raw).digest("hex");
+
+    const res = await request(app)
+      .post("/api/scalemargin/dispatch")
+      .set("Content-Type", "application/json")
+      .set("X-ScaleMargin-Signature", sig)
+      .send(raw);
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const msg = sendMock.mock.calls[0]![0] as { html: string };
+    expect(msg.html).toContain("http://test.local/images/camp-images/logo.png");
+    expect(msg.html).not.toContain("https://cdn.scalemargin.test/original/logo.png");
+    expect(existsSync(join(imageDir, "camp-images", "logo.png"))).toBe(true);
+
+    delete process.env.IMAGE_STORAGE_PROVIDER;
+    delete process.env.IMAGE_LOCAL_DIR;
+    delete process.env.IMAGE_LOCAL_BASE_URL;
   });
 });

@@ -12,6 +12,7 @@
 export interface SendContext {
   campaign_id: string;
   user_id: string;
+  dispatch_id?: string;
   organization_id: string;
   /** Required for forwarding standardized events to ScaleMargin (SendGrid customArgs; SES uses campaign registry). */
   analytics_callback_url: string;

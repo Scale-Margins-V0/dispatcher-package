@@ -1,6 +1,14 @@
 import type { Request, Response, RequestHandler } from "express";
-import { getCampaignCallback } from "./campaign-callback-registry.js";
+
+import type {
+  EventBuffer,
+  EventEnvelope,
+  InboundEventAdapter,
+  StandardizedEvent,
+} from "./common/types.js";
+
 import { createEventBuffer } from "./buffer.js";
+import { explainSendGridCorrelationDrop } from "./common/correlator.js";
 import {
   assertEventsConfigEnv,
   loadEventsConfig,
@@ -10,14 +18,13 @@ import {
   type EventsConfig,
 } from "./config.js";
 import { flushEnvelopesSync, buildIdempotencyKey } from "./forwarder.js";
-import { scrubPii } from "./scrubber.js";
-import type { EventBuffer, EventEnvelope, InboundEventAdapter, StandardizedEvent } from "./common/types.js";
-import { createSendGridInboundAdapter } from "./sendgrid/adapter.js";
-import { createSesInboundAdapter } from "./ses/adapter.js";
 import { createGupshupInboundAdapter } from "./gupshup/adapter.js";
-import { sendGridInboundWireAllowed } from "./sendgrid/inbound-filter.js";
-import { explainSendGridCorrelationDrop } from "./common/correlator.js";
 import { logPreferenceSideEffectSimulation } from "./preference-side-effect-log.js";
+import { resolveAnalyticsCallbackUrl } from "./resolve-analytics-callback-url.js";
+import { scrubPii } from "./scrubber.js";
+import { createSendGridInboundAdapter } from "./sendgrid/adapter.js";
+import { sendGridInboundWireAllowed } from "./sendgrid/inbound-filter.js";
+import { createSesInboundAdapter } from "./ses/adapter.js";
 
 let buffer: EventBuffer | null = null;
 let runtimeConfig: EventsConfig | null = null;
@@ -44,7 +51,9 @@ function getBuffer(): EventBuffer {
       diskDir: cfg.delivery.buffer.dir,
       memoryMaxSize: cfg.delivery.buffer.max_events_memory,
       onDropOldest: () => {
-        console.warn("[EventsBuffer] Ring full — dropped oldest envelope (best-effort / overflow)");
+        console.warn(
+          "[EventsBuffer] Ring full — dropped oldest envelope (best-effort / overflow)"
+        );
       },
     });
   }
@@ -80,7 +89,7 @@ async function drainAndFlushAll(): Promise<void> {
  * Safe to call once at process startup.
  */
 export function initializeEventPipeline(): void {
-  if (pipelineInitialized) return;
+  if (pipelineInitialized) {return;}
   runtimeConfig = loadEventsConfig();
   mergeEventsEnvOverrides(runtimeConfig);
   assertEventsConfigEnv(runtimeConfig);
@@ -90,7 +99,7 @@ export function initializeEventPipeline(): void {
     flusherTimer = setInterval(() => {
       void (async () => {
         const batch = getBuffer().drain(cfg.forward.batch_size);
-        if (batch.length === 0) return;
+        if (batch.length === 0) {return;}
         await flushEnvelopesSync(batch, getSecret());
       })();
     }, cfg.forward.batch_interval_ms);
@@ -103,7 +112,7 @@ export function shutdownEventPipeline(): void {
     clearInterval(flusherTimer);
     flusherTimer = undefined;
   }
-  if (buffer) void drainAndFlushAll();
+  if (buffer) {void drainAndFlushAll();}
   pipelineInitialized = false;
 }
 
@@ -119,27 +128,36 @@ export async function emitEvent(envelope: EventEnvelope): Promise<void> {
   }
 }
 
-export function getInboundAdapter(name: "sendgrid" | "ses" | "gupshup"): InboundEventAdapter {
+export function getInboundAdapter(
+  name: "sendgrid" | "ses" | "gupshup"
+): InboundEventAdapter {
   const cfg = getRuntimeConfig();
   if (name === "sendgrid") {
-    const envName = cfg.providers.sendgrid.signing_key_env ?? "SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY";
+    const envName =
+      cfg.providers.sendgrid.signing_key_env ??
+      "SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY";
     const key = process.env[envName];
-    if (!key) throw new Error(`Missing ${envName} for SendGrid inbound adapter`);
+    if (!key)
+      {throw new Error(`Missing ${envName} for SendGrid inbound adapter`);}
     return createSendGridInboundAdapter(key);
   }
   if (name === "ses") {
     return createSesInboundAdapter();
   }
   if (name === "gupshup") {
-    const envName = cfg.providers.gupshup.secret_env ?? "GUPSHUP_WEBHOOK_SECRET";
+    const envName =
+      cfg.providers.gupshup.secret_env ?? "GUPSHUP_WEBHOOK_SECRET";
     const secret = process.env[envName];
-    if (!secret) throw new Error(`Missing ${envName} for Gupshup inbound adapter`);
+    if (!secret)
+      {throw new Error(`Missing ${envName} for Gupshup inbound adapter`);}
     return createGupshupInboundAdapter(secret);
   }
   throw new Error(`Unknown adapter: ${name}`);
 }
 
-export function isProviderEnabled(name: "sendgrid" | "ses" | "gupshup"): boolean {
+export function isProviderEnabled(
+  name: "sendgrid" | "ses" | "gupshup"
+): boolean {
   return getRuntimeConfig().providers[name].enabled;
 }
 
@@ -158,11 +176,14 @@ export function createInboundWebhookHandler(
     const rawBody = Buffer.isBuffer(req.body)
       ? req.body
       : typeof req.body === "string"
-        ? Buffer.from(req.body, "utf-8")
-        : Buffer.from(JSON.stringify(req.body ?? {}), "utf-8");
+        ? Buffer.from(req.body, "utf8")
+        : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
 
     const ok = await Promise.resolve(
-      adapter.verifySignature({ rawBody, headers: req.headers as Record<string, string | string[] | undefined> })
+      adapter.verifySignature({
+        rawBody,
+        headers: req.headers as Record<string, string | string[] | undefined>,
+      })
     );
     if (!ok) {
       res.status(401).json({ error: "invalid signature" });
@@ -183,7 +204,10 @@ export function createInboundWebhookHandler(
     for (const item of items) {
       if (adapter.name === "sendgrid") {
         if (
-          !sendGridInboundWireAllowed(item, cfg.providers.sendgrid.inbound_event_types)
+          !sendGridInboundWireAllowed(
+            item,
+            cfg.providers.sendgrid.inbound_event_types
+          )
         ) {
           continue;
         }
@@ -192,17 +216,21 @@ export function createInboundWebhookHandler(
       if (!c) {
         if (adapter.name === "sendgrid") {
           sendgridUncorrelated++;
-          if (sendgridUncorrelated === 1) sendgridUncorrelatedSample = item;
+          if (sendgridUncorrelated === 1) {sendgridUncorrelatedSample = item;}
         } else {
-          console.warn(`[Events][${adapter.name}] Dropping event — missing correlation fields`);
+          console.warn(
+            `[Events][${adapter.name}] Dropping event — missing correlation fields`
+          );
         }
         continue;
       }
-      const url =
-        c.analytics_callback_url ?? getCampaignCallback(c.campaign_id)?.analytics_callback_url;
+      const url = resolveAnalyticsCallbackUrl({
+        campaignId: c.campaign_id,
+        correlationCallbackUrl: c.analytics_callback_url,
+      });
       if (!url) {
         console.warn(
-          `[Events][${adapter.name}] Dropping event — no analytics_callback_url and no campaign registry entry for ${c.campaign_id}`
+          `[Events][${adapter.name}] Dropping event — no analytics_callback_url, no campaign registry entry, and no valid SCALEMARGIN_ANALYTICS_CALLBACK_URL for ${c.campaign_id}`
         );
         continue;
       }

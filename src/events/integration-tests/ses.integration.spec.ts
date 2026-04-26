@@ -5,14 +5,23 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+
+import { loadEventsConfigFromYaml } from "../config.js";
 import {
   initializeEventPipeline,
   resetEventPipelineForTests,
   setEventsConfigForTests,
   shutdownEventPipeline,
 } from "../index.js";
-import { loadEventsConfigFromYaml } from "../config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -93,20 +102,20 @@ describe("POST /api/scalemargin/ses-notifications (integration)", () => {
   it("confirms SubscriptionConfirmation without calling inner adapter", async () => {
     const buf = readFileSync(
       join(__dirname, "../__fixtures__/ses", "subscription-confirmation.json"),
-      "utf-8"
+      "utf8"
     );
     const res = await request(app)
       .post("/api/scalemargin/ses-notifications")
       .set("Content-Type", "application/json")
       .send(buf);
     expect(res.status).toBe(200);
-    expect(res.body.confirmed).toBe(true);
+    expect(res.body.confirmed).toBeTruthy();
   });
 
   it("processes delivery notification and forwards", async () => {
     const buf = readFileSync(
       join(__dirname, "../__fixtures__/ses", "delivery-notification.json"),
-      "utf-8"
+      "utf8"
     );
     const res = await request(app)
       .post("/api/scalemargin/ses-notifications")
@@ -116,10 +125,50 @@ describe("POST /api/scalemargin/ses-notifications (integration)", () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
+  it("forwards SES delivery when campaign registry is empty but SCALEMARGIN_ANALYTICS_CALLBACK_URL is set", async () => {
+    const fallbackUrl =
+      "http://127.0.0.1:19999/api/webhooks/campaign-analytics/test";
+    const prev = process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL;
+    process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL = fallbackUrl;
+    campaignRegistry.resetCampaignCallbackRegistryForTests();
+    fetchMock.mockClear();
+
+    try {
+      const buf = readFileSync(
+        join(__dirname, "../__fixtures__/ses", "delivery-notification.json"),
+        "utf8"
+      );
+      const res = await request(app)
+        .post("/api/scalemargin/ses-notifications")
+        .set("Content-Type", "application/json")
+        .send(buf);
+      expect(res.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalled();
+      const firstCall = (fetchMock.mock.calls as unknown[][])[0];
+      expect(String(firstCall?.[0])).toBe(fallbackUrl);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL;
+      } else {
+        process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL = prev;
+      }
+      campaignRegistry.resetCampaignCallbackRegistryForTests();
+      campaignRegistry.registerCampaignCallback(
+        "c_test_1",
+        "org_1",
+        "http://127.0.0.1:19999/api/webhooks/campaign-analytics/test"
+      );
+    }
+  });
+
   it("processes Subscription event as unsubscribed analytics", async () => {
     const buf = readFileSync(
-      join(__dirname, "../__fixtures__/ses", "subscription-event-notification.json"),
-      "utf-8"
+      join(
+        __dirname,
+        "../__fixtures__/ses",
+        "subscription-event-notification.json"
+      ),
+      "utf8"
     );
     const res = await request(app)
       .post("/api/scalemargin/ses-notifications")
@@ -133,10 +182,15 @@ describe("POST /api/scalemargin/ses-notifications (integration)", () => {
     expect(call).toBeDefined();
     const init = (call as unknown as [string, RequestInit])[1];
     const body = JSON.parse(String(init?.body ?? "")) as {
-      events?: Array<{ event: string; metadata?: { unsubscribe_source?: string } }>;
+      events?: {
+        event: string;
+        metadata?: { unsubscribe_source?: string };
+      }[];
     };
     expect(body.events?.[0]?.event).toBe("unsubscribed");
-    expect(body.events?.[0]?.metadata?.unsubscribe_source).toBe("ses_subscription");
+    expect(body.events?.[0]?.metadata?.unsubscribe_source).toBe(
+      "ses_subscription"
+    );
   });
 
   it("returns 400 for malformed SNS JSON envelope", async () => {
@@ -146,6 +200,6 @@ describe("POST /api/scalemargin/ses-notifications (integration)", () => {
       .send("{");
 
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: "Invalid JSON" });
+    expect(res.body).toStrictEqual({ error: "Invalid JSON" });
   });
 });

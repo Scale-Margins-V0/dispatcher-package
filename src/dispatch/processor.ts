@@ -12,6 +12,7 @@ export type DispatchPayload = {
   campaign_id: string;
   channel: string;
   user_ids: string[];
+  dispatch_ids?: Record<string, string>;
   content: {
     subject?: string;
     html_body?: string;
@@ -97,6 +98,7 @@ export async function processDispatch(
         context: {
           campaign_id,
           user_id: userId,
+          dispatch_id: payload.dispatch_ids?.[userId],
           organization_id: metadata.organization_id,
           analytics_callback_url: metadata.analytics_callback_url,
         },
@@ -144,9 +146,12 @@ export async function processDispatch(
         provider: inboundProvider,
         provider_message_id: result.messageId ?? "unknown",
         occurred_at: new Date().toISOString(),
-        ...(result.error && {
-          metadata: { bounce_reason: result.error },
-        }),
+        metadata: {
+          ...(result.error ? { bounce_reason: result.error } : {}),
+          ...(payload.dispatch_ids?.[userId]
+            ? { dispatch_id: payload.dispatch_ids[userId] }
+            : {}),
+        },
       },
     });
   }
