@@ -1,0 +1,36 @@
+user_lookup:
+  backend: sqlite
+
+  sqlite:
+    file: ./data/dispatch.sqlite
+
+  source:
+    kind: table
+    name: users
+    id_column: user_id
+    id_type: string
+
+  fields:
+    first_name: first_name
+    last_name: last_name
+    email: email
+    phone: phone_no
+    company_name: company_name
+
+  batch:
+    max_ids_per_query: 1000
+    dedupe: true
+
+placeholders:
+  first_name: { source: field, field: first_name, fallback: "there" }
+  last_name: { source: field, field: last_name, fallback: "" }
+  full_name:
+    { source: computed, expr: "first_name + ' ' + last_name", fallback: "there" }
+  company_name: { source: field, field: company_name, fallback: "" }
+  email: { source: field, field: email, fallback: "" }
+  unsubscribe_url:
+    {
+      source: computed,
+      expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
+      fallback: "#",
+    }

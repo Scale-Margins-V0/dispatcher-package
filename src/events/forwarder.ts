@@ -154,6 +154,7 @@ export async function postAnalyticsWithRetry(
 
   let lastError: string | undefined;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const started = performance.now();
     try {
       const response = await fetch(callbackUrl, {
         method: "POST",
@@ -164,6 +165,10 @@ export async function postAnalyticsWithRetry(
         },
         body,
       });
+      const elapsed = Math.round(performance.now() - started);
+      console.log(
+        `[Forwarder] POST ${callbackUrl} attempt=${attempt} status=${response.status} elapsed=${elapsed}ms`
+      );
 
       if (response.ok) {
         return { success: true };
@@ -171,12 +176,20 @@ export async function postAnalyticsWithRetry(
 
       if (response.status >= 400 && response.status < 500 && response.status !== 429) {
         const errorText = await response.text();
+        const preview = errorText.slice(0, 200);
+        console.warn(
+          `[Forwarder] permanent client error status=${response.status} body_preview=${JSON.stringify(preview)}`
+        );
         return { success: false, error: `${response.status}: ${errorText}` };
       }
 
       lastError = `HTTP ${response.status}`;
     } catch (error) {
+      const elapsed = Math.round(performance.now() - started);
       lastError = error instanceof Error ? error.message : "Unknown error";
+      console.warn(
+        `[Forwarder] POST ${callbackUrl} attempt=${attempt} elapsed=${elapsed}ms network_error=${lastError}`
+      );
     }
 
     if (attempt < MAX_RETRIES) {

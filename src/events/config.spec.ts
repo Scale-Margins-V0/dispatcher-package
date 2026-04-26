@@ -1,9 +1,10 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import {
   loadEventsConfigFromYaml,
   assertEventsConfigEnv,
   mergeEventsEnvOverrides,
   resetEventsConfigForTests,
+  logResolvedEventsConfig,
 } from "./config.js";
 
 const validYaml = `
@@ -84,5 +85,38 @@ describe("events/config", () => {
     mergeEventsEnvOverrides(cfg);
     expect(cfg.providers.sendgrid.inbound_event_types).toBeUndefined();
     delete process.env.EVENT_SENDGRID_INBOUND_EVENTS;
+  });
+
+  it("mergeEventsEnvOverrides disables sendgrid when EVENT_PROVIDERS_DISABLED lists it", () => {
+    process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY =
+      "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtest=";
+    process.env.EVENT_PROVIDERS_DISABLED = "sendgrid";
+    const cfg = loadEventsConfigFromYaml(validYaml);
+    mergeEventsEnvOverrides(cfg);
+    expect(cfg.providers.sendgrid.enabled).toBe(false);
+    delete process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY;
+    delete process.env.EVENT_PROVIDERS_DISABLED;
+  });
+
+  it("mergeEventsEnvOverrides enables sendgrid from signing key when not disabled", () => {
+    process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY =
+      "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtest=";
+    delete process.env.EVENT_PROVIDERS_DISABLED;
+    const cfg = loadEventsConfigFromYaml(
+      validYaml.replace("enabled: true", "enabled: false")
+    );
+    mergeEventsEnvOverrides(cfg);
+    expect(cfg.providers.sendgrid.enabled).toBe(true);
+    delete process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY;
+  });
+
+  it("logResolvedEventsConfig logs JSON when EVENT_DEBUG=1", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    process.env.EVENT_DEBUG = "1";
+    const cfg = loadEventsConfigFromYaml(validYaml);
+    logResolvedEventsConfig(cfg);
+    expect(log.mock.calls[0]?.[0]).toContain("[Events] resolved config");
+    log.mockRestore();
+    delete process.env.EVENT_DEBUG;
   });
 });

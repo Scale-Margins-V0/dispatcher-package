@@ -1,5 +1,6 @@
 import { emitEvent } from "../events/index.js";
 import { registerCampaignCallback } from "../events/campaign-callback-registry.js";
+import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callback-url.js";
 import { processImages, type ImageMapping } from "../images/handler.js";
 import { rewriteImageUrls } from "../images/rewriter.js";
 import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
@@ -43,10 +44,16 @@ export async function processDispatch(
     `[Dispatch] Processing campaign ${campaign_id}: ${user_ids.length} users`
   );
 
+  const resolvedAnalyticsUrl =
+    resolveAnalyticsCallbackUrl({
+      campaignId: campaign_id,
+      correlationCallbackUrl: metadata.analytics_callback_url,
+    }) ?? metadata.analytics_callback_url;
+
   registerCampaignCallback(
     campaign_id,
     metadata.organization_id,
-    metadata.analytics_callback_url
+    resolvedAnalyticsUrl
   );
 
   const personalizeCtx = {
@@ -100,7 +107,7 @@ export async function processDispatch(
           user_id: userId,
           dispatch_id: payload.dispatch_ids?.[userId],
           organization_id: metadata.organization_id,
-          analytics_callback_url: metadata.analytics_callback_url,
+          analytics_callback_url: resolvedAnalyticsUrl,
         },
       },
     });
@@ -135,12 +142,12 @@ export async function processDispatch(
     const inboundProvider = emailProvider === "sendgrid" ? "sendgrid" : "ses";
 
     await emitEvent({
-      callbackUrl: metadata.analytics_callback_url,
+      callbackUrl: resolvedAnalyticsUrl,
       event: {
         campaign_id,
         user_id: userId,
         organization_id: metadata.organization_id,
-        analytics_callback_url: metadata.analytics_callback_url,
+        analytics_callback_url: resolvedAnalyticsUrl,
         channel: "email",
         event: result.success ? "dispatched" : "failed",
         provider: inboundProvider,
@@ -154,6 +161,9 @@ export async function processDispatch(
         },
       },
     });
+    logUnlessVitest(
+      `[Dispatch] event emitted user=${userId} event=${result.success ? "dispatched" : "failed"} messageId=${result.messageId ?? "unknown"}`
+    );
   }
 
   const sent = sendResults.filter((r) => r.success).length;

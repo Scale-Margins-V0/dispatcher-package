@@ -11,7 +11,9 @@ import { createEventBuffer } from "./buffer.js";
 import { explainSendGridCorrelationDrop } from "./common/correlator.js";
 import {
   assertEventsConfigEnv,
+  isEventDebug,
   loadEventsConfig,
+  logResolvedEventsConfig,
   mergeEventsEnvOverrides,
   resetEventsConfigForTests,
   setEventsConfigForTests,
@@ -80,7 +82,17 @@ async function drainAndFlushAll(): Promise<void> {
     drained.push(...buf.drain(5000));
   }
   if (drained.length > 0) {
-    await flushEnvelopesSync(drained, secret);
+    if (isEventDebug()) {
+      console.log(`[Events] flush start size=${drained.length}`);
+    }
+    const r = await flushEnvelopesSync(drained, secret);
+    if (isEventDebug()) {
+      if (r.ok) {
+        console.log(`[Events] flush ok size=${drained.length}`);
+      } else {
+        console.warn(`[Events] flush err size=${drained.length} errors=${r.errors.join("; ")}`);
+      }
+    }
   }
 }
 
@@ -93,6 +105,7 @@ export function initializeEventPipeline(): void {
   runtimeConfig = loadEventsConfig();
   mergeEventsEnvOverrides(runtimeConfig);
   assertEventsConfigEnv(runtimeConfig);
+  logResolvedEventsConfig(runtimeConfig);
   getBuffer();
   const cfg = runtimeConfig;
   if (cfg.forward.mode === "batched") {
@@ -122,6 +135,12 @@ export function shutdownEventPipeline(): void {
 export async function emitEvent(envelope: EventEnvelope): Promise<void> {
   const cfg = getRuntimeConfig();
   ensureIdempotency(envelope.event);
+  if (isEventDebug()) {
+    const ev = envelope.event;
+    console.log(
+      `[Events] emit campaign=${ev.campaign_id} user=${ev.user_id} event=${ev.event} provider=${ev.provider} messageId=${ev.provider_message_id}`
+    );
+  }
   getBuffer().push(envelope);
   if (cfg.forward.mode === "sync") {
     await drainAndFlushAll();
@@ -201,6 +220,10 @@ export function createInboundWebhookHandler(
     const cfg = getRuntimeConfig();
     let sendgridUncorrelated = 0;
     let sendgridUncorrelatedSample: unknown = null;
+    let skippedInboundWire = 0;
+    let droppedNoCallbackUrl = 0;
+    let droppedUnsupported = 0;
+    let droppedOtherNoCorrelation = 0;
     for (const item of items) {
       if (adapter.name === "sendgrid") {
         if (
@@ -209,6 +232,7 @@ export function createInboundWebhookHandler(
             cfg.providers.sendgrid.inbound_event_types
           )
         ) {
+          skippedInboundWire++;
           continue;
         }
       }
@@ -218,6 +242,7 @@ export function createInboundWebhookHandler(
           sendgridUncorrelated++;
           if (sendgridUncorrelated === 1) {sendgridUncorrelatedSample = item;}
         } else {
+          droppedOtherNoCorrelation++;
           console.warn(
             `[Events][${adapter.name}] Dropping event — missing correlation fields`
           );
@@ -229,6 +254,7 @@ export function createInboundWebhookHandler(
         correlationCallbackUrl: c.analytics_callback_url,
       });
       if (!url) {
+        droppedNoCallbackUrl++;
         console.warn(
           `[Events][${adapter.name}] Dropping event — no analytics_callback_url, no campaign registry entry, and no valid SCALEMARGIN_ANALYTICS_CALLBACK_URL for ${c.campaign_id}`
         );
@@ -238,6 +264,7 @@ export function createInboundWebhookHandler(
       const stripped = adapter.stripPii(item);
       const std = adapter.toStandardEvent(stripped, fullC);
       if (!std) {
+        droppedUnsupported++;
         if (adapter.name === "gupshup") {
           const status =
             typeof stripped.eventType === "string"
@@ -259,15 +286,37 @@ export function createInboundWebhookHandler(
       envelopes.push({ callbackUrl: url, event: std });
     }
 
+    const sampleWireEvent =
+      sendgridUncorrelatedSample &&
+      typeof sendgridUncorrelatedSample === "object" &&
+      sendgridUncorrelatedSample !== null &&
+      "event" in sendgridUncorrelatedSample
+        ? String((sendgridUncorrelatedSample as { event?: unknown }).event ?? "")
+        : "";
+    console.log(
+      `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} forwarded=${envelopes.length} dropped_sg_no_correlation=${sendgridUncorrelated} dropped_no_callback_url=${droppedNoCallbackUrl} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation}`
+    );
     if (sendgridUncorrelated > 0) {
       console.warn(
-        `[Events][sendgrid] Dropped ${sendgridUncorrelated} webhook event(s) — missing correlation. ` +
+        `[Events][sendgrid] Dropped ${sendgridUncorrelated} webhook event(s) — missing correlation. sample_wire_event=${sampleWireEvent || "n/a"} — ` +
           explainSendGridCorrelationDrop(sendgridUncorrelatedSample)
       );
     }
 
     if (cfg.forward.mode === "sync") {
-      await flushEnvelopesSync(envelopes, getSecret());
+      if (isEventDebug() && envelopes.length > 0) {
+        console.log(`[Events] flush start size=${envelopes.length} (inbound sync)`);
+      }
+      const flushResult = await flushEnvelopesSync(envelopes, getSecret());
+      if (isEventDebug() && envelopes.length > 0) {
+        if (flushResult.ok) {
+          console.log(`[Events] flush ok size=${envelopes.length} (inbound sync)`);
+        } else {
+          console.warn(
+            `[Events] flush err size=${envelopes.length} (inbound sync) errors=${flushResult.errors.join("; ")}`
+          );
+        }
+      }
     } else {
       for (const env of envelopes) {
         getBuffer().push(env);
