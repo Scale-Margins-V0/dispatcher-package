@@ -1,15 +1,17 @@
 FROM node:22-slim AS build
 WORKDIR /app
-COPY package.json ./
-RUN npm install
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src/ ./src/
-RUN npx tsc
+RUN pnpm exec tsc
 
 FROM node:22-slim
 WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod
 COPY --from=build /app/dist ./dist
 ENV NODE_ENV=production
 EXPOSE 3100

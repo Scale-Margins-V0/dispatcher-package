@@ -1,0 +1,61 @@
+# Copy to config/dispatch.yaml and adjust for your environment.
+# USER_LOOKUP_BACKEND env overrides user_lookup.backend here.
+
+user_lookup:
+  # mock | mysql | postgres | sqlite | http
+  backend: sqlite
+
+  sqlite:
+    # ":memory:" for tests; or a path such as ./data/dispatch.sqlite
+    file: ./data/dispatch.sqlite
+
+  source:
+    kind: table # or view — use a DB view when you need joins
+    name: users
+    id_column: user_id
+    id_type: string # string | int | bigint | uuid
+
+  fields:
+    # logical key (UserRecord.fields + email) -> SQL column name OR JSON path for HTTP
+    first_name: first_name
+    last_name: last_name
+    email: email
+    phone: phone_no
+    company_name: company_name
+
+  batch:
+    max_ids_per_query: 1000
+    dedupe: true
+
+  # --- HTTP backend only (uncomment and set backend: http) ---
+  # http:
+  #   base_url: https://profiles.yourcompany.internal
+  #   path: /v1/users:batchGet
+  #   method: POST
+  #   auth:
+  #     type: bearer # bearer | header | none
+  #     token_env: PROFILE_API_TOKEN
+  #   request:
+  #     id_field: user_ids
+  #   response:
+  #     root: users
+  #     id_field: id
+  #   timeout_ms: 3000
+  #   retries: 2
+
+placeholders:
+  first_name: { source: field, field: first_name, fallback: "there" }
+  last_name: { source: field, field: last_name, fallback: "" }
+  full_name:
+    { source: computed, expr: "first_name + ' ' + last_name", fallback: "there" }
+  company_name: { source: field, field: company_name, fallback: "" }
+  email: { source: field, field: email, fallback: "" }
+  # Default: works for any personalize() caller (tests, scripts) with UNSUBSCRIBE_URL_BASE set.
+  # For “double proxy” correlation (campaign_id + organization_id on the link), use the longer expr
+  # only if every code path calls personalize(..., { campaign_id, organization_id }) — dispatch does.
+  unsubscribe_url:
+    {
+      source: computed,
+      expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id",
+      fallback: "#",
+    }

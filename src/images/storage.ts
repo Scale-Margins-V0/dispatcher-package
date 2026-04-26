@@ -1,38 +1,12 @@
-/**
- * Image Storage Providers
- *
- * Abstraction for uploading campaign images to customer-controlled storage.
- * Customers host images on their own infrastructure so email opens
- * don't hit ScaleMargin's servers (privacy compliance).
- *
- * Supported providers:
- *   - s3    — AWS S3 (+ optional CloudFront CDN)
- *   - gcs   — Google Cloud Storage
- *   - local — Local filesystem (development only)
- *
- * To add a new provider (Azure Blob, Cloudinary, R2, etc.):
- *   1. Implement ImageStorageProvider
- *   2. Register in the factory switch below
- */
-
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { Storage as GCSStorage } from "@google-cloud/storage";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-// ---------------------------------------------------------------------------
-// Interface
-// ---------------------------------------------------------------------------
-
 export interface ImageStorageProvider {
   name: string;
-  /** Upload image data and return a public URL. */
   upload(key: string, data: Buffer, contentType: string): Promise<string>;
 }
-
-// ---------------------------------------------------------------------------
-// AWS S3 Provider
-// ---------------------------------------------------------------------------
 
 export class S3ImageStorage implements ImageStorageProvider {
   name = "s3";
@@ -75,10 +49,6 @@ export class S3ImageStorage implements ImageStorageProvider {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Google Cloud Storage Provider
-// ---------------------------------------------------------------------------
-
 export class GCSImageStorage implements ImageStorageProvider {
   name = "gcs";
   private client: GCSStorage;
@@ -96,7 +66,6 @@ export class GCSImageStorage implements ImageStorageProvider {
     this.prefix = process.env.IMAGE_GCS_PREFIX || "campaign-images/";
     this.cdnBaseUrl = process.env.IMAGE_CDN_BASE_URL;
 
-    // Support service account JSON via env var or Application Default Credentials
     const credentialsJson = process.env.IMAGE_GCS_CREDENTIALS_JSON;
     if (credentialsJson) {
       const trimmed = credentialsJson.trim();
@@ -112,7 +81,6 @@ export class GCSImageStorage implements ImageStorageProvider {
         credentials,
       });
     } else {
-      // Uses Application Default Credentials (ADC) — works on GCE/GKE/Cloud Run
       this.client = new GCSStorage({
         projectId: process.env.IMAGE_GCS_PROJECT_ID,
       });
@@ -130,17 +98,14 @@ export class GCSImageStorage implements ImageStorageProvider {
       },
     });
 
-    // If CDN is configured, assume it handles public access
     if (this.cdnBaseUrl) {
       return `${this.cdnBaseUrl.replace(/\/$/, "")}/${fullKey}`;
     }
 
-    // Try to make the object publicly readable
     try {
       await file.makePublic();
       return `https://storage.googleapis.com/${this.bucket}/${fullKey}`;
     } catch {
-      // Bucket uses uniform access — fall back to a signed URL (valid 7 days)
       const [signedUrl] = await file.getSignedUrl({
         action: "read",
         expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
@@ -149,10 +114,6 @@ export class GCSImageStorage implements ImageStorageProvider {
     }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Local File Storage (development only)
-// ---------------------------------------------------------------------------
 
 export class LocalImageStorage implements ImageStorageProvider {
   name = "local";
@@ -182,10 +143,6 @@ export class LocalImageStorage implements ImageStorageProvider {
     return `${this.baseUrl}/${key}`;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Provider Factory
-// ---------------------------------------------------------------------------
 
 let _instance: ImageStorageProvider | null = null;
 

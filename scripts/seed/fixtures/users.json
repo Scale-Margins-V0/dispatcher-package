@@ -1,0 +1,22 @@
+[
+  {"user_id": "sm-001", "first_name": "Nikhil", "last_name": "Singh", "email": "nikhil.singh@example.com", "phone_no": "+919876500001", "company_name": "Acme Corp"},
+  {"user_id": "sm-002", "first_name": "Priya", "last_name": "Sharma", "email": "priya.sharma@example.com", "phone_no": "+919876500002", "company_name": "Tata Digital"},
+  {"user_id": "sm-003", "first_name": "Rahul", "last_name": "Patel", "email": "rahul.patel@example.com", "phone_no": null, "company_name": "Infosys"},
+  {"user_id": "sm-004", "first_name": "Anita", "last_name": "Gupta", "email": "anita.gupta@example.com", "phone_no": "+919876500004", "company_name": null},
+  {"user_id": "sm-005", "first_name": "Vikram", "last_name": "Kumar", "email": "vikram.kumar@example.com", "phone_no": "+919876500005", "company_name": "Wipro"},
+  {"user_id": "sm-006", "first_name": "नीरज", "last_name": "Verma", "email": "neeraj.verma@example.com", "phone_no": "+919876500006", "company_name": "Reliance"},
+  {"user_id": "sm-007", "first_name": "Sean", "last_name": "O'Brien", "email": "  sean.obrien@example.com  ", "phone_no": "+919876500007", "company_name": "Acme Corp"},
+  {"user_id": "sm-008", "first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com", "phone_no": null, "company_name": "Analytical Engines"},
+  {"user_id": "550e8400-e29b-41d4-a716-446655440001", "first_name": "Uuid", "last_name": "One", "email": "uuid1@example.com", "phone_no": "+919876500008", "company_name": "Co A"},
+  {"user_id": "550e8400-e29b-41d4-a716-446655440002", "first_name": "Uuid", "last_name": "Two", "email": "uuid2@example.com", "phone_no": null, "company_name": "Co B"},
+  {"user_id": "sm-011", "first_name": "Same", "last_name": "Kumar", "email": "same1@example.com", "phone_no": "+919876500011", "company_name": "X"},
+  {"user_id": "sm-012", "first_name": "Also", "last_name": "Kumar", "email": "same2@example.com", "phone_no": "+919876500012", "company_name": "Y"},
+  {"user_id": "sm-013", "first_name": "Long", "last_name": "Email", "email": "very.long.local.part.before.at.sign.for.testing.purpose@example.com", "phone_no": null, "company_name": "Z"},
+  {"user_id": "sm-014", "first_name": "A", "last_name": "B", "email": "ab@example.com", "phone_no": "+919876500014", "company_name": ""},
+  {"user_id": "sm-015", "first_name": "C", "last_name": "D", "email": "cd@example.com", "phone_no": "+919876500015", "company_name": "Unicode 中文"},
+  {"user_id": "sm-016", "first_name": "E", "last_name": "F", "email": "ef@example.com", "phone_no": "+919876500016", "company_name": null},
+  {"user_id": "sm-017", "first_name": "G", "last_name": "H", "email": "gh@example.com", "phone_no": "+919876500017", "company_name": "Co"},
+  {"user_id": "sm-018", "first_name": "I", "last_name": "J", "email": "ij@example.com", "phone_no": null, "company_name": "Co"},
+  {"user_id": "sm-019", "first_name": "K", "last_name": "L", "email": "kl@example.com", "phone_no": "+919876500019", "company_name": "Co"},
+  {"user_id": "sm-020", "first_name": "M", "last_name": "N", "email": "mn@example.com", "phone_no": "+919876500020", "company_name": "Co"}
+]

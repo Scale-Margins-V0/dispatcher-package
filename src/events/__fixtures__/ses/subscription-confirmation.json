@@ -1,0 +1,12 @@
+{
+  "Type": "SubscriptionConfirmation",
+  "MessageId": "sns-sub-1",
+  "Token": "token-value",
+  "TopicArn": "arn:aws:sns:us-east-1:123456789012:ses-events",
+  "Message": "You have chosen to subscribe to the topic...",
+  "SubscribeURL": "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription&TopicArn=arn:aws:sns:us-east-1:123456789012:ses-events&Token=abc",
+  "Timestamp": "2021-01-01T00:00:00.000Z",
+  "SignatureVersion": "1",
+  "Signature": "PLACEHOLDER_SIGNATURE",
+  "SigningCertURL": "https://sns.us-east-1.amazonaws.com/cert.pem"
+}

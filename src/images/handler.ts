@@ -1,14 +1,4 @@
-/**
- * Image Handler
- *
- * Downloads campaign images from ScaleMargin's dispatch payload,
- * uploads them to the customer's storage (S3, local), and returns
- * a mapping of original URL → customer-hosted URL.
- *
- * This runs ONCE per campaign dispatch (not per recipient).
- */
-
-import { getImageStorage } from "./image-storage.js";
+import { getImageStorage } from "./storage.js";
 
 export interface ImageMapping {
   originalUrl: string;
@@ -17,19 +7,13 @@ export interface ImageMapping {
 
 interface DispatchImage {
   placeholder: string;
-  url: string;        // Decoded URL for downloading
-  raw_url: string;    // URL as it appears in HTML — use for replaceAll
+  url: string;
+  raw_url: string;
   content_type: string;
   alt_text?: string;
   base64_data?: string;
 }
 
-/**
- * Process images from the dispatch payload:
- * 1. Download from ScaleMargin URL (or decode base64_data)
- * 2. Upload to customer's storage
- * 3. Return URL mappings for HTML rewriting
- */
 export async function processImages(
   images: DispatchImage[],
   campaignId: string
@@ -39,7 +23,7 @@ export async function processImages(
   if (!storage) {
     console.warn(
       "[Images] No IMAGE_STORAGE_PROVIDER configured — using original ScaleMargin image URLs. " +
-      "For full privacy compliance, configure S3 image hosting."
+        "For full privacy compliance, configure S3 image hosting."
     );
     return [];
   }
@@ -54,10 +38,8 @@ export async function processImages(
       let contentType = img.content_type || "image/png";
 
       if (img.base64_data) {
-        // Decode base64 data directly (no network fetch needed)
         imageData = Buffer.from(img.base64_data, "base64");
       } else {
-        // Download from ScaleMargin's URL
         const response = await fetch(img.url);
         if (!response.ok) {
           console.warn(
@@ -69,13 +51,12 @@ export async function processImages(
         contentType = response.headers.get("content-type") || contentType;
       }
 
-      // Upload to customer's storage
       const ext = contentType.includes("png") ? "png" : "jpg";
       const key = `${campaignId}/${img.placeholder}.${ext}`;
       const hostedUrl = await storage.upload(key, imageData, contentType);
 
       mappings.push({
-        originalUrl: img.raw_url || img.url,  // Use raw_url for HTML matching
+        originalUrl: img.raw_url || img.url,
         hostedUrl,
       });
 

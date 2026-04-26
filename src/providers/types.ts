@@ -8,6 +8,16 @@
  *   2. Register it in providers/index.ts
  */
 
+/** Correlation + callback context echoed on provider webhooks (SendGrid customArgs) or resolved via campaign registry (SES tags). */
+export interface SendContext {
+  campaign_id: string;
+  user_id: string;
+  dispatch_id?: string;
+  organization_id: string;
+  /** Required for forwarding standardized events to ScaleMargin (SendGrid customArgs; SES uses campaign registry). */
+  analytics_callback_url: string;
+}
+
 export interface EmailMessage {
   to: string;
   from: string;
@@ -15,6 +25,8 @@ export interface EmailMessage {
   html: string;
   text?: string;
   replyTo?: string;
+  /** Set by dispatch before send — outbound taggers attach to provider-specific metadata. */
+  context?: SendContext;
 }
 
 export interface SendResult {
@@ -52,6 +64,7 @@ export interface EmailProvider {
 
 /**
  * Analytics event types that can be reported back to ScaleMargin.
+ * Extended for provider webhooks and WhatsApp-style lifecycle events.
  */
 export type AnalyticsEventType =
   | "dispatched"
@@ -60,12 +73,21 @@ export type AnalyticsEventType =
   | "clicked"
   | "bounced"
   | "unsubscribed"
-  | "complained";
+  | "complained"
+  | "failed"
+  | "sent"
+  | "read"
+  | "deferred"
+  | "expired";
+
+export type AnalyticsChannel = "email" | "whatsapp" | "sms";
 
 export interface AnalyticsEvent {
   user_id: string;
   event: AnalyticsEventType;
   timestamp: string; // ISO 8601
+  channel?: AnalyticsChannel;
+  idempotency_key?: string;
   metadata?: Record<string, unknown>;
 }
 

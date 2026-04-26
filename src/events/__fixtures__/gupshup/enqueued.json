@@ -1,0 +1,8 @@
+{
+  "type": "message-event",
+  "msgId": "gup-msg-1",
+  "timestamp": "2021-01-01T12:00:00.000Z",
+  "eventType": "enqueued",
+  "destination": "+15551234567",
+  "tag": "{\"campaign_id\":\"c_test_1\",\"user_id\":\"u_42\",\"organization_id\":\"org_1\",\"analytics_callback_url\":\"http://127.0.0.1:19999/api/webhooks/campaign-analytics/test\"}"
+}

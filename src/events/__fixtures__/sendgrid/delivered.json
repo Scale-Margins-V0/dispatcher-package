@@ -1,0 +1,15 @@
+{
+  "email": "recipient@example.com",
+  "timestamp": 1609459260,
+  "event": "delivered",
+  "sg_event_id": "sg_evt_delivered_1",
+  "sg_message_id": "sg_msg_base_1",
+  "smtp-id": "<sg_msg_base_1@sendgrid.net>",
+  "response": "250 OK",
+  "custom_args": {
+    "campaign_id": "c_test_1",
+    "user_id": "u_42",
+    "organization_id": "org_1",
+    "analytics_callback_url": "http://127.0.0.1:19999/api/webhooks/campaign-analytics/test"
+  }
+}

@@ -6,8 +6,8 @@
  * configured provider (AWS SES or SendGrid), and reports analytics back.
  *
  * SETUP:
- *   1. Set environment variables (see .env.example)
- *   2. Replace user-lookup.ts with your actual database queries
+ *   1. Set environment variables (see .env.example), or `pnpm run dev:local` for insecure local placeholders
+ *   2. Optional: add config/dispatch.yaml for user lookup + placeholders (see config/dispatch.example.yaml)
  *   3. Deploy to your cloud (AWS Lambda, Cloud Run, Docker, etc.)
  *   4. Configure the webhook URL in ScaleMargin Atlas
  *
@@ -23,23 +23,61 @@
  *
  *   For SendGrid:
  *     SENDGRID_API_KEY
+ *
+ *   Local-only (never production):
+ *     LOCAL_DEV=1 — if SCALEMARGIN_* secrets are unset, uses insecure placeholders so you can run `pnpm run dev:local` without Atlas secrets (e.g. HTTP profile mock testing).
+ *
+ *   `pnpm dev` / `pnpm start`: repo-root `.env` is loaded automatically (unless `VITEST=true`).
  */
 
-import express from "express";
+import express, { type Express } from "express";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
+import { initializeEventPipeline } from "./events/index.js";
+import { loadRepoDotEnv } from "./load-repo-dotenv.js";
+import { logUnlessVitest } from "./logging.js";
+import { registerInboundWebhookRoutes } from "./routes/inbound-webhooks.js";
+import { startServer } from "./server-start.js";
+
+if (process.env.VITEST !== "true") {
+  loadRepoDotEnv(join(dirname(fileURLToPath(import.meta.url)), ".."));
+}
+import { createEventTestCsvCaptureHandler } from "./devtools/event-test-csv-capture.js";
+import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
 import { verifyHmacSignature } from "./middleware/hmac.js";
-import { getProvider } from "./providers/index.js";
+import { createUnsubscribeLinkGetHandler } from "./unsubscribe/link.js";
 import { lookupUsers } from "./user-lookup.js";
-import { personalize } from "./personalize.js";
-import { reportAnalytics, buildBatchPayload } from "./analytics-reporter.js";
-import { processImages, type ImageMapping } from "./image-handler.js";
-import { rewriteImageUrls } from "./image-rewriter.js";
-import type { EmailMessage } from "./providers/types.js";
+import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 
 // ---------------------------------------------------------------------------
 // Startup validation — fail fast on missing config
 // ---------------------------------------------------------------------------
 
-const REQUIRED_ENV = ["SCALEMARGIN_DISPATCH_SECRET", "SCALEMARGIN_ANALYTICS_SECRET"];
+const localDev =
+  process.env.LOCAL_DEV === "1" || process.env.LOCAL_DEV === "true";
+if (
+  localDev &&
+  process.env.NODE_ENV !== "production" &&
+  (!process.env.SCALEMARGIN_DISPATCH_SECRET ||
+    !process.env.SCALEMARGIN_ANALYTICS_SECRET)
+) {
+  process.env.SCALEMARGIN_DISPATCH_SECRET ??=
+    "local-dev-placeholder-dispatch-secret";
+  process.env.SCALEMARGIN_ANALYTICS_SECRET ??=
+    "local-dev-placeholder-analytics-secret";
+  if (process.env.VITEST !== "true") {
+    console.warn(
+      "[LOCAL_DEV] Placeholder SCALEMARGIN_* secrets in use — set real values for Atlas HMAC. Not for production."
+    );
+  }
+}
+
+const REQUIRED_ENV = [
+  "SCALEMARGIN_DISPATCH_SECRET",
+  "SCALEMARGIN_ANALYTICS_SECRET",
+];
 const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
 if (missing.length > 0) {
   console.error(`[FATAL] Missing required env vars: ${missing.join(", ")}`);
@@ -47,12 +85,30 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-const app = express();
+try {
+  ensureDispatchConfigLoaded();
+} catch (error) {
+  console.error("[FATAL] Dispatch configuration invalid:", error);
+  process.exit(1);
+}
+
+if (process.env.VITEST !== "true") {
+  try {
+    initializeEventPipeline();
+  } catch (error) {
+    console.error("[FATAL] Event pipeline configuration invalid:", error);
+    process.exit(1);
+  }
+}
+
+const app: Express = express();
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
 
-if (FROM_EMAIL === "noreply@example.com") {
-  console.warn("[WARN] FROM_EMAIL not set — using default noreply@example.com. Emails will likely bounce.");
+if (FROM_EMAIL === "noreply@example.com" && process.env.VITEST !== "true") {
+  console.warn(
+    "[WARN] FROM_EMAIL not set — using default noreply@example.com. Emails will likely bounce."
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +117,14 @@ if (FROM_EMAIL === "noreply@example.com") {
 
 // Parse body as text first (needed for HMAC verification), then as JSON
 // Limit raised to 10MB to accommodate base64-encoded campaign images
-app.use("/api/scalemargin/dispatch", express.text({ type: "application/json", limit: "10mb" }));
+app.use(
+  "/api/scalemargin/dispatch",
+  express.text({ type: "application/json", limit: "10mb" })
+);
+app.use(
+  "/api/scalemargin/validate-pii",
+  express.text({ type: "application/json", limit: "1mb" })
+);
 
 // Serve locally-stored campaign images (for IMAGE_STORAGE_PROVIDER=local)
 if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
@@ -69,300 +132,123 @@ if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
   app.use("/images", express.static(imgDir));
 }
 
+// GET /api/unsubscribe — public unsubscribe link (no /scalemargin/ in client-facing URLs); PII-free analytics POST
+app.get("/api/unsubscribe", createUnsubscribeLinkGetHandler());
+
 // Health check
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     provider: process.env.EMAIL_PROVIDER || "ses",
     image_storage: process.env.IMAGE_STORAGE_PROVIDER || "none",
+    event_test_csv_capture: Boolean(process.env.EVENT_TEST_CSV_PATH),
   });
 });
+
+// Signed lookup smoke test for Atlas. Returns counts and field names only.
+app.post(
+  "/api/scalemargin/validate-pii",
+  verifyHmacSignature,
+  async (req, res) => {
+    const userIds: string[] = Array.isArray(req.body?.user_ids)
+      ? req.body.user_ids.filter(
+          (value: unknown): value is string => typeof value === "string"
+        )
+      : [];
+
+    if (userIds.length === 0 || userIds.length > 25) {
+      res.status(400).json({
+        error: "Provide 1-25 user_ids",
+        pii_conversion_ok: false,
+      });
+      return;
+    }
+
+    try {
+      const users = await lookupUsers(userIds);
+      const missing = userIds.filter((userId) => !users.has(userId));
+      const fieldNames = new Set<string>();
+      let emailAvailableCount = 0;
+
+      for (const user of users.values()) {
+        if (user.email) {
+          emailAvailableCount += 1;
+        }
+        for (const fieldName of Object.keys(user.fields)) {
+          fieldNames.add(fieldName);
+        }
+      }
+
+      res.json({
+        pii_conversion_ok:
+          missing.length === 0 && emailAvailableCount === userIds.length,
+        requested_count: userIds.length,
+        found_count: users.size,
+        missing_user_ids: missing,
+        email_available_count: emailAvailableCount,
+        resolved_field_names: [...fieldNames],
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "User lookup failed",
+        pii_conversion_ok: false,
+      });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Dev: capture signed analytics POSTs to CSV (dual-secret / pipeline smoke test)
+// Enable with EVENT_TEST_CSV_PATH=./data/event-test-capture.csv
+// Dispatch metadata.analytics_callback_url must point here, e.g.
+// http://127.0.0.1:3100/api/webhooks/campaign-analytics/capture (or your ngrok URL).
+// ---------------------------------------------------------------------------
+
+if (process.env.EVENT_TEST_CSV_PATH) {
+  const csvHandler = createEventTestCsvCaptureHandler(
+    process.env.EVENT_TEST_CSV_PATH
+  );
+  app.post(
+    "/api/webhooks/campaign-analytics/capture",
+    express.text({ type: "application/json", limit: "10mb" }),
+    verifyAnalyticsHmacSignature,
+    csvHandler
+  );
+  if (process.env.VITEST !== "true") {
+    console.log(
+      `[EventTest] CSV capture enabled → ${process.env.EVENT_TEST_CSV_PATH} (POST /api/webhooks/campaign-analytics/capture)`
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/scalemargin/dispatch — Campaign Dispatch Handler
 // ---------------------------------------------------------------------------
 
-app.post(
-  "/api/scalemargin/dispatch",
-  verifyHmacSignature,
-  async (req, res) => {
-    const payload = req.body;
+app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
+  const payload = req.body as DispatchPayload;
 
-    console.log(
-      `[Dispatch] Received campaign ${payload.campaign_id} — ` +
+  logUnlessVitest(
+    `[Dispatch] Received campaign ${payload.campaign_id} — ` +
       `${payload.user_ids?.length || 0} recipients, channel: ${payload.channel}`
-    );
-
-    // Acknowledge immediately
-    res.status(202).json({
-      accepted: true,
-      message: "Campaign dispatch received",
-    });
-
-    // Process asynchronously
-    processDispatch(payload).catch((error) => {
-      console.error(`[Dispatch] Campaign ${payload.campaign_id} failed:`, error);
-    });
-  }
-);
-
-// ---------------------------------------------------------------------------
-// POST /api/scalemargin/ses-notifications — SES Delivery Notifications (SNS)
-// ---------------------------------------------------------------------------
-
-app.post(
-  "/api/scalemargin/ses-notifications",
-  express.json(),
-  async (req, res) => {
-    // Handle SNS subscription confirmation
-    if (req.headers["x-amz-sns-message-type"] === "SubscriptionConfirmation") {
-      const subscribeUrl = req.body.SubscribeURL;
-      // Validate URL belongs to AWS SNS before confirming
-      if (subscribeUrl && typeof subscribeUrl === "string") {
-        try {
-          const parsed = new URL(subscribeUrl);
-          if (parsed.hostname.endsWith(".amazonaws.com")) {
-            console.log("[SES-SNS] Confirming subscription...");
-            await fetch(subscribeUrl);
-            console.log("[SES-SNS] Subscription confirmed");
-          } else {
-            console.warn(`[SES-SNS] Rejected non-AWS SubscribeURL: ${parsed.hostname}`);
-          }
-        } catch {
-          console.warn("[SES-SNS] Invalid SubscribeURL, skipping");
-        }
-      }
-      res.status(200).json({ confirmed: true });
-      return;
-    }
-
-    // Handle notification
-    if (req.headers["x-amz-sns-message-type"] === "Notification") {
-      try {
-        const message = JSON.parse(req.body.Message);
-        console.log(
-          `[SES-SNS] Event: ${message.eventType || message.notificationType}`
-        );
-        // Store/queue for batch reporting — see analytics-reporter.ts
-        // In production, you'd aggregate these and batch-report to ScaleMargin
-      } catch (error) {
-        console.error("[SES-SNS] Failed to parse notification:", error);
-      }
-    }
-
-    res.status(200).json({ received: true });
-  }
-);
-
-// ---------------------------------------------------------------------------
-// POST /api/scalemargin/sendgrid-events — SendGrid Event Webhook
-// ---------------------------------------------------------------------------
-
-app.post(
-  "/api/scalemargin/sendgrid-events",
-  express.json(),
-  async (req, res) => {
-    const events = req.body;
-    if (!Array.isArray(events)) {
-      res.status(400).json({ error: "Expected array of events" });
-      return;
-    }
-
-    console.log(`[SendGrid-Events] Received ${events.length} events`);
-
-    // Map SendGrid event types to ScaleMargin event types
-    // In production, aggregate and batch-report to ScaleMargin
-    for (const event of events) {
-      const eventType = mapSendGridEvent(event.event);
-      if (eventType) {
-        console.log(
-          `[SendGrid-Events] ${event.email}: ${event.event} → ${eventType}`
-        );
-      }
-    }
-
-    res.status(200).json({ received: true, count: events.length });
-  }
-);
-
-// ---------------------------------------------------------------------------
-// Dispatch Processing (async, after 202 response)
-// ---------------------------------------------------------------------------
-
-async function processDispatch(payload: {
-  campaign_id: string;
-  channel: string;
-  user_ids: string[];
-  content: {
-    subject?: string;
-    html_body?: string;
-    text_body?: string;
-  };
-  personalization_fields?: string[];
-  images?: Array<{
-    placeholder: string;
-    url: string;        // Decoded URL for downloading
-    raw_url: string;    // URL as it appears in HTML — use for replaceAll
-    content_type: string;
-    alt_text?: string;
-    base64_data?: string;
-  }>;
-  metadata: {
-    organization_id: string;
-    analytics_callback_url: string;
-  };
-}): Promise<void> {
-  const {
-    campaign_id,
-    user_ids,
-    content,
-    metadata,
-  } = payload;
-
-  console.log(
-    `[Dispatch] Processing campaign ${campaign_id}: ${user_ids.length} users`
   );
 
-  // 1. Look up users from your database
-  const users = await lookupUsers(user_ids);
-
-  // 2. Process images: download from ScaleMargin, upload to our storage
-  let imageMappings: ImageMapping[] = [];
-  if (payload.images && payload.images.length > 0) {
-    imageMappings = await processImages(payload.images, campaign_id);
-  }
-
-  // 3. Get the email provider
-  const provider = getProvider();
-
-  // 4. Build personalized messages
-  // DEV_RECIPIENT_EMAIL: override all recipients to a single test address (local/staging)
-  const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
-  const messages: Array<{ userId: string; message: EmailMessage }> = [];
-
-  for (const userId of user_ids) {
-    const user = users.get(userId);
-    if (!user) {
-      console.warn(`[Dispatch] User ${userId} not found in database, skipping`);
-      continue;
-    }
-
-    const subject = content.subject
-      ? personalize(content.subject, user)
-      : "No Subject";
-    let html = content.html_body
-      ? personalize(content.html_body, user)
-      : "";
-
-    // Rewrite image URLs to customer-hosted versions
-    if (imageMappings.length > 0) {
-      html = rewriteImageUrls(html, imageMappings);
-    }
-
-    const recipientEmail = devRecipient || user.email;
-
-    messages.push({
-      userId,
-      message: {
-        to: recipientEmail,
-        from: FROM_EMAIL,
-        subject,
-        html,
-        ...(content.text_body && {
-          text: personalize(content.text_body, user),
-        }),
-      },
-    });
-
-    // In dev mode, send only ONE email (to the test recipient), not N duplicates
-    if (devRecipient) {
-      console.log(
-        `[Dispatch] DEV mode — routing all ${user_ids.length} recipients to ${devRecipient}`
-      );
-      break;
-    }
-  }
-
-  console.log(
-    `[Dispatch] Sending ${messages.length} emails via ${provider.name}`
-  );
-
-  // 4. Send all emails
-  const sendResults: Array<{
-    userId: string;
-    success: boolean;
-    messageId?: string;
-    error?: string;
-  }> = [];
-
-  for (const { userId, message } of messages) {
-    const result = await provider.send(message);
-    sendResults.push({
-      userId,
-      success: result.success,
-      messageId: result.messageId,
-      error: result.error,
-    });
-  }
-
-  const sent = sendResults.filter((r) => r.success).length;
-  const failed = sendResults.filter((r) => !r.success).length;
-
-  console.log(
-    `[Dispatch] Campaign ${campaign_id}: ${sent} sent, ${failed} failed`
-  );
-
-  // 5. Report analytics back to ScaleMargin
-  const analyticsPayload = buildBatchPayload({
-    campaignId: campaign_id,
-    organizationId: metadata.organization_id,
-    results: sendResults,
+  // Acknowledge immediately
+  res.status(202).json({
+    accepted: true,
+    message: "Campaign dispatch received",
   });
 
-  const analyticsResult = await reportAnalytics(
-    metadata.analytics_callback_url,
-    analyticsPayload
-  );
-
-  if (analyticsResult.success) {
-    console.log(`[Dispatch] Analytics reported successfully for ${campaign_id}`);
-  } else {
-    console.error(
-      `[Dispatch] Failed to report analytics for ${campaign_id}: ${analyticsResult.error}`
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// SendGrid event type mapping
-// ---------------------------------------------------------------------------
-
-function mapSendGridEvent(
-  sgEvent: string
-): string | null {
-  const mapping: Record<string, string> = {
-    delivered: "delivered",
-    open: "opened",
-    click: "clicked",
-    bounce: "bounced",
-    dropped: "bounced",
-    spamreport: "complained",
-    unsubscribe: "unsubscribed",
-  };
-  return mapping[sgEvent] || null;
-}
-
-// ---------------------------------------------------------------------------
-// Start server
-// ---------------------------------------------------------------------------
-
-app.listen(PORT, () => {
-  console.log(`[Server] ScaleMargin Dispatch Handler running on port ${PORT}`);
-  console.log(`[Server] Email provider: ${process.env.EMAIL_PROVIDER || "ses"}`);
-  console.log(`[Server] Dispatch endpoint: POST /api/scalemargin/dispatch`);
-  console.log(`[Server] SES notifications: POST /api/scalemargin/ses-notifications`);
-  console.log(`[Server] SendGrid events: POST /api/scalemargin/sendgrid-events`);
-  console.log(`[Server] Health check: GET /health`);
+  // Process asynchronously
+  processDispatch(payload, FROM_EMAIL).catch((error) => {
+    console.error(`[Dispatch] Campaign ${payload.campaign_id} failed:`, error);
+  });
 });
+registerInboundWebhookRoutes(app);
+
+if (process.env.VITEST !== "true") {
+  startServer(app, PORT);
+}
 
 export default app;
+export { app };

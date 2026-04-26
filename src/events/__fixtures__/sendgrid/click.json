@@ -1,0 +1,16 @@
+{
+  "email": "recipient@example.com",
+  "timestamp": 1609459400,
+  "event": "click",
+  "sg_event_id": "sg_evt_click_1",
+  "sg_message_id": "sg_msg_base_1",
+  "url": "https://example.com/track?x=1",
+  "ip": "10.0.0.5",
+  "useragent": "Mozilla/5.0",
+  "custom_args": {
+    "campaign_id": "c_test_1",
+    "user_id": "u_42",
+    "organization_id": "org_1",
+    "analytics_callback_url": "http://127.0.0.1:19999/api/webhooks/campaign-analytics/test"
+  }
+}
