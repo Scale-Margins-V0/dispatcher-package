@@ -34,6 +34,22 @@ export type DispatchPayload = {
   };
 };
 
+function buildUnsubscribeUrl(params: {
+  userId: string;
+  campaignId: string;
+  organizationId: string;
+  analyticsCallbackUrl: string;
+}): string {
+  const base = process.env.UNSUBSCRIBE_URL_BASE?.trim();
+  if (!base) return "#";
+  return (
+    `${base}?uid=${encodeURIComponent(params.userId)}` +
+    `&campaign_id=${encodeURIComponent(params.campaignId)}` +
+    `&organization_id=${encodeURIComponent(params.organizationId)}` +
+    `&callback_url=${encodeURIComponent(params.analyticsCallbackUrl)}`
+  );
+}
+
 export async function processDispatch(
   payload: DispatchPayload,
   fromEmail: string
@@ -59,7 +75,13 @@ export async function processDispatch(
   const personalizeCtx = {
     campaign_id,
     organization_id: metadata.organization_id,
+    analytics_callback_url: resolvedAnalyticsUrl,
   };
+
+  // Pre-build the unsubscribe URL so it's always correct regardless of dispatch.yaml.
+  // Injected as a field so YAML just declares source: field — no expression needed.
+  const buildUnsub = (userId: string) =>
+    buildUnsubscribeUrl({ userId, campaignId: campaign_id, organizationId: metadata.organization_id, analyticsCallbackUrl: resolvedAnalyticsUrl });
 
   const users = await lookupUsers(user_ids);
 
@@ -79,11 +101,16 @@ export async function processDispatch(
       continue;
     }
 
+    const userWithUnsub = {
+      ...user,
+      fields: { ...user.fields, unsubscribe_url: buildUnsub(userId) },
+    };
+
     const subject = content.subject
-      ? personalize(content.subject, user, personalizeCtx)
+      ? personalize(content.subject, userWithUnsub, personalizeCtx)
       : "No Subject";
     let html = content.html_body
-      ? personalize(content.html_body, user, personalizeCtx)
+      ? personalize(content.html_body, userWithUnsub, personalizeCtx)
       : "";
 
     if (imageMappings.length > 0) {
@@ -100,7 +127,7 @@ export async function processDispatch(
         subject,
         html,
         ...(content.text_body && {
-          text: personalize(content.text_body, user, personalizeCtx),
+          text: personalize(content.text_body, userWithUnsub, personalizeCtx),
         }),
         context: {
           campaign_id,

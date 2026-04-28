@@ -13,6 +13,7 @@ import type { UserRecord } from "./user-lookup/types.js";
 export type PersonalizeDispatchContext = {
   campaign_id: string;
   organization_id: string;
+  analytics_callback_url?: string;
 };
 
 /** Block obvious code-injection tokens in YAML `computed` expressions (not a full sandbox). */
@@ -86,6 +87,13 @@ export function evaluateComputedExpression(
         throw new Error("organization_id in expression requires dispatch context (internal error)");
       }
       out += dispatchCtx.organization_id;
+      continue;
+    }
+    if (p === "analytics_callback_url") {
+      if (!dispatchCtx) {
+        throw new Error("analytics_callback_url in expression requires dispatch context (internal error)");
+      }
+      out += encodeURIComponent(dispatchCtx.analytics_callback_url ?? "");
       continue;
     }
     if (p === "email") {

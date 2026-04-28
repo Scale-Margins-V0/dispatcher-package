@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { RequestHandler } from "express";
-import { buildPayloadForGroup, postAnalyticsWithRetry } from "../events/forwarder.js";
+import { buildPayloadForGroup, postAnalyticsWithRetry, validateCallbackUrl } from "../events/forwarder.js";
 import { logPreferenceSideEffectSimulation } from "../events/preference-side-effect-log.js";
 import { scrubPii } from "../events/scrubber.js";
 import type { StandardizedEvent } from "../events/common/types.js";
@@ -27,8 +27,15 @@ export function createUnsubscribeLinkGetHandler(): RequestHandler {
 
     const campaign_id = readParam(req, "campaign_id");
     const organization_id = readParam(req, "organization_id");
+    const callbackUrlParam = readParam(req, "callback_url");
 
-    const analyticsUrl = process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL?.trim();
+    // Priority: embedded callback_url param (set at dispatch time) → env var fallback
+    const envAnalyticsUrl = process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL?.trim();
+    const analyticsUrl =
+      (callbackUrlParam && validateCallbackUrl(callbackUrlParam) ? callbackUrlParam : null) ??
+      envAnalyticsUrl ??
+      null;
+
     const secret = process.env.SCALEMARGIN_ANALYTICS_SECRET || "";
     const redirect = process.env.UNSUBSCRIBE_LINK_REDIRECT_URL?.trim();
 
@@ -38,10 +45,9 @@ export function createUnsubscribeLinkGetHandler(): RequestHandler {
       Boolean(campaign_id) &&
       Boolean(organization_id);
 
-    if (!canProxy && analyticsUrl) {
+    if (!canProxy && !analyticsUrl) {
       logUnlessVitest(
-        "[UnsubscribeLink] UNSUBSCRIBE_LINK_ANALYTICS_URL is set but campaign_id or organization_id query param is missing — " +
-          "extend unsubscribe_url in dispatch.yaml to append them (see config/dispatch.example.yaml)."
+        "[UnsubscribeLink] No analytics URL — embed callback_url in the unsubscribe link or set UNSUBSCRIBE_LINK_ANALYTICS_URL."
       );
     }
 

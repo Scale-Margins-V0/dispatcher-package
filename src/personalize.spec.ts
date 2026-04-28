@@ -74,51 +74,43 @@ describe("personalize", () => {
     );
   });
 
-  it("renders full_name and unsubscribe_url", () => {
+  it("renders full_name and unsubscribe_url with all correlation params", () => {
     vi.stubEnv("UNSUBSCRIBE_URL_BASE", "https://ex.com/u");
     const u = baseUser();
-    expect(personalize("{{full_name}} {{unsubscribe_url}}", u)).toBe(
-      "Ada Lovelace https://ex.com/u?uid=u-1"
-    );
+    const ctx = { campaign_id: "c1", organization_id: "o1", analytics_callback_url: "http://localhost:5600/api/webhooks/campaign-analytics" };
+    const result = personalize("{{full_name}} {{unsubscribe_url}}", u, ctx);
+    expect(result).toContain("Ada Lovelace");
+    expect(result).toContain("uid=u-1");
+    expect(result).toContain("campaign_id=c1");
+    expect(result).toContain("organization_id=o1");
+    expect(result).toContain("callback_url=");
     vi.unstubAllEnvs();
   });
 
   it("same template string yields different output per user (multi-recipient style)", () => {
     vi.stubEnv("UNSUBSCRIBE_URL_BASE", "https://brand.example/unsub");
-    const tpl =
-      "{{first_name}} | {{company_name}} | {{unsubscribe_url}}";
+    const tpl = "{{first_name}} | {{company_name}} | {{unsubscribe_url}}";
+    const ctx = { campaign_id: "c1", organization_id: "o1", analytics_callback_url: "http://cb" };
     const alice = baseUser();
     const bob: UserRecord = {
       user_id: "acct-b",
       email: "bob@example.com",
-      fields: {
-        first_name: "Bob",
-        last_name: "Builder",
-        company_name: "Fix-It Co",
-        email: "bob@example.com",
-      },
+      fields: { first_name: "Bob", last_name: "Builder", company_name: "Fix-It Co", email: "bob@example.com" },
     };
-    expect(personalize(tpl, alice)).toBe(
-      "Ada | Analytical | https://brand.example/unsub?uid=u-1"
-    );
-    expect(personalize(tpl, bob)).toBe(
-      "Bob | Fix-It Co | https://brand.example/unsub?uid=acct-b"
-    );
+    expect(personalize(tpl, alice, ctx)).toContain("Ada | Analytical");
+    expect(personalize(tpl, alice, ctx)).toContain("uid=u-1");
+    expect(personalize(tpl, bob, ctx)).toContain("Bob | Fix-It Co");
+    expect(personalize(tpl, bob, ctx)).toContain("uid=acct-b");
     vi.unstubAllEnvs();
   });
 
   it("multiple template shapes for one user (subject vs html vs computed)", () => {
     vi.stubEnv("UNSUBSCRIBE_URL_BASE", "https://go.example/u");
     const u = baseUser();
-    expect(personalize("Dear {{last_name}} family", u)).toBe(
-      "Dear Lovelace family"
-    );
-    expect(personalize("<p>{{email}}</p><a href=\"{{unsubscribe_url}}\">opt out</a>", u)).toContain(
-      "a@b.com"
-    );
-    expect(
-      personalize("<p>{{email}}</p><a href=\"{{unsubscribe_url}}\">opt out</a>", u)
-    ).toContain("https://go.example/u?uid=u-1");
+    const ctx = { campaign_id: "c1", organization_id: "o1", analytics_callback_url: "http://cb" };
+    expect(personalize("Dear {{last_name}} family", u)).toBe("Dear Lovelace family");
+    expect(personalize("<p>{{email}}</p><a href=\"{{unsubscribe_url}}\">opt out</a>", u, ctx)).toContain("a@b.com");
+    expect(personalize("<p>{{email}}</p><a href=\"{{unsubscribe_url}}\">opt out</a>", u, ctx)).toContain("uid=u-1");
     vi.unstubAllEnvs();
   });
 
