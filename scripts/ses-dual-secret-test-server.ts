@@ -198,6 +198,12 @@ mkdirSync(dirname(csvAbs), { recursive: true });
 const fromEmail = requireEnv("FROM_EMAIL");
 const userIds = recipients.map((_, i) => `ses_event_test_u${i + 1}`);
 const campaignId = `ses_evt_local_${Date.now()}`;
+const includeImages =
+  process.env.EVENT_TEST_INCLUDE_IMAGES === "1" ||
+  process.env.EVENT_TEST_INCLUDE_IMAGES === "true";
+const imageOriginalUrl = "https://assets.scalemargin.test/campaign/logo.png";
+const tinyPngBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Vf1YAAAAASUVORK5CYII=";
 const dispatchBody = {
   campaign_id: campaignId,
   channel: "email",
@@ -212,6 +218,7 @@ const dispatchBody = {
   <li>On-file email: {{email}}</li>
   <li>Phone: {{phone}}</li>
 </ul>
+${includeImages ? `<p><img src="${imageOriginalUrl}" alt="ses-event-test-image"/></p>` : ""}
 <p><a href="{{unsubscribe_url}}">Unsubscribe</a></p>`,
     text_body:
       "Hi {{first_name}} — SES pipeline test for {{company_name}}. Email: {{email}}. Unsubscribe: {{unsubscribe_url}}",
@@ -220,6 +227,19 @@ const dispatchBody = {
     organization_id: "org_ses_event_test",
     analytics_callback_url: captureUrl,
   },
+  ...(includeImages
+    ? {
+        images: [
+          {
+            placeholder: "ses_event_test_logo",
+            url: imageOriginalUrl,
+            raw_url: imageOriginalUrl,
+            content_type: "image/png",
+            base64_data: tinyPngBase64,
+          },
+        ],
+      }
+    : {}),
 };
 const dispatchRaw = JSON.stringify(dispatchBody);
 const dispatchSig = "sha256=" + createHmac("sha256", dispatchSecret).update(dispatchRaw).digest("hex");
@@ -272,6 +292,7 @@ curl -sS -X POST ${publicBase}/api/scalemargin/dispatch \\
 Full AWS walkthrough: docs/ses.readme.md
 Set EVENT_TEST_PUBLIC_BASE_URL to your tunnel origin.
 CSV path override: SES_EVENT_TEST_CSV_PATH (default ./data/ses-event-test-capture.csv)
+Image path test: EVENT_TEST_INCLUDE_IMAGES=${includeImages ? "1 (enabled)" : "0 (disabled)"}.
 `);
 
 const childEnv = {
@@ -285,6 +306,11 @@ const childEnv = {
   EMAIL_PROVIDER: "ses",
   EVENT_FORWARD_MODE: "sync",
   EVENT_DELIVERY_MODE: "best_effort",
+  IMAGE_STORAGE_PROVIDER:
+    process.env.IMAGE_STORAGE_PROVIDER || (includeImages ? "local" : ""),
+  IMAGE_LOCAL_DIR: process.env.IMAGE_LOCAL_DIR || "./public/images",
+  IMAGE_LOCAL_BASE_URL:
+    process.env.IMAGE_LOCAL_BASE_URL || `${publicBase}/images`,
   UNSUBSCRIBE_URL_BASE:
     process.env.UNSUBSCRIBE_URL_BASE || `${publicBase}/api/unsubscribe`,
   UNSUBSCRIBE_LINK_ANALYTICS_URL: process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL || captureUrl,

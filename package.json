@@ -11,6 +11,8 @@
     "dev:http-profile-mock": "tsx scripts/http-profile-mock-server.ts",
     "dev:event-test": "tsx scripts/event-dual-secret-test-server.ts",
     "dev:ses-event-test": "tsx scripts/ses-dual-secret-test-server.ts",
+    "dev:event-test:images": "EVENT_TEST_INCLUDE_IMAGES=1 tsx scripts/event-dual-secret-test-server.ts",
+    "dev:ses-event-test:images": "EVENT_TEST_INCLUDE_IMAGES=1 tsx scripts/ses-dual-secret-test-server.ts",
     "dev:gupshup-event-test": "tsx scripts/gupshup-dual-secret-test-server.ts",
     "build": "tsc",
     "start": "node dist/index.js",
