@@ -7,9 +7,11 @@
  *
  * Prereqs in .env:
  *   SCALEMARGIN_DISPATCH_SECRET, SCALEMARGIN_ANALYTICS_SECRET (same as other event tests — required by the server)
- *   GUPSHUP_WEBHOOK_SECRET — must match the secret you configure in Gupshup for webhook HMAC (header x-gupshup-signature)
- *   GUPSHUP_API_KEY — app API key from Gupshup (often shown as “password” / API key next to your app login)
- *   GUPSHUP_EVENT_TEST_SRC_NAME — Gupshup app name (src.name)
+ *   GUPSHUP_WEBHOOK_SECRET — optional; when set, enables inbound webhook HMAC at /api/scalemargin/gupshup-events
+ *   GUPSHUP_API_KEY — app API key from Gupshup (io template API; optional if USER_ID+PASSWORD set)
+ *   GUPSHUP_USER_ID + GUPSHUP_PASSWORD — enterprise SendMessage API at https://smsgupshup.com (HSM)
+ *   GUPSHUP_MESSAGE_TYPE — default HSM (enterprise)
+ *   GUPSHUP_EVENT_TEST_SRC_NAME — Gupshup app name (src.name) — required for API key mode
  *   GUPSHUP_EVENT_TEST_TEMPLATE — JSON for the template object, e.g. {"id":"<uuid>","params":["a","b"]}
  *   GUPSHUP_EVENT_TEST_RECIPIENTS — comma-separated destination numbers (digits only, country code included, e.g. 919876543210)
  *
@@ -34,6 +36,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRepoDotEnv } from "../src/load-repo-dotenv.js";
+import {
+  buildWhatsAppMediaMessageForUser,
+  buildWhatsAppMessageForUser,
+  parseWhatsAppMediaSpec,
+  parseWhatsAppTemplateSpec,
+  resolveGupshupConfig,
+  sendGupshupWhatsApp,
+} from "../src/providers/gupshup-whatsapp.js";
+import type { UserRecord } from "../src/user-lookup/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..");
@@ -82,10 +93,58 @@ if (recipients.length < 1) {
 
 requireEnv("SCALEMARGIN_DISPATCH_SECRET");
 requireEnv("SCALEMARGIN_ANALYTICS_SECRET");
-requireEnv("GUPSHUP_WEBHOOK_SECRET");
-requireEnv("GUPSHUP_API_KEY");
-const srcName = requireEnv("GUPSHUP_EVENT_TEST_SRC_NAME");
-const templateJson = requireEnv("GUPSHUP_EVENT_TEST_TEMPLATE");
+
+const gupshupWebhookSecret = process.env.GUPSHUP_WEBHOOK_SECRET?.trim();
+if (!gupshupWebhookSecret) {
+  console.warn(
+    "[gupshup-event-test] GUPSHUP_WEBHOOK_SECRET not set — outbound send still runs; " +
+      "inbound Gupshup webhooks (/api/scalemargin/gupshup-events) stay disabled until you set it."
+  );
+}
+
+const gupshupConfig = resolveGupshupConfig();
+if (!gupshupConfig) {
+  console.error(
+    "Set GUPSHUP_API_KEY or GUPSHUP_USER_ID + GUPSHUP_PASSWORD in .env for outbound WhatsApp send."
+  );
+  process.exit(1);
+}
+
+const mediaSpec = parseWhatsAppMediaSpec(undefined);
+const templateSpec = mediaSpec
+  ? null
+  : parseWhatsAppTemplateSpec(
+      undefined,
+      process.env.GUPSHUP_EVENT_TEST_TEMPLATE?.trim()
+    );
+
+if (!mediaSpec && !templateSpec) {
+  console.error(
+    "Set GUPSHUP_EVENT_TEST_CAPTION + GUPSHUP_EVENT_TEST_MEDIA_URL for media send, " +
+      "or GUPSHUP_EVENT_TEST_TEMPLATE for HSM template send."
+  );
+  process.exit(1);
+}
+
+if (mediaSpec) {
+  console.log(
+    "[gupshup-event-test] Resolved env media spec:\n" +
+      JSON.stringify(mediaSpec, null, 2)
+  );
+} else if (templateSpec) {
+  console.log(
+    "[gupshup-event-test] Resolved env template spec:\n" +
+      JSON.stringify(templateSpec, null, 2)
+  );
+}
+
+const srcName =
+  process.env.GUPSHUP_EVENT_TEST_SRC_NAME?.trim() ||
+  process.env.GUPSHUP_SRC_NAME?.trim() ||
+  "";
+if (gupshupConfig.mode === "apikey" && !srcName) {
+  requireEnv("GUPSHUP_EVENT_TEST_SRC_NAME");
+}
 
 const portNum = parseInt(process.env.PORT || "3100", 10);
 const port = String(portNum);
@@ -97,18 +156,22 @@ const captureUrl = `${publicBase}/api/webhooks/campaign-analytics/capture`;
 
 const sourceRaw =
   process.env.GUPSHUP_EVENT_TEST_SOURCE?.trim() ||
-  process.env.GUPSHUP_EVENT_TEST_DEFAULT_SOURCE?.trim();
-if (!sourceRaw) {
+  process.env.GUPSHUP_EVENT_TEST_DEFAULT_SOURCE?.trim() ||
+  process.env.GUPSHUP_SOURCE?.trim();
+if (gupshupConfig.mode === "apikey" && !sourceRaw) {
   console.error(
     "Set GUPSHUP_EVENT_TEST_SOURCE to your WABA sender number (digits only, e.g. 918971741003), " +
-      "or set GUPSHUP_EVENT_TEST_DEFAULT_SOURCE in .env."
+      "or set GUPSHUP_EVENT_TEST_DEFAULT_SOURCE / GUPSHUP_SOURCE in .env."
   );
   process.exit(1);
 }
-const source = sourceRaw.replace(/^\+/, "");
+const source = sourceRaw?.replace(/^\+/, "") ?? "";
 
-const apiUrl =
-  process.env.GUPSHUP_EVENT_TEST_API_URL?.trim() || "https://api.gupshup.io/wa/api/v1/template/msg";
+const apiUrl = mediaSpec
+  ? gupshupConfig.mediaApiUrl
+  : gupshupConfig.mode === "apikey"
+    ? gupshupConfig.templateApiUrl
+    : gupshupConfig.enterpriseApiUrl;
 
 const workDir = join(tmpdir(), `gupshup-dual-secret-${Date.now()}`);
 mkdirSync(workDir, { recursive: true });
@@ -187,7 +250,7 @@ writeFileSync(
     ses:
       enabled: false
     gupshup:
-      enabled: true
+      enabled: ${gupshupWebhookSecret ? "true" : "false"}
       secret_env: GUPSHUP_WEBHOOK_SECRET
 `
 );
@@ -211,13 +274,15 @@ Work dir: ${workDir}
 Campaign id: ${campaignId}
 CSV file: ${csvAbs}
 Capture URL (inside outbound tag): ${captureUrl}
-Gupshup template API: ${apiUrl}
-Source (WABA): ${source}
+Gupshup auth: ${gupshupConfig.mode === "apikey" ? "API key (io template API)" : "userid/password (enterprise)"}
+Send mode: ${mediaSpec ? "SENDMEDIAMESSAGE (caption + image)" : "template (HSM / io)"}
+Gupshup send API: ${apiUrl}
+Source (WABA): ${source || "(enterprise — not required)"}
 Auto template send: ${autoSend ? "yes (after /health)" : "no (GUPSHUP_EVENT_TEST_SKIP_SEND=1 or EVENT_TEST_AUTO_DISPATCH=0)"}
 
-1) Gupshup app callback URL (HTTPS):
-     ${publicBase}/api/scalemargin/gupshup-events
-   Use the same HMAC secret as GUPSHUP_WEBHOOK_SECRET (x-gupshup-signature = hex HMAC-SHA256 of raw JSON body).
+1) Gupshup inbound webhooks: ${gupshupWebhookSecret ? "enabled" : "disabled (set GUPSHUP_WEBHOOK_SECRET to enable)"}
+   Callback URL (HTTPS): ${publicBase}/api/scalemargin/gupshup-events
+   ${gupshupWebhookSecret ? "HMAC secret: GUPSHUP_WEBHOOK_SECRET (x-gupshup-signature = hex HMAC-SHA256 of raw JSON body)." : "Skipped until GUPSHUP_WEBHOOK_SECRET is configured in Gupshup + .env."}
 
 2) Recipients (${recipients.length}): ${recipients.join(", ")}
 
@@ -225,39 +290,62 @@ Auto template send: ${autoSend ? "yes (after /health)" : "no (GUPSHUP_EVENT_TEST
 
 4) Watch ${csvAbs} after Gupshup POSTs message-event webhooks (enqueued → dispatched, delivered, read, …).
 
-5) Credentials: use the API key from the Gupshup app that owns this WABA (HSM vs two-way may be different apps — pick the key for the app tied to ${source}).
+5) Credentials: API key + src.name + WABA for io API, or GUPSHUP_USER_ID + GUPSHUP_PASSWORD for enterprise HSM at smsgupshup.com.
 
 Set EVENT_TEST_PUBLIC_BASE_URL to your tunnel so analytics_callback_url in each tag is publicly reachable.
 CSV path override: GUPSHUP_EVENT_TEST_CSV_PATH (default ./data/gupshup-event-test-capture.csv)
 `);
 
-async function postTemplateToGupshup(destination: string, userId: string): Promise<{ ok: boolean; status: number; text: string }> {
-  const tagObj = {
-    campaign_id: campaignId,
-    user_id: userId,
-    organization_id: organizationId,
-    analytics_callback_url: captureUrl,
-  };
-  const body = new URLSearchParams();
-  body.set("channel", "whatsapp");
-  body.set("source", source);
-  body.set("destination", destination.replace(/^\+/, ""));
-  body.set("src.name", srcName);
-  body.set("template", templateJson);
-  if (process.env.GUPSHUP_EVENT_TEST_OMIT_TAG !== "1" && process.env.GUPSHUP_EVENT_TEST_OMIT_TAG !== "true") {
-    body.set("tag", JSON.stringify(tagObj));
+async function postTemplateToGupshup(
+  destination: string,
+  userId: string,
+  user: UserRecord
+): Promise<{ ok: boolean; status: number; text: string }> {
+  const message = mediaSpec
+    ? buildWhatsAppMediaMessageForUser(
+        mediaSpec,
+        user,
+        destination,
+        { campaign_id: campaignId, organization_id: organizationId },
+        {
+          campaign_id: campaignId,
+          user_id: userId,
+          organization_id: organizationId,
+          analytics_callback_url: captureUrl,
+        }
+      )
+    : buildWhatsAppMessageForUser(
+        templateSpec!,
+        user,
+        destination,
+        { campaign_id: campaignId, organization_id: organizationId },
+        {
+          campaign_id: campaignId,
+          user_id: userId,
+          organization_id: organizationId,
+          analytics_callback_url: captureUrl,
+        }
+      );
+
+  const omitTag =
+    process.env.GUPSHUP_EVENT_TEST_OMIT_TAG === "1" ||
+    process.env.GUPSHUP_EVENT_TEST_OMIT_TAG === "true";
+  if (omitTag) {
+    delete message.context;
   }
 
-  const res = await fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      apikey: process.env.GUPSHUP_API_KEY!,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: body.toString(),
-  });
-  const text = await res.text();
-  return { ok: res.ok, status: res.status, text };
+  const cfg = {
+    ...gupshupConfig,
+    ...(gupshupConfig.mode === "apikey"
+      ? { srcName, source }
+      : {}),
+  };
+  const result = await sendGupshupWhatsApp(message, cfg);
+  return {
+    ok: result.success,
+    status: result.success ? 200 : 502,
+    text: result.error ?? result.messageId ?? "",
+  };
 }
 
 const childEnv = {
@@ -290,7 +378,16 @@ if (autoSend) {
       for (let i = 0; i < recipients.length; i++) {
         const dest = recipients[i]!;
         const userId = `gup_evt_u${i + 1}`;
-        const r = await postTemplateToGupshup(dest, userId);
+        const user: UserRecord = {
+          user_id: userId,
+          email: `${userId}@gupshup-event-test.invalid`,
+          fields: {
+            first_name: "WA",
+            last_name: `Test${i + 1}`,
+            phone: dest,
+          },
+        };
+        const r = await postTemplateToGupshup(dest, userId, user);
         if (r.ok) {
           okCount++;
           console.log(`\n[gupshup-event-test] Template API ${r.status} → ${dest} (user ${userId})\n${r.text.slice(0, 500)}`);

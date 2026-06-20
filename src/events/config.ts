@@ -211,7 +211,11 @@ export function assertEventsConfigEnv(cfg: EventsConfig): void {
   if (cfg.providers.gupshup.enabled) {
     const s = gupshupSecretEnvName(cfg);
     if (!process.env[s]?.trim()) {
-      throw new Error(`[events] Gupshup enabled but ${s} is not set`);
+      console.warn(
+        `[events] Gupshup inbound webhook disabled — ${s} is not set. ` +
+          `POST /api/scalemargin/gupshup-events returns 404 until configured.`
+      );
+      cfg.providers.gupshup.enabled = false;
     }
   }
 }
