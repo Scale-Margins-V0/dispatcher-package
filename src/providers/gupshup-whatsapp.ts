@@ -96,7 +96,10 @@ function mediaDefaultsFromEnv() {
 export function normalizePlainCaption(raw: string): string {
   let caption = raw.trim();
   if (!caption) return caption;
-  if (/%[0-9A-Fa-f]{2}/.test(caption) || caption.includes("+")) {
+  // Only decode genuinely percent-encoded values. A literal "+" (e.g. "2+2")
+  // is real text and must be preserved — `+`→space is applied only inside the
+  // percent-encoded branch, where "+" means an encoded space.
+  if (/%[0-9A-Fa-f]{2}/.test(caption)) {
     try {
       caption = decodeURIComponent(caption.replace(/\+/g, " "));
     } catch {
@@ -369,10 +372,13 @@ function parseEnterpriseResponse(text: string, status: number): SendResult {
     status < 300 &&
     trimmed.toLowerCase().startsWith("success")
   ) {
+    // Success format: "success | <phone> | <messageId>". The id is parts[2];
+    // parts[1] is the phone and `trimmed` is the whole line — never use those
+    // as a messageId. Leave it undefined when the id isn't present.
     const parts = trimmed.split("|").map((s) => s.trim());
     return {
       success: true,
-      messageId: parts[2] || parts[1] || trimmed,
+      messageId: parts[2] || undefined,
     };
   }
   return {
@@ -389,10 +395,12 @@ function parseIoResponse(text: string, status: number): SendResult {
     /* non-JSON body */
   }
 
+  // Confirm success only on an explicit status field. A 2xx with a non-JSON
+  // body (e.g. an HTML error/proxy page) must NOT be treated as dispatched.
   const okStatus =
-    data?.status === "submitted" ||
-    data?.status === "success" ||
-    (status >= 200 && status < 300 && !data?.message);
+    status >= 200 &&
+    status < 300 &&
+    (data?.status === "submitted" || data?.status === "success");
 
   if (okStatus) {
     const messageId =
@@ -475,7 +483,9 @@ function buildMediaGatewayRequest(
     .map(([key, value]) => `${key}=${encodeGupshupGatewayParam(value)}`)
     .join("&");
   return {
-    url: `${config.mediaApiUrl}?${wireQuery}`,
+    // Bare endpoint — params (incl. userid/password) go in the POST body so
+    // credentials never land in proxy/access/APM URL logs.
+    url: config.mediaApiUrl,
     params,
     wireQuery,
   };
@@ -503,7 +513,9 @@ function buildTextGatewayRequest(
     .map(([key, value]) => `${key}=${encodeGupshupGatewayParam(value)}`)
     .join("&");
   return {
-    url: `${config.textApiUrl}?${wireQuery}`,
+    // Bare endpoint — params (incl. userid/password) go in the POST body so
+    // credentials never land in proxy/access/APM URL logs.
+    url: config.textApiUrl,
     params,
     wireQuery,
   };
@@ -546,7 +558,8 @@ function logGupshupTestPayload(preview: GupshupSendRequestPreview): void {
           url: preview.url,
           headers: preview.headers,
           params: redactGupshupPreviewParams(preview.params),
-          wireBody: preview.wireBody,
+          // wireBody omitted from logs — it contains password=<plaintext>.
+          // wireBody: preview.wireBody,
           message: preview.message,
         },
         null,
@@ -574,6 +587,7 @@ export function previewGupshupSendRequest(
         mode: "media_gateway",
         httpMethod: "POST",
         url,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
         params,
         wireBody: wireQuery,
         message,
@@ -588,6 +602,7 @@ export function previewGupshupSendRequest(
       mode: "text_gateway",
       httpMethod: "POST",
       url,
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       params,
       wireBody: wireQuery,
       message,
@@ -683,8 +698,12 @@ async function sendViaMediaGateway(
     };
   }
 
-  const { url } = buildMediaGatewayRequest(config, message, tagJson);
-  const res = await fetch(url, { method: "POST" });
+  const { url, wireQuery } = buildMediaGatewayRequest(config, message, tagJson);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: wireQuery,
+  });
   const text = await res.text();
   return parseMediaGatewayResponse(text, res.status);
 }
@@ -707,8 +726,12 @@ async function sendViaTextGateway(
     };
   }
 
-  const { url } = buildTextGatewayRequest(config, message, tagJson);
-  const res = await fetch(url, { method: "POST" });
+  const { url, wireQuery } = buildTextGatewayRequest(config, message, tagJson);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: wireQuery,
+  });
   const text = await res.text();
   return parseMediaGatewayResponse(text, res.status);
 }
@@ -809,47 +832,59 @@ export async function sendGupshupWhatsApp(
     }
   }
 
-  const tagJson = message.context
-    ? applyGupshupTag({}, message.context).tag
-    : undefined;
+  // Mirror SESProvider.send: never throw. A fetch network error (or a missing
+  // config that surfaces as a TypeError) is converted to a failed SendResult so
+  // the dispatch loop emits a `failed` event for this user and continues with
+  // the rest of the campaign.
+  try {
+    const tagJson = message.context
+      ? applyGupshupTag({}, message.context).tag
+      : undefined;
 
-  if (message.caption?.trim()) {
-    return message.mediaUrl?.trim()
-      ? sendViaMediaGateway(config, message, tagJson)
-      : sendViaTextGateway(config, message, tagJson);
-  }
+    if (message.caption?.trim()) {
+      return message.mediaUrl?.trim()
+        ? await sendViaMediaGateway(config, message, tagJson)
+        : await sendViaTextGateway(config, message, tagJson);
+    }
 
-  if (!message.template) {
+    if (!message.template) {
+      return {
+        success: false,
+        error: "WhatsApp send requires template or caption",
+      };
+    }
+
+    const templateJson =
+      message.template.params !== undefined ||
+      message.template.attributes !== undefined
+        ? null
+        : buildIoTemplateJson(message.template, []);
+
+    const personalizedValues =
+      message.template.params ??
+      message.template.attributes ??
+      templateParamKeys(message.template);
+
+    const ioTemplate =
+      templateJson ??
+      buildIoTemplateJson(message.template, personalizedValues);
+    const enterpriseMsg = buildEnterpriseTemplateMsg(
+      message.template,
+      personalizedValues,
+      config.templateLanguage
+    );
+
+    if (config.mode === "apikey") {
+      return await sendViaApiKey(config, message, ioTemplate, tagJson);
+    }
+    return await sendViaEnterprise(config, message, enterpriseMsg, tagJson);
+  } catch (error) {
     return {
       success: false,
-      error: "WhatsApp send requires template or caption",
+      error:
+        error instanceof Error ? error.message : "Gupshup WhatsApp send failed",
     };
   }
-
-  const templateJson =
-    message.template.params !== undefined ||
-    message.template.attributes !== undefined
-      ? null
-      : buildIoTemplateJson(message.template, []);
-
-  const personalizedValues =
-    message.template.params ??
-    message.template.attributes ??
-    templateParamKeys(message.template);
-
-  const ioTemplate =
-    templateJson ??
-    buildIoTemplateJson(message.template, personalizedValues);
-  const enterpriseMsg = buildEnterpriseTemplateMsg(
-    message.template,
-    personalizedValues,
-    config.templateLanguage
-  );
-
-  if (config.mode === "apikey") {
-    return sendViaApiKey(config, message, ioTemplate, tagJson);
-  }
-  return sendViaEnterprise(config, message, enterpriseMsg, tagJson);
 }
 
 export class GupshupWhatsAppProvider {

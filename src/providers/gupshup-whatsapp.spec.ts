@@ -151,6 +151,41 @@ describe("gupshup-whatsapp", () => {
     expect(decodeURIComponent(init.body as string)).toContain('"params":["Hello"]');
   });
 
+  it("sendGupshupWhatsApp treats a 2xx non-JSON body as a failure (io)", async () => {
+    process.env.GUPSHUP_API_KEY = "api-key";
+    process.env.GUPSHUP_SRC_NAME = "MyApp";
+    process.env.GUPSHUP_SOURCE = "918971741003";
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => "<html><body>Service Unavailable</body></html>",
+    });
+
+    const cfg = resolveGupshupConfig()!;
+    const result = await sendGupshupWhatsApp(
+      { to: "919876543210", template: { id: "tpl-io", params: ["Hello"] } },
+      cfg
+    );
+
+    expect(result.success).toBe(false);
+  });
+
+  it("sendGupshupWhatsApp returns a failure instead of throwing on fetch error", async () => {
+    process.env.GUPSHUP_API_KEY = "api-key";
+    process.env.GUPSHUP_SRC_NAME = "MyApp";
+    process.env.GUPSHUP_SOURCE = "918971741003";
+    fetchMock.mockRejectedValue(new Error("ECONNRESET"));
+
+    const cfg = resolveGupshupConfig()!;
+    const result = await sendGupshupWhatsApp(
+      { to: "919876543210", template: { id: "tpl-io", params: ["Hello"] } },
+      cfg
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("ECONNRESET");
+  });
+
   it("resolveDevTestRecipient returns first comma-separated number", () => {
     process.env.GUPSHUP_EVENT_TEST_RECIPIENTS = "919876543210,918812345678";
     expect(resolveDevTestRecipient()).toBe("919876543210");
@@ -207,6 +242,10 @@ describe("gupshup-whatsapp", () => {
     expect(normalizePlainCaption("Line one\\nLine two")).toBe(
       "Line one\nLine two"
     );
+    // A literal "+" is real text, not an encoded space.
+    expect(normalizePlainCaption("2+2 = 4")).toBe("2+2 = 4");
+    // Genuinely percent-encoded values are still decoded ("+" → space there).
+    expect(normalizePlainCaption("Hi%20there+now")).toBe("Hi there now");
   });
 
   it("normalizePlainMediaUrl decodes pre-encoded URLs to plain", () => {
@@ -257,6 +296,61 @@ describe("gupshup-whatsapp", () => {
     );
   });
 
+  it("parseWhatsAppMediaSpec returns caption-only spec when media_url absent", () => {
+    expect(
+      parseWhatsAppMediaSpec({ caption: "Dear {{first_name}}" })
+    ).toEqual({ caption: "Dear {{first_name}}" });
+  });
+
+  it("previewGupshupSendRequest shows text gateway wire body when no media_url", () => {
+    process.env.GUPSHUP_USER_ID = "2000210958";
+    process.env.GUPSHUP_PASSWORD = "secret";
+    const cfg = resolveGupshupConfig()!;
+    const preview = previewGupshupSendRequest(
+      { to: "919815235665", caption: "Dear Ada" },
+      cfg
+    );
+    expect(preview.mode).toBe("text_gateway");
+    expect(preview.params.method).toBe("SENDMESSAGE");
+    expect(preview.params.msg_type).toBe("TEXT");
+    expect(preview.params.msg).toBe("Dear Ada");
+    expect(preview.wireBody).not.toContain("media_url=");
+  });
+
+  it("sendGupshupWhatsApp posts text gateway SENDMESSAGE when no media_url", async () => {
+    process.env.GUPSHUP_USER_ID = "2000210958";
+    process.env.GUPSHUP_PASSWORD = "secret";
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({ response: { status: "success", id: "text-1" } }),
+    });
+
+    const cfg = resolveGupshupConfig()!;
+    const result = await sendGupshupWhatsApp(
+      { to: "919815235665", caption: "Dear Ada" },
+      cfg
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.messageId).toBe("text-1");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = String(init.body);
+    // Credentials go in the POST body, not the URL.
+    expect(url).toBe("https://mediaapi.smsgupshup.com/GatewayAPI/rest");
+    expect(url).not.toContain("password=");
+    expect(body).toContain("method=SENDMESSAGE");
+    expect(body).toContain("msg_type=TEXT");
+    expect(body).toContain(`msg=${encodeGupshupGatewayParam("Dear Ada")}`);
+    expect(body).not.toContain("media_url=");
+    expect(body).not.toContain("SENDMEDIAMESSAGE");
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/x-www-form-urlencoded"
+    );
+    expect(init.method).toBe("POST");
+  });
+
   it("sendGupshupWhatsApp posts media gateway SENDMEDIAMESSAGE", async () => {
     process.env.GUPSHUP_USER_ID = "2000210958";
     process.env.GUPSHUP_PASSWORD = "secret";
@@ -281,13 +375,19 @@ describe("gupshup-whatsapp", () => {
     expect(result.success).toBe(true);
     expect(result.messageId).toBe("media-1");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("mediaapi.smsgupshup.com/GatewayAPI/rest");
-    expect(url).toContain("method=SENDMEDIAMESSAGE");
-    expect(url).toContain("msg_type=IMAGE");
-    expect(url).toContain("isTemplate=true");
-    expect(url).toContain(`caption=${encodeGupshupGatewayParam("Dear Ada")}`);
-    expect(url).toContain(
+    const body = String(init.body);
+    // Credentials go in the POST body, not the URL.
+    expect(url).toBe("https://mediaapi.smsgupshup.com/GatewayAPI/rest");
+    expect(url).not.toContain("password=");
+    expect(body).toContain("method=SENDMEDIAMESSAGE");
+    expect(body).toContain("msg_type=IMAGE");
+    expect(body).toContain("isTemplate=true");
+    expect(body).toContain(`caption=${encodeGupshupGatewayParam("Dear Ada")}`);
+    expect(body).toContain(
       `media_url=${encodeGupshupGatewayParam("https://cdn.example/image.png")}`
+    );
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/x-www-form-urlencoded"
     );
     expect(init.method).toBe("POST");
   });
