@@ -27,7 +27,8 @@ export type WhatsAppTemplateSpec = {
 
 export type WhatsAppMediaSpec = {
   caption: string;
-  media_url: string;
+  /** Optional — when omitted the message is sent as text (msg_type=TEXT, method=SENDMESSAGE). */
+  media_url?: string;
   msg_type?: string;
   is_template?: boolean;
 };
@@ -55,6 +56,8 @@ export type GupshupConfig = {
   templateApiUrl: string;
   enterpriseApiUrl: string;
   mediaApiUrl: string;
+  /** GatewayAPI endpoint for text sends (method=SENDMESSAGE, msg_type=TEXT). Defaults to mediaApiUrl. */
+  textApiUrl: string;
   mediaMsgType: string;
   templateLanguage: string;
 };
@@ -75,11 +78,15 @@ export function resolveDevTestRecipient(): string | undefined {
 }
 
 function mediaDefaultsFromEnv() {
+  const mediaApiUrl =
+    process.env.GUPSHUP_MEDIA_API_URL?.trim() ||
+    "https://mediaapi.smsgupshup.com/GatewayAPI/rest";
   return {
-    mediaApiUrl:
-      process.env.GUPSHUP_MEDIA_API_URL?.trim() ||
-      "https://mediaapi.smsgupshup.com/GatewayAPI/rest",
+    mediaApiUrl,
     mediaMsgType: process.env.GUPSHUP_MEDIA_MSG_TYPE?.trim() || "IMAGE",
+    // Text sends use the same GatewayAPI host by default; override if the
+    // account routes session/text traffic through a different endpoint.
+    textApiUrl: process.env.GUPSHUP_TEXT_API_URL?.trim() || mediaApiUrl,
   };
 }
 
@@ -302,15 +309,11 @@ export function parseWhatsAppMediaSpec(
       ? normalizePlainMediaUrl(process.env.GUPSHUP_EVENT_TEST_MEDIA_URL.trim())
       : undefined);
 
-  if (!media_url) {
-    throw new Error(
-      "WhatsApp media send requires media_url in content, payload.images[0].url, or GUPSHUP_EVENT_TEST_MEDIA_URL"
-    );
-  }
-
+  // media_url is optional: with an image the message goes via the media gateway
+  // (SENDMEDIAMESSAGE); without one it is sent as text (msg_type=TEXT, SENDMESSAGE).
   return {
     caption,
-    media_url,
+    ...(media_url ? { media_url } : {}),
     ...(msg_type ? { msg_type } : {}),
     ...(is_template !== undefined ? { is_template } : {}),
   };
@@ -478,8 +481,36 @@ function buildMediaGatewayRequest(
   };
 }
 
+function buildTextGatewayRequest(
+  config: GupshupConfig,
+  message: GupshupWhatsAppMessage,
+  tagJson?: string
+): { url: string; params: Record<string, string>; wireQuery: string } {
+  const params: Record<string, string> = {
+    userid: config.userId!,
+    password: config.password!,
+    send_to: stripPhonePlus(message.to),
+    v: "1.1",
+    format: "json",
+    msg_type: "TEXT",
+    method: "SENDMESSAGE",
+    msg: message.caption!.trim(),
+  };
+  if (tagJson) {
+    params.extra = tagJson;
+  }
+  const wireQuery = Object.entries(params)
+    .map(([key, value]) => `${key}=${encodeGupshupGatewayParam(value)}`)
+    .join("&");
+  return {
+    url: `${config.textApiUrl}?${wireQuery}`,
+    params,
+    wireQuery,
+  };
+}
+
 export type GupshupSendRequestPreview = {
-  mode: "media_gateway" | "io_template" | "enterprise_hsm";
+  mode: "media_gateway" | "text_gateway" | "io_template" | "enterprise_hsm";
   httpMethod: "POST";
   url: string;
   headers?: Record<string, string>;
@@ -532,14 +563,29 @@ export function previewGupshupSendRequest(
     ? applyGupshupTag({}, message.context).tag
     : undefined;
 
-  if (message.caption?.trim() && message.mediaUrl?.trim()) {
-    const { url, params, wireQuery } = buildMediaGatewayRequest(
+  if (message.caption?.trim()) {
+    if (message.mediaUrl?.trim()) {
+      const { url, params, wireQuery } = buildMediaGatewayRequest(
+        config,
+        message,
+        tagJson
+      );
+      return {
+        mode: "media_gateway",
+        httpMethod: "POST",
+        url,
+        params,
+        wireBody: wireQuery,
+        message,
+      };
+    }
+    const { url, params, wireQuery } = buildTextGatewayRequest(
       config,
       message,
       tagJson
     );
     return {
-      mode: "media_gateway",
+      mode: "text_gateway",
       httpMethod: "POST",
       url,
       params,
@@ -549,7 +595,7 @@ export function previewGupshupSendRequest(
   }
 
   if (!message.template) {
-    throw new Error("WhatsApp send requires template or caption + mediaUrl");
+    throw new Error("WhatsApp send requires template or caption");
   }
 
   const templateJson =
@@ -638,6 +684,30 @@ async function sendViaMediaGateway(
   }
 
   const { url } = buildMediaGatewayRequest(config, message, tagJson);
+  const res = await fetch(url, { method: "POST" });
+  const text = await res.text();
+  return parseMediaGatewayResponse(text, res.status);
+}
+
+async function sendViaTextGateway(
+  config: GupshupConfig,
+  message: GupshupWhatsAppMessage,
+  tagJson?: string
+): Promise<SendResult> {
+  if (!config.userId || !config.password) {
+    return {
+      success: false,
+      error: "WhatsApp text send requires GUPSHUP_USER_ID and GUPSHUP_PASSWORD",
+    };
+  }
+  if (!message.caption?.trim()) {
+    return {
+      success: false,
+      error: "WhatsApp text send requires caption",
+    };
+  }
+
+  const { url } = buildTextGatewayRequest(config, message, tagJson);
   const res = await fetch(url, { method: "POST" });
   const text = await res.text();
   return parseMediaGatewayResponse(text, res.status);
@@ -743,14 +813,16 @@ export async function sendGupshupWhatsApp(
     ? applyGupshupTag({}, message.context).tag
     : undefined;
 
-  if (message.caption?.trim() && message.mediaUrl?.trim()) {
-    return sendViaMediaGateway(config, message, tagJson);
+  if (message.caption?.trim()) {
+    return message.mediaUrl?.trim()
+      ? sendViaMediaGateway(config, message, tagJson)
+      : sendViaTextGateway(config, message, tagJson);
   }
 
   if (!message.template) {
     return {
       success: false,
-      error: "WhatsApp send requires template or caption + mediaUrl",
+      error: "WhatsApp send requires template or caption",
     };
   }
 
