@@ -64,6 +64,19 @@ describe("events/config", () => {
     delete process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY;
   });
 
+  it("assertEventsConfigEnv disables gupshup when enabled but secret missing", () => {
+    const yaml = validYaml
+      .replace("sendgrid:\n      enabled: true", "sendgrid:\n      enabled: false")
+      .replace("gupshup:\n      enabled: false", "gupshup:\n      enabled: true");
+    const cfg = loadEventsConfigFromYaml(yaml);
+    delete process.env.GUPSHUP_WEBHOOK_SECRET;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(() => assertEventsConfigEnv(cfg)).not.toThrow();
+    expect(cfg.providers.gupshup.enabled).toBe(false);
+    expect(warn.mock.calls[0]?.[0]).toMatch(/Gupshup inbound webhook disabled/);
+    warn.mockRestore();
+  });
+
   it("parses sendgrid inbound_event_types", () => {
     const yaml = validYaml.replace(
       "signing_key_env: SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY",

@@ -8,36 +8,20 @@ import { personalize } from "../personalize.js";
 import { getProvider } from "../providers/index.js";
 import type { EmailMessage } from "../providers/types.js";
 import { lookupUsers } from "../user-lookup.js";
+import { processWhatsAppDispatch } from "./whatsapp.js";
+import type { DispatchPayload } from "./types.js";
 
-export type DispatchPayload = {
-  campaign_id: string;
-  channel: string;
-  user_ids: string[];
-  dispatch_ids?: Record<string, string>;
-  content: {
-    subject?: string;
-    html_body?: string;
-    text_body?: string;
-  };
-  personalization_fields?: string[];
-  images?: Array<{
-    placeholder: string;
-    url: string;
-    raw_url: string;
-    content_type: string;
-    alt_text?: string;
-    base64_data?: string;
-  }>;
-  metadata: {
-    organization_id: string;
-    analytics_callback_url: string;
-  };
-};
+export type { DispatchPayload } from "./types.js";
 
 export async function processDispatch(
   payload: DispatchPayload,
   fromEmail: string
 ): Promise<void> {
+  if (payload.channel === "whatsapp") {
+    await processWhatsAppDispatch(payload);
+    return;
+  }
+
   const { campaign_id, user_ids, content, metadata } = payload;
 
   logUnlessVitest(
