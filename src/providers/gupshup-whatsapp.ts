@@ -541,6 +541,71 @@ function redactGupshupPreviewParams(
   return out;
 }
 
+/** Phone mask for logs: keep the first 3 and last 1 digit, mask the middle. */
+export function maskPhoneNumber(value: string): string {
+  const v = value.trim();
+  if (!v) return "";
+  if (v.length <= 4) {
+    return `${v.slice(0, 1)}${"*".repeat(Math.max(v.length - 1, 0))}`;
+  }
+  return `${v.slice(0, 3)}${"*".repeat(v.length - 4)}${v.slice(-1)}`;
+}
+
+function redactGupshupHeaders(
+  headers?: Record<string, string>
+): Record<string, string> | undefined {
+  if (!headers) return headers;
+  const out = { ...headers };
+  if (out.apikey) out.apikey = "***";
+  return out;
+}
+
+/** Mask phone (send_to/destination) and redact password in a params copy for logs. */
+function maskGupshupLogParams(
+  params: Record<string, string>
+): Record<string, string> {
+  const out = { ...params };
+  if (out.password) out.password = "***";
+  if (out.send_to) out.send_to = maskPhoneNumber(out.send_to);
+  if (out.destination) out.destination = maskPhoneNumber(out.destination);
+  return out;
+}
+
+/**
+ * Always-on outbound log for WhatsApp sends: the complete Gupshup payload as it
+ * goes on the wire, with the recipient phone masked (first 3 + last digit) and
+ * secrets (password / apikey) redacted.
+ */
+export function logGupshupOutboundPayload(
+  message: GupshupWhatsAppMessage,
+  config: GupshupConfig
+): void {
+  if (process.env.VITEST === "true") return;
+  try {
+    const preview = previewGupshupSendRequest(message, config);
+    console.log(
+      "[gupshup-send] Outbound WhatsApp → Gupshup:\n" +
+        JSON.stringify(
+          {
+            mode: preview.mode,
+            httpMethod: preview.httpMethod,
+            url: preview.url,
+            headers: redactGupshupHeaders(preview.headers),
+            params: maskGupshupLogParams(preview.params),
+            to: maskPhoneNumber(message.to),
+          },
+          null,
+          2
+        )
+    );
+  } catch (error) {
+    console.warn(
+      "[gupshup-send] Could not log outbound payload:",
+      error instanceof Error ? error.message : error
+    );
+  }
+}
+
 export function shouldLogGupshupTestPayload(): boolean {
   const v = process.env.GUPSHUP_EVENT_TEST_LOG_PAYLOAD?.trim().toLowerCase();
   if (v === "0" || v === "false" || v === "no") return false;
@@ -831,6 +896,8 @@ export async function sendGupshupWhatsApp(
       );
     }
   }
+
+  logGupshupOutboundPayload(message, config);
 
   // Mirror SESProvider.send: never throw. A fetch network error (or a missing
   // config that surfaces as a TypeError) is converted to a failed SendResult so
