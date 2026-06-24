@@ -110,8 +110,10 @@ export function createGupshupInboundAdapter(webhookSecret: string): InboundEvent
     name: "gupshup",
     channel: "whatsapp",
     verifySignature(req: SignatureRequest): boolean {
+      // No secret configured → open webhook: skip signature verification.
+      if (!webhookSecret) return true;
       const sig = headerOne(req.headers, "x-gupshup-signature");
-      if (!sig || !webhookSecret) return false;
+      if (!sig) return false;
       const expected = createHmac("sha256", webhookSecret).update(req.rawBody).digest("hex");
       try {
         const a = Buffer.from(sig, "utf-8");

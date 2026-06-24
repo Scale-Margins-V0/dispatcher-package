@@ -3,7 +3,9 @@
  *
  * 1. **Media + caption** (GUPSHUP_USER_ID + GUPSHUP_PASSWORD): POST media gateway
  *    `SENDMEDIAMESSAGE` when dispatch includes `caption` (+ plain `media_url`).
- *    Plain URLs from Atlas/env are URL-encoded at send time.
+ *    Params go in the application/x-www-form-urlencoded body (auth_scheme=plain,
+ *    space → "%20", backslash-escaped `extra`), matching the Gupshup curl;
+ *    plain URLs from Atlas/env are encoded at send time.
  * 2. **API key** (GUPSHUP_API_KEY): POST https://api.gupshup.io/wa/api/v1/template/msg
  * 3. **Enterprise HSM** (GUPSHUP_USER_ID + GUPSHUP_PASSWORD): POST https://smsgupshup.com
  *    with method=SendMessage (HSM templates via `msg` JSON).
@@ -106,7 +108,16 @@ export function normalizePlainCaption(raw: string): string {
       /* keep trimmed */
     }
   }
-  return caption.replace(/\\n/g, "\n");
+  // Collapse every escaped-newline form to a real LF so the GatewayAPI caption
+  // carries actual line breaks (encoded "%0A"), never a literal backslash-n.
+  // `\\+n` covers both single-escaped "\n" and double-escaped "\\n" (the latter
+  // arises when a caption is JSON-stringified twice upstream); without this the
+  // double-escaped case would go out as "%5C%0A" and WhatsApp would render "\n"
+  // as visible text. `\r\n`/`\r` are normalized to LF as well.
+  return caption
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\+n/g, "\n")
+    .replace(/\r\n?/g, "\n");
 }
 
 /** @deprecated Use normalizePlainCaption */
@@ -136,9 +147,28 @@ export function normalizePlainMediaUrl(raw: string): string {
   return trimmed;
 }
 
-/** encodeURIComponent for Gupshup GatewayAPI query values (media_url, caption, …). */
+/**
+ * URL-encode a single Gupshup GatewayAPI value (media_url, caption, …).
+ * Matches `curl --data-urlencode` (used in the reference request) byte-for-byte:
+ * RFC-3986 escaping — space → "%20" (not "+") and the five characters
+ * encodeURIComponent leaves alone (! ' ( ) *) are also percent-encoded, so e.g.
+ * an apostrophe in "I'm" goes out as "%27". All decode identically under
+ * application/x-www-form-urlencoded.
+ */
 export function encodeGupshupGatewayParam(value: string): string {
-  return encodeURIComponent(value);
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()
+  );
+}
+
+/**
+ * Gupshup GatewayAPI `extra` is sent with backslash-escaped quotes, i.e.
+ * `{\"campaign_id\":\"…\"}` (see the reference curl). Escapes the quotes of a
+ * standard JSON tag string before it is form-encoded onto the wire.
+ */
+export function escapeGupshupExtra(tagJson: string): string {
+  return tagJson.replace(/"/g, '\\"');
 }
 
 /** True when env provides caption + media_url for GatewayAPI SENDMEDIAMESSAGE. */
@@ -464,27 +494,28 @@ function buildMediaGatewayRequest(
   message: GupshupWhatsAppMessage,
   tagJson?: string
 ): { url: string; params: Record<string, string>; wireQuery: string } {
+  // Field order mirrors the reference curl exactly.
   const params: Record<string, string> = {
+    method: "SENDMEDIAMESSAGE",
     userid: config.userId!,
     password: config.password!,
-    send_to: stripPhonePlus(message.to),
     v: "1.1",
-    format: "json",
+    auth_scheme: "plain",
     msg_type: message.mediaMsgType || config.mediaMsgType,
-    method: "SENDMEDIAMESSAGE",
-    caption: message.caption!.trim(),
+    send_to: stripPhonePlus(message.to),
     media_url: message.mediaUrl!.trim(),
-    isTemplate: message.isTemplate === false ? "false" : "true",
+    caption: message.caption!.trim(),
   };
   if (tagJson) {
-    params.extra = tagJson;
+    params.extra = escapeGupshupExtra(tagJson);
   }
+  params.format = "json";
+  // application/x-www-form-urlencoded body, space → "%20" (matches
+  // `curl --data-urlencode`); posted as the request body by the caller.
   const wireQuery = Object.entries(params)
     .map(([key, value]) => `${key}=${encodeGupshupGatewayParam(value)}`)
     .join("&");
   return {
-    // Bare endpoint — params (incl. userid/password) go in the POST body so
-    // credentials never land in proxy/access/APM URL logs.
     url: config.mediaApiUrl,
     params,
     wireQuery,
@@ -496,25 +527,27 @@ function buildTextGatewayRequest(
   message: GupshupWhatsAppMessage,
   tagJson?: string
 ): { url: string; params: Record<string, string>; wireQuery: string } {
+  // Field order mirrors the media gateway request (reference curl shape).
   const params: Record<string, string> = {
+    method: "SENDMESSAGE",
     userid: config.userId!,
     password: config.password!,
-    send_to: stripPhonePlus(message.to),
     v: "1.1",
-    format: "json",
+    auth_scheme: "plain",
     msg_type: "TEXT",
-    method: "SENDMESSAGE",
+    send_to: stripPhonePlus(message.to),
     msg: message.caption!.trim(),
   };
   if (tagJson) {
-    params.extra = tagJson;
+    params.extra = escapeGupshupExtra(tagJson);
   }
+  params.format = "json";
+  // application/x-www-form-urlencoded body, space → "%20" (matches
+  // `curl --data-urlencode`); posted as the request body by the caller.
   const wireQuery = Object.entries(params)
     .map(([key, value]) => `${key}=${encodeGupshupGatewayParam(value)}`)
     .join("&");
   return {
-    // Bare endpoint — params (incl. userid/password) go in the POST body so
-    // credentials never land in proxy/access/APM URL logs.
     url: config.textApiUrl,
     params,
     wireQuery,
@@ -523,7 +556,7 @@ function buildTextGatewayRequest(
 
 export type GupshupSendRequestPreview = {
   mode: "media_gateway" | "text_gateway" | "io_template" | "enterprise_hsm";
-  httpMethod: "POST";
+  httpMethod: "GET" | "POST";
   url: string;
   headers?: Record<string, string>;
   /** Plain values before wire encoding (password redacted in logs). */

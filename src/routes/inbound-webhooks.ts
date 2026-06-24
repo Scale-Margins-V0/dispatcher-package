@@ -8,6 +8,23 @@ import {
 import { warnUnlessVitest, logUnlessVitest } from "../logging.js";
 import { verifySnsMessage } from "../events/sns-verify.js";
 
+/**
+ * Log the raw inbound Gupshup webhook payload (headers + body) for inspection.
+ * Always called, independent of whether forwarding to the backend is enabled.
+ */
+function logGupshupPayload(req: express.Request): void {
+  const rawBody = Buffer.isBuffer(req.body)
+    ? req.body.toString("utf-8")
+    : typeof req.body === "string"
+      ? req.body
+      : JSON.stringify(req.body ?? {});
+  logUnlessVitest(
+    "[Gupshup] inbound webhook received:\n" +
+      `[Gupshup] headers: ${JSON.stringify(req.headers)}\n` +
+      `[Gupshup] body: ${rawBody}`
+  );
+}
+
 export function registerInboundWebhookRoutes(app: Express): void {
   app.post(
     "/api/scalemargin/ses-notifications",
@@ -91,8 +108,12 @@ export function registerInboundWebhookRoutes(app: Express): void {
     "/api/scalemargin/gupshup-events",
     express.text({ type: () => true, limit: "1mb" }),
     async (req, res, next) => {
+      // Always log the raw payload for inspection.
+      logGupshupPayload(req);
+      // Forwarding to the backend event caller is OFF by default — log only.
+      // Enable later via GUPSHUP_WEBHOOK_SECRET or EVENT_PROVIDERS_ENABLED=gupshup.
       if (!isProviderEnabled("gupshup")) {
-        res.status(404).json({ error: "not found" });
+        res.status(200).json({ received: true, forwarded: false });
         return;
       }
       if (!gupshupWebhookHandler) {

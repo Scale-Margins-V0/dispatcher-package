@@ -246,6 +246,19 @@ describe("gupshup-whatsapp", () => {
     expect(normalizePlainCaption("2+2 = 4")).toBe("2+2 = 4");
     // Genuinely percent-encoded values are still decoded ("+" → space there).
     expect(normalizePlainCaption("Hi%20there+now")).toBe("Hi there now");
+    // Double-escaped "\\n" (caption JSON-stringified twice upstream) still
+    // collapses to a real LF — must never reach the wire as a literal backslash.
+    expect(normalizePlainCaption("Line one\\\\nLine two")).toBe(
+      "Line one\nLine two"
+    );
+    // Real newlines (already-parsed JSON) pass through untouched.
+    expect(normalizePlainCaption("Line one\nLine two")).toBe(
+      "Line one\nLine two"
+    );
+    // CRLF is normalized to LF.
+    expect(normalizePlainCaption("Line one\r\nLine two")).toBe(
+      "Line one\nLine two"
+    );
   });
 
   it("normalizePlainMediaUrl decodes pre-encoded URLs to plain", () => {
@@ -337,11 +350,13 @@ describe("gupshup-whatsapp", () => {
     expect(result.messageId).toBe("text-1");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = String(init.body);
-    // Credentials go in the POST body, not the URL.
+    // POST — params (incl. credentials) go in the form body, not the URL.
     expect(url).toBe("https://mediaapi.smsgupshup.com/GatewayAPI/rest");
     expect(url).not.toContain("password=");
     expect(body).toContain("method=SENDMESSAGE");
     expect(body).toContain("msg_type=TEXT");
+    expect(body).toContain("auth_scheme=plain");
+    expect(body).toContain("format=json");
     expect(body).toContain(`msg=${encodeGupshupGatewayParam("Dear Ada")}`);
     expect(body).not.toContain("media_url=");
     expect(body).not.toContain("SENDMEDIAMESSAGE");
@@ -376,12 +391,14 @@ describe("gupshup-whatsapp", () => {
     expect(result.messageId).toBe("media-1");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = String(init.body);
-    // Credentials go in the POST body, not the URL.
+    // POST — params (incl. credentials) go in the form body, not the URL.
     expect(url).toBe("https://mediaapi.smsgupshup.com/GatewayAPI/rest");
     expect(url).not.toContain("password=");
     expect(body).toContain("method=SENDMEDIAMESSAGE");
     expect(body).toContain("msg_type=IMAGE");
-    expect(body).toContain("isTemplate=true");
+    expect(body).toContain("auth_scheme=plain");
+    // isTemplate is no longer sent (matches the Gupshup GatewayAPI curl format).
+    expect(body).not.toContain("isTemplate");
     expect(body).toContain(`caption=${encodeGupshupGatewayParam("Dear Ada")}`);
     expect(body).toContain(
       `media_url=${encodeGupshupGatewayParam("https://cdn.example/image.png")}`
@@ -390,5 +407,74 @@ describe("gupshup-whatsapp", () => {
       "application/x-www-form-urlencoded"
     );
     expect(init.method).toBe("POST");
+  });
+
+  it("media gateway body matches the Gupshup curl (order, %20, auth_scheme, escaped extra)", () => {
+    process.env.GUPSHUP_USER_ID = "2000210958";
+    process.env.GUPSHUP_PASSWORD = "secret";
+    const cfg = resolveGupshupConfig()!;
+    const preview = previewGupshupSendRequest(
+      {
+        to: "919815235665",
+        caption: "Dear Vivek, \n\nThe Financial Service Ltd.",
+        mediaUrl: "https://dev.scalemargins.tech/image.png",
+        context: {
+          campaign_id: "c1",
+          user_id: "001",
+          organization_id: "o1",
+          analytics_callback_url: "https://cb.example",
+        },
+      },
+      cfg
+    );
+    expect(preview.mode).toBe("media_gateway");
+    expect(preview.httpMethod).toBe("POST");
+    expect(preview.headers?.["Content-Type"]).toBe(
+      "application/x-www-form-urlencoded"
+    );
+    // Spaces → "%20", comma → "%2C", newline → "%0A" (curl --data-urlencode).
+    expect(preview.wireBody).toContain(
+      "caption=Dear%20Vivek%2C%20%0A%0AThe%20Financial"
+    );
+    expect(preview.wireBody).not.toContain("isTemplate");
+    // extra is sent with backslash-escaped quotes, matching the reference curl.
+    expect(preview.wireBody).toContain(
+      `extra=${encodeGupshupGatewayParam('{\\"campaign_id\\":\\"c1\\",\\"user_id\\":\\"001\\",\\"organization_id\\":\\"o1\\",\\"analytics_callback_url\\":\\"https://cb.example\\"}')}`
+    );
+    // Field order mirrors the curl: method first, format last.
+    expect(preview.wireBody.startsWith("method=SENDMEDIAMESSAGE&userid=")).toBe(
+      true
+    );
+    expect(preview.wireBody.endsWith("&format=json")).toBe(true);
+    expect(preview.wireBody.indexOf("auth_scheme=plain")).toBeGreaterThan(0);
+  });
+
+  it("encodes apostrophes, emojis and ₹ the way curl --data-urlencode does", () => {
+    process.env.GUPSHUP_USER_ID = "2000210958";
+    process.env.GUPSHUP_PASSWORD = "secret";
+    const cfg = resolveGupshupConfig()!;
+    const caption =
+      "Dear Vivek,\n\nAs GoldenPi completes 9 years, I'm grateful for the " +
+      "community we've built together. More than 16 lakh users have joined " +
+      "us and together we've invested over ₹6,000 crore.\n\nWhat's New?\n\n" +
+      "🙌 Zero Brokerage Investing\n\n💹 Invest with Higher Limit";
+    const preview = previewGupshupSendRequest(
+      {
+        to: "919815235665",
+        caption,
+        mediaUrl: "https://dev.scalemargins.tech/image.png",
+      },
+      cfg
+    );
+    // Straight apostrophe → %27 (encodeURIComponent alone would leave it as ').
+    expect(preview.wireBody).toContain("I%27m%20grateful");
+    expect(preview.wireBody).toContain("What%27s%20New%3F");
+    // ₹ (U+20B9) and the emojis encode as their UTF-8 byte sequences.
+    expect(preview.wireBody).toContain("%E2%82%B9");
+    expect(preview.wireBody).toContain("%F0%9F%99%8C"); // 🙌
+    expect(preview.wireBody).toContain("%F0%9F%92%B9"); // 💹
+    // The whole caption is recoverable.
+    const body = new URLSearchParams(preview.wireBody);
+    expect(body.get("caption")).toBe(caption);
   });
 });

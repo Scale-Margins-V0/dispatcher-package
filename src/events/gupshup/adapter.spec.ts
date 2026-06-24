@@ -37,6 +37,13 @@ describe("GupshupInboundAdapter", () => {
     expect(ok).toBe(true);
   });
 
+  it("verifySignature is open (accepts) when no secret configured", () => {
+    const open = createGupshupInboundAdapter("");
+    expect(
+      open.verifySignature({ rawBody: Buffer.from("{}"), headers: {} })
+    ).toBe(true);
+  });
+
   it("verifySignature rejects bad HMAC", () => {
     const buf = Buffer.from("{}");
     expect(

@@ -166,9 +166,8 @@ export function getInboundAdapter(
   if (name === "gupshup") {
     const envName =
       cfg.providers.gupshup.secret_env ?? "GUPSHUP_WEBHOOK_SECRET";
-    const secret = process.env[envName];
-    if (!secret)
-      {throw new Error(`Missing ${envName} for Gupshup inbound adapter`);}
+    // Secret optional: when unset the adapter skips signature verification (open webhook).
+    const secret = process.env[envName] ?? "";
     return createGupshupInboundAdapter(secret);
   }
   throw new Error(`Unknown adapter: ${name}`);

@@ -75,6 +75,10 @@ export function applyProviderEnablementFromEnv(cfg: EventsConfig): void {
   const guEnv = gupshupSecretEnvName(cfg);
   cfg.providers.sendgrid.enabled = Boolean(process.env[sgEnv]?.trim());
   cfg.providers.ses.enabled = true;
+  // `enabled` here gates FORWARDING to the backend event caller — default off.
+  // The Gupshup webhook endpoint always accepts + logs payloads regardless; it only
+  // forwards when this is on. Turn on later via GUPSHUP_WEBHOOK_SECRET or
+  // EVENT_PROVIDERS_ENABLED=gupshup.
   cfg.providers.gupshup.enabled = Boolean(process.env[guEnv]?.trim());
 
   for (const p of parseProviderList(process.env.EVENT_PROVIDERS_DISABLED)) {
@@ -212,10 +216,10 @@ export function assertEventsConfigEnv(cfg: EventsConfig): void {
     const s = gupshupSecretEnvName(cfg);
     if (!process.env[s]?.trim()) {
       console.warn(
-        `[events] Gupshup inbound webhook disabled — ${s} is not set. ` +
-          `POST /api/scalemargin/gupshup-events returns 404 until configured.`
+        `[events] Gupshup inbound webhook is OPEN — ${s} is not set, so incoming ` +
+          `signatures are NOT verified. POST /api/scalemargin/gupshup-events accepts ` +
+          `unauthenticated payloads.`
       );
-      cfg.providers.gupshup.enabled = false;
     }
   }
 }
