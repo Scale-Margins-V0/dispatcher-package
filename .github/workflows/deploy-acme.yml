@@ -13,12 +13,10 @@ name: Deploy dispatcher to ACME
 # folder, out of this repo) — it only rolls the already-deployed Deployment.
 #
 # Required (configure once in the repo's `acme` GitHub Environment):
-#   secrets.WIF_PROVIDER  - Workload Identity provider, must trust this repo
-#   secrets.GCP_SA_EMAIL  - GCP service account with roles:
-#                             roles/cloudbuild.builds.editor
-#                             roles/storage.admin            (gcr.io push)
-#                             roles/container.developer      (kubectl to GKE)
-#   (or swap the Google Auth step for a SA-key JSON secret.)
+#   secrets.GCP_SA_KEY - JSON key for a GCP service account with roles:
+#                          roles/cloudbuild.builds.editor
+#                          roles/storage.admin          (gcr.io push)
+#                          roles/container.developer    (kubectl to GKE)
 
 on:
   push:
@@ -33,7 +31,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   PROJECT_ID: scale-margins-v0
@@ -52,11 +49,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Google Auth (Workload Identity Federation)
+      - name: Google Auth (service account key)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SA_EMAIL }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
