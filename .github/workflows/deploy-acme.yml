@@ -1,0 +1,109 @@
+name: Deploy dispatcher to ACME
+
+# Auto-deploys the dispatcher to the isolated `acme` test environment
+# (namespace: acme on the dev GKE cluster) on every push to the `acme` branch.
+#
+# What it does:
+#   1. Builds the dispatcher image with Cloud Build and pushes it to
+#      gcr.io/scale-margins-v0/scalemargin-dispatcher:dev-<sha> (+ moves :dev).
+#   2. Authenticates to GKE (Workload Identity Federation) and updates the
+#      existing `dispatcher` Deployment in the `acme` namespace to that image.
+#
+# It does NOT manage the acme k8s manifests/secrets (those live in the sm/acme
+# folder, out of this repo) — it only rolls the already-deployed Deployment.
+#
+# Required (configure once in the repo's `acme` GitHub Environment):
+#   secrets.WIF_PROVIDER  - Workload Identity provider, must trust this repo
+#   secrets.GCP_SA_EMAIL  - GCP service account with roles:
+#                             roles/cloudbuild.builds.editor
+#                             roles/storage.admin            (gcr.io push)
+#                             roles/container.developer      (kubectl to GKE)
+#   (or swap the Google Auth step for a SA-key JSON secret.)
+
+on:
+  push:
+    branches: [acme]
+  workflow_dispatch:
+    inputs:
+      restart_only:
+        description: "Skip build, just restart the deployment"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: scale-margins-v0
+  GKE_CLUSTER: scalemargin-cluster-vl
+  GKE_REGION: europe-west3
+  NAMESPACE: acme
+  DEPLOYMENT: dispatcher
+  CONTAINER: dispatcher
+  IMAGE: gcr.io/scale-margins-v0/scalemargin-dispatcher
+
+jobs:
+  deploy:
+    name: Build & deploy to acme
+    runs-on: ubuntu-latest
+    environment: acme
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Google Auth (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Build & push image (Cloud Build)
+        if: ${{ !inputs.restart_only }}
+        run: |
+          set -euo pipefail
+          gcloud builds submit . \
+            --project "${PROJECT_ID}" \
+            --tag "${IMAGE}:dev-${GITHUB_SHA}"
+          # Move the floating :dev tag to this build for convenience.
+          gcloud container images add-tag --quiet \
+            "${IMAGE}:dev-${GITHUB_SHA}" "${IMAGE}:dev"
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_REGION }}
+
+      - name: Deploy to acme
+        env:
+          RESTART_ONLY: ${{ inputs.restart_only }}
+        run: |
+          set -euo pipefail
+          if [ "$RESTART_ONLY" = "true" ]; then
+            kubectl -n "${NAMESPACE}" rollout restart deployment/"${DEPLOYMENT}"
+          else
+            # Pin to the immutable per-commit tag so the rollout is deterministic.
+            kubectl -n "${NAMESPACE}" set image \
+              deployment/"${DEPLOYMENT}" "${CONTAINER}=${IMAGE}:dev-${GITHUB_SHA}"
+          fi
+          kubectl -n "${NAMESPACE}" rollout status deployment/"${DEPLOYMENT}" --timeout=180s
+
+      - name: Verify
+        run: |
+          set -euo pipefail
+          kubectl -n "${NAMESPACE}" get pods -l app="${DEPLOYMENT}" -o wide
+          echo "Running image:"
+          kubectl -n "${NAMESPACE}" get deployment/"${DEPLOYMENT}" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+          # Health check from inside the pod (image has node, no curl).
+          kubectl -n "${NAMESPACE}" exec deploy/"${DEPLOYMENT}" -- node -e '
+            require("http").get("http://localhost:3100/health", r => {
+              let d=""; r.on("data",c=>d+=c);
+              r.on("end",()=>{ console.log(d); process.exit(r.statusCode===200?0:1); });
+            }).on("error",e=>{ console.error(e.message); process.exit(1); });'
