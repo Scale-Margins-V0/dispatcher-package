@@ -14,9 +14,8 @@ name: Deploy dispatcher to ACME
 #
 # Required (configure once in the repo's `acme` GitHub Environment):
 #   secrets.GCP_SA_KEY - JSON key for a GCP service account with roles:
-#                          roles/cloudbuild.builds.editor
-#                          roles/storage.admin          (gcr.io push)
-#                          roles/container.developer    (kubectl to GKE)
+#                          roles/storage.admin        (gcr.io push)
+#                          roles/container.developer  (kubectl to GKE)
 
 on:
   push:
@@ -59,16 +58,17 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Build & push image (Cloud Build)
+      - name: Configure Docker for gcr.io
+        if: ${{ !inputs.restart_only }}
+        run: gcloud auth configure-docker gcr.io --quiet
+
+      - name: Build & push image
         if: ${{ !inputs.restart_only }}
         run: |
           set -euo pipefail
-          gcloud builds submit . \
-            --project "${PROJECT_ID}" \
-            --tag "${IMAGE}:dev-${GITHUB_SHA}"
-          # Move the floating :dev tag to this build for convenience.
-          gcloud container images add-tag --quiet \
-            "${IMAGE}:dev-${GITHUB_SHA}" "${IMAGE}:dev"
+          docker build -t "${IMAGE}:dev-${GITHUB_SHA}" -t "${IMAGE}:dev" .
+          docker push "${IMAGE}:dev-${GITHUB_SHA}"
+          docker push "${IMAGE}:dev"
 
       - name: Get GKE credentials
         uses: google-github-actions/get-gke-credentials@v2
