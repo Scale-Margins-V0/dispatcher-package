@@ -172,6 +172,19 @@ async function emitWhatsAppEvent(args: {
     error,
   } = args;
 
+  // A "successful" send with no provider message id can't be correlated to later
+  // GatewayAPI delivery receipts (dispatch_message_map is keyed on it), so emit a
+  // failed event with an explicit reason instead of an uncorrelatable "dispatched".
+  const hasMessageId = typeof messageId === "string" && messageId.length > 0;
+  if (success && !hasMessageId) {
+    warnUnlessVitest(
+      `[Dispatch] WhatsApp send for user=${userId} campaign=${campaign_id} succeeded but returned no provider message id — emitting failed (noProviderMessageId)`
+    );
+  }
+  const effectiveSuccess = success && hasMessageId;
+  const effectiveError =
+    success && !hasMessageId ? "noProviderMessageId" : error;
+
   await emitEvent({
     callbackUrl: resolvedAnalyticsUrl,
     event: {
@@ -180,12 +193,12 @@ async function emitWhatsAppEvent(args: {
       organization_id: metadata.organization_id,
       analytics_callback_url: resolvedAnalyticsUrl,
       channel: "whatsapp",
-      event: success ? "dispatched" : "failed",
+      event: effectiveSuccess ? "dispatched" : "failed",
       provider: "gupshup",
       provider_message_id: messageId ?? "unknown",
       occurred_at: new Date().toISOString(),
       metadata: {
-        ...(error ? { bounce_reason: error } : {}),
+        ...(effectiveError ? { bounce_reason: effectiveError } : {}),
         ...(payload.dispatch_ids?.[userId]
           ? { dispatch_id: payload.dispatch_ids[userId] }
           : {}),
@@ -194,6 +207,6 @@ async function emitWhatsAppEvent(args: {
   });
 
   logUnlessVitest(
-    `[Dispatch] event emitted user=${userId} event=${success ? "dispatched" : "failed"} messageId=${messageId ?? "unknown"}`
+    `[Dispatch] event emitted user=${userId} event=${effectiveSuccess ? "dispatched" : "failed"} messageId=${messageId ?? "unknown"}`
   );
 }

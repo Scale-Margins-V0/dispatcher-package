@@ -20,7 +20,12 @@ import {
   type EventsConfig,
 } from "./config.js";
 import { flushEnvelopesSync, buildIdempotencyKey } from "./forwarder.js";
-import { createGupshupInboundAdapter } from "./gupshup/adapter.js";
+import {
+  createGupshupInboundAdapter,
+  extractGupshupReceipt,
+  type GupshupReceipt,
+} from "./gupshup/adapter.js";
+import { forwardGupshupReceipts } from "./gupshup/receipt-forwarder.js";
 import { logPreferenceSideEffectSimulation } from "./preference-side-effect-log.js";
 import { resolveAnalyticsCallbackUrl } from "./resolve-analytics-callback-url.js";
 import { scrubPii } from "./scrubber.js";
@@ -216,6 +221,7 @@ export function createInboundWebhookHandler(
       return;
     }
     const envelopes: EventEnvelope[] = [];
+    const gupshupReceipts: GupshupReceipt[] = [];
     const cfg = getRuntimeConfig();
     let sendgridUncorrelated = 0;
     let sendgridUncorrelatedSample: unknown = null;
@@ -240,6 +246,19 @@ export function createInboundWebhookHandler(
         if (adapter.name === "sendgrid") {
           sendgridUncorrelated++;
           if (sendgridUncorrelated === 1) {sendgridUncorrelatedSample = item;}
+        } else if (adapter.name === "gupshup") {
+          // GatewayAPI delivery receipts carry no tag — forward them raw to the
+          // backend, which matches externalId → the dispatched event's
+          // metadata.provider_message_id and records the new event there.
+          const receipt = extractGupshupReceipt(item);
+          if (receipt) {
+            gupshupReceipts.push(receipt);
+          } else {
+            droppedOtherNoCorrelation++;
+            console.warn(
+              `[Events][gupshup] Dropping event — missing correlation and not a forwardable receipt`
+            );
+          }
         } else {
           droppedOtherNoCorrelation++;
           console.warn(
@@ -293,7 +312,7 @@ export function createInboundWebhookHandler(
         ? String((sendgridUncorrelatedSample as { event?: unknown }).event ?? "")
         : "";
     console.log(
-      `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} forwarded=${envelopes.length} dropped_sg_no_correlation=${sendgridUncorrelated} dropped_no_callback_url=${droppedNoCallbackUrl} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation}`
+      `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} forwarded=${envelopes.length} receipts=${gupshupReceipts.length} dropped_sg_no_correlation=${sendgridUncorrelated} dropped_no_callback_url=${droppedNoCallbackUrl} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation}`
     );
     if (sendgridUncorrelated > 0) {
       console.warn(
@@ -322,7 +341,17 @@ export function createInboundWebhookHandler(
       }
     }
 
-    res.status(200).json({ received: true, count: envelopes.length });
+    // Correlation-free WhatsApp delivery receipts are matched on the backend by
+    // externalId, so they bypass the campaign-keyed analytics pipeline entirely.
+    if (gupshupReceipts.length > 0) {
+      await forwardGupshupReceipts(gupshupReceipts, getSecret());
+    }
+
+    res.status(200).json({
+      received: true,
+      count: envelopes.length,
+      receipts: gupshupReceipts.length,
+    });
   };
 }
 

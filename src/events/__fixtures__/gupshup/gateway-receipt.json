@@ -1,0 +1,12 @@
+[
+  {
+    "srcAddr": "TESTSM",
+    "channel": "WHATSAPP",
+    "externalId": "5727636466279092270-1028021868126176",
+    "cause": "WA_FrequencyCapping",
+    "errorCode": "121",
+    "destAddr": "919815235665",
+    "eventType": "FAILED",
+    "eventTs": 1782299107000
+  }
+]
