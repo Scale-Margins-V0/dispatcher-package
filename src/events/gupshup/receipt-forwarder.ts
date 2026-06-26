@@ -20,13 +20,22 @@ import type { GupshupReceipt } from "./adapter.js";
 const MAX_RETRIES = 3;
 
 /**
+ * Backend analytics endpoint used when no dispatch has registered a URL yet (cold start,
+ * before the first WhatsApp send). Receipts can arrive before any dispatch, so fall back
+ * to the known backend rather than dropping them.
+ */
+const DEFAULT_RECEIPTS_URL =
+  "https://dev.scalemargins.tech/api/webhooks/campaign-analytics";
+
+/**
  * Receipts have no campaign, so they cannot use a per-send analytics_callback_url.
- * Use the platform analytics URL (same endpoint as normal events), or an explicit override.
+ * The backend exposes one fixed endpoint for all analytics (`/api/webhooks/campaign-analytics`).
+ * Resolution order:
+ *   1. SCALEMARGIN_ANALYTICS_CALLBACK_URL (platform analytics URL), if set.
+ *   2. DEFAULT_RECEIPTS_URL fallback.
  */
 export function resolveWhatsAppReceiptsUrl(): string | undefined {
-  const explicit = process.env.SCALEMARGIN_WHATSAPP_RECEIPTS_URL?.trim();
-  if (explicit) return explicit;
-  return process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL?.trim() || undefined;
+  return process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL?.trim() || DEFAULT_RECEIPTS_URL;
 }
 
 export async function forwardGupshupReceipts(
@@ -38,7 +47,7 @@ export async function forwardGupshupReceipts(
   const url = resolveWhatsAppReceiptsUrl();
   if (!url) {
     console.warn(
-      `[GupshupReceipts] No receipts URL configured (set SCALEMARGIN_WHATSAPP_RECEIPTS_URL or SCALEMARGIN_ANALYTICS_CALLBACK_URL) — dropping ${receipts.length} receipt(s)`
+      `[GupshupReceipts] No backend analytics URL known yet — no WhatsApp message has been dispatched through this process since startup — dropping ${receipts.length} receipt(s)`
     );
     return { success: false, error: "no receipts URL configured" };
   }
