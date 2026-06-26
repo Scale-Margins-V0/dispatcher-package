@@ -73,6 +73,7 @@ describe("POST /api/scalemargin/gupshup-events (integration)", () => {
     resetEventPipelineForTests();
     delete process.env.GUPSHUP_WEBHOOK_SECRET;
     delete process.env.EVENT_FORWARD_MODE;
+    delete process.env.SCALEMARGIN_ANALYTICS_SECRET;
   });
 
   beforeEach(() => {
@@ -111,7 +112,7 @@ describe("POST /api/scalemargin/gupshup-events (integration)", () => {
     expect(posted.organization_id).toBe("org_1");
     expect(posted.events?.[0]).toMatchObject({
       user_id: "u_42",
-      event: "read",
+      event: "opened",
       channel: "whatsapp",
       metadata: {
         provider: "gupshup",

@@ -97,6 +97,10 @@ export function extractCorrelationFromGupshupEvent(event: unknown): Correlation 
   }
   let obj: Record<string, unknown> | null = null;
   if (typeof raw === "string") {
+    // `smsign_<sig>` tags carry no IDs (50-char limit) — they correlate on the
+    // backend by externalId, not here. Legacy self-contained JSON tags still
+    // parse locally for backward compat.
+    if (raw.startsWith("smsign_")) return null;
     try {
       obj = JSON.parse(raw) as Record<string, unknown>;
     } catch {

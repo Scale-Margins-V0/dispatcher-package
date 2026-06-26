@@ -1,4 +1,5 @@
 import { emitEvent } from "../events/index.js";
+import { computeTagSign } from "../events/tag-sign.js";
 import { registerCampaignCallback } from "../events/campaign-callback-registry.js";
 import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callback-url.js";
 import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
@@ -185,6 +186,17 @@ async function emitWhatsAppEvent(args: {
   const effectiveError =
     success && !hasMessageId ? "noProviderMessageId" : error;
 
+  const dispatch_id = payload.dispatch_ids?.[userId];
+
+  // `smsign_<sig>` is the same HMAC placed on the outbound Gupshup `extra`/`tag`.
+  // Forwarded so the backend — which recovers campaign/user/org by externalId —
+  // can recompute it and confirm the event originated from a message we sent.
+  const sign = computeTagSign({
+    campaign_id,
+    user_id: userId,
+    organization_id: metadata.organization_id,
+  });
+
   await emitEvent({
     callbackUrl: resolvedAnalyticsUrl,
     event: {
@@ -199,9 +211,8 @@ async function emitWhatsAppEvent(args: {
       occurred_at: new Date().toISOString(),
       metadata: {
         ...(effectiveError ? { bounce_reason: effectiveError } : {}),
-        ...(payload.dispatch_ids?.[userId]
-          ? { dispatch_id: payload.dispatch_ids[userId] }
-          : {}),
+        ...(dispatch_id ? { dispatch_id } : {}),
+        ...(sign ? { sign } : {}),
       },
     },
   });
