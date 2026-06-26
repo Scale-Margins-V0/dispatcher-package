@@ -134,6 +134,56 @@ describe("POST /api/scalemargin/gupshup-events (integration)", () => {
     expect(res.body).toEqual({ error: "invalid webhook payload" });
   });
 
+  it("accepts a GatewayAPI receipt carrying our smsign_ extra", async () => {
+    const raw = JSON.stringify([
+      {
+        channel: "WHATSAPP",
+        externalId: "ext-signed-1",
+        eventType: "READ",
+        eventTs: 1782450922000,
+        extra: "smsign_88354b906ff911f19f5183d05b01c0e1",
+      },
+    ]);
+    const sig = createHmac("sha256", secret).update(raw, "utf8").digest("hex");
+    const res = await request(app)
+      .post("/api/scalemargin/gupshup-events")
+      .set("Content-Type", "application/json")
+      .set("x-gupshup-signature", sig)
+      .send(raw);
+
+    expect(res.status).toBe(200);
+    expect(res.body.receipts).toBe(1);
+  });
+
+  it("rejects a GatewayAPI receipt whose extra is missing or not smsign_", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const raw = JSON.stringify([
+        {
+          channel: "WHATSAPP",
+          externalId: "ext-unsigned-1",
+          eventType: "READ",
+          eventTs: 1782450922000,
+          extra: "88354b90-6ff9-11f1-9f51-83d05b01c0e1",
+        },
+      ]);
+      const sig = createHmac("sha256", secret).update(raw, "utf8").digest("hex");
+      const res = await request(app)
+        .post("/api/scalemargin/gupshup-events")
+        .set("Content-Type", "application/json")
+        .set("x-gupshup-signature", sig)
+        .send(raw);
+
+      expect(res.status).toBe(200);
+      expect(res.body.receipts).toBe(0);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Rejecting receipt externalId=ext-unsigned-1")
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("warns and drops unknown gupshup status", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {

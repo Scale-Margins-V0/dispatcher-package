@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { AnalyticsEventType } from "../../providers/types.js";
 import { extractCorrelationFromGupshupEvent } from "../common/correlator.js";
+import { SMSIGN_PREFIX } from "../tag-sign.js";
 import type {
   Correlation,
   InboundEventAdapter,
@@ -37,6 +38,9 @@ function normalizeGupshupGatewayReceipt(
   if (obj.errorCode !== undefined && obj.errorCode !== null) {
     out.errorCode = String(obj.errorCode);
   }
+  // `extra` is echoed back verbatim from the outbound send — carries our
+  // `smsign_<sig>` so the backend can authenticate the receipt (see extractGupshupReceipt).
+  if (typeof obj.extra === "string") out.extra = obj.extra;
   // destAddr is the recipient phone (PII) — map to `destination` so stripPii drops it.
   if (typeof obj.destAddr === "string") out.destination = obj.destAddr;
   return out;
@@ -166,12 +170,16 @@ export interface GupshupReceipt {
   occurred_at: string;
   cause?: string;
   error_code?: string;
+  /** Bare HMAC (smsign_ prefix stripped) echoed in `extra`; backend recomputes from campaign|user|org. */
+  sign?: string;
 }
 
 /**
  * Build a forwardable receipt from a normalized GatewayAPI delivery record
- * (externalId + eventType, no tag). Returns null for records that are not
- * recognizable receipts or whose status has no analytics mapping.
+ * (externalId + eventType + echoed `extra`). Carries no correlation tag, so the
+ * backend matches by externalId; the `smsign_` from `extra` rides along as `sign`
+ * for authentication. Returns null for records that are not recognizable receipts
+ * or whose status has no analytics mapping.
  */
 export function extractGupshupReceipt(item: unknown): GupshupReceipt | null {
   if (!item || typeof item !== "object") return null;
@@ -197,12 +205,19 @@ export function extractGupshupReceipt(item: unknown): GupshupReceipt | null {
       : new Date().toISOString();
   const cause = typeof e.cause === "string" ? e.cause : undefined;
   const error_code = typeof e.errorCode === "string" ? e.errorCode : undefined;
+  // Only our own `smsign_<sig>` becomes `sign` (bare hex); foreign/legacy `extra`
+  // values are ignored so the backend never tries to validate something we didn't sign.
+  const sign =
+    typeof e.extra === "string" && e.extra.startsWith(SMSIGN_PREFIX)
+      ? e.extra.slice(SMSIGN_PREFIX.length)
+      : undefined;
   return {
     external_id,
     event,
     occurred_at,
     ...(cause ? { cause } : {}),
     ...(error_code ? { error_code } : {}),
+    ...(sign ? { sign } : {}),
   };
 }
 

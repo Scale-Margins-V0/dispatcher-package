@@ -122,6 +122,38 @@ describe("GupshupInboundAdapter", () => {
       expect(extractGupshupReceipt({ eventType: "READ" })).toBeNull();
     });
 
+    it("carries our smsign_ extra through as a bare-hex sign", () => {
+      const raw = Buffer.from(
+        JSON.stringify([
+          {
+            channel: "WHATSAPP",
+            externalId: "ext-1",
+            eventType: "READ",
+            eventTs: 1782299107000,
+            extra: "smsign_88354b906ff911f19f5183d05b01c0e1",
+          },
+        ])
+      );
+      const receipt = extractGupshupReceipt(adapter.parseEvents(raw)[0]);
+      expect(receipt?.sign).toBe("88354b906ff911f19f5183d05b01c0e1");
+    });
+
+    it("ignores a foreign (non-smsign_) extra value", () => {
+      const raw = Buffer.from(
+        JSON.stringify([
+          {
+            channel: "WHATSAPP",
+            externalId: "ext-2",
+            eventType: "READ",
+            eventTs: 1782299107000,
+            extra: "88354b90-6ff9-11f1-9f51-83d05b01c0e1",
+          },
+        ])
+      );
+      const receipt = extractGupshupReceipt(adapter.parseEvents(raw)[0]);
+      expect(receipt?.sign).toBeUndefined();
+    });
+
     it("drops the recipient phone (destAddr) from the stripped event", () => {
       const stripped = adapter.stripPii(loadFlat());
       expect(stripped.destination).toBeUndefined();

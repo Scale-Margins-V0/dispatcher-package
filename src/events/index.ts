@@ -229,6 +229,7 @@ export function createInboundWebhookHandler(
     let droppedNoCallbackUrl = 0;
     let droppedUnsupported = 0;
     let droppedOtherNoCorrelation = 0;
+    let droppedUnsignedReceipts = 0;
     for (const item of items) {
       if (adapter.name === "sendgrid") {
         if (
@@ -247,12 +248,18 @@ export function createInboundWebhookHandler(
           sendgridUncorrelated++;
           if (sendgridUncorrelated === 1) {sendgridUncorrelatedSample = item;}
         } else if (adapter.name === "gupshup") {
-          // GatewayAPI delivery receipts carry no tag — forward them raw to the
-          // backend, which matches externalId → the dispatched event's
-          // metadata.provider_message_id and records the new event there.
+          // GatewayAPI delivery receipts carry no tag — forward them to the backend,
+          // which matches externalId → the dispatched event's metadata.provider_message_id.
+          // Require our authenticity stamp: a receipt whose echoed `extra` is missing
+          // or not `smsign_…` is rejected here and never forwarded.
           const receipt = extractGupshupReceipt(item);
-          if (receipt) {
+          if (receipt && receipt.sign) {
             gupshupReceipts.push(receipt);
+          } else if (receipt) {
+            droppedUnsignedReceipts++;
+            console.warn(
+              `[Events][gupshup] Rejecting receipt externalId=${receipt.external_id} — extra missing or not smsign_ (unauthenticated)`
+            );
           } else {
             droppedOtherNoCorrelation++;
             console.warn(
@@ -312,7 +319,7 @@ export function createInboundWebhookHandler(
         ? String((sendgridUncorrelatedSample as { event?: unknown }).event ?? "")
         : "";
     console.log(
-      `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} forwarded=${envelopes.length} receipts=${gupshupReceipts.length} dropped_sg_no_correlation=${sendgridUncorrelated} dropped_no_callback_url=${droppedNoCallbackUrl} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation}`
+      `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} forwarded=${envelopes.length} receipts=${gupshupReceipts.length} dropped_sg_no_correlation=${sendgridUncorrelated} dropped_no_callback_url=${droppedNoCallbackUrl} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation} dropped_unsigned_receipts=${droppedUnsignedReceipts}`
     );
     if (sendgridUncorrelated > 0) {
       console.warn(
