@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { AnalyticsEventType } from "../../providers/types.js";
 import { extractCorrelationFromGupshupEvent } from "../common/correlator.js";
+import { SMSIGN_PREFIX } from "../tag-sign.js";
 import type {
   Correlation,
   InboundEventAdapter,
@@ -8,9 +9,52 @@ import type {
   StandardizedEvent,
 } from "../common/types.js";
 
+/**
+ * Gupshup GatewayAPI delivery receipt — flat record echoing the outbound message id
+ * as `externalId`, with `eventType` (DELIVERED / READ / FAILED / …), optional `cause`
+ * + `errorCode`, and an epoch-millis `eventTs`. Carries no `tag`: correlation is
+ * recovered downstream from the dispatch-time message-id registry, keyed by `externalId`.
+ */
+function normalizeGupshupGatewayReceipt(
+  obj: Record<string, unknown>
+): Record<string, unknown> {
+  const externalId = obj.externalId as string;
+  const tsRaw = obj.eventTs;
+  const tsMs =
+    typeof tsRaw === "number"
+      ? tsRaw
+      : typeof tsRaw === "string" && /^\d+$/.test(tsRaw)
+        ? parseInt(tsRaw, 10)
+        : NaN;
+  const out: Record<string, unknown> = {
+    type: "message-event",
+    // Lower-cased downstream by mapGupshupStatus; keep the raw value here.
+    eventType: obj.eventType,
+    msgId: externalId,
+    externalId,
+    timestamp: new Date(Number.isFinite(tsMs) ? tsMs : Date.now()).toISOString(),
+  };
+  if (typeof obj.cause === "string") out.cause = obj.cause;
+  if (obj.errorCode !== undefined && obj.errorCode !== null) {
+    out.errorCode = String(obj.errorCode);
+  }
+  // `extra` is echoed back verbatim from the outbound send — carries our
+  // `smsign_<sig>` so the backend can authenticate the receipt (see extractGupshupReceipt).
+  if (typeof obj.extra === "string") out.extra = obj.extra;
+  // destAddr is the recipient phone (PII) — map to `destination` so stripPii drops it.
+  if (typeof obj.destAddr === "string") out.destination = obj.destAddr;
+  return out;
+}
+
 export function normalizeGupshupInboundRecord(
   obj: Record<string, unknown>
 ): Record<string, unknown> {
+  // GatewayAPI delivery receipt: identified by `externalId` (the echoed message id).
+  // Checked before the legacy short-circuit below because these records also carry a
+  // string `eventType`, but need their id and timestamp lifted into the common shape.
+  if (typeof obj.externalId === "string" && typeof obj.eventType === "string") {
+    return normalizeGupshupGatewayReceipt(obj);
+  }
   if (typeof obj.eventType === "string" || typeof obj.msgId === "string") {
     return obj;
   }
@@ -94,15 +138,87 @@ function stripGupshup(obj: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
+/**
+ * WhatsApp (Gupshup) delivery status → canonical analytics event, so WhatsApp logs
+ * the same lowercase vocabulary as email:
+ *   ENQUEUED / SENT → dispatched
+ *   DELIVERED       → delivered
+ *   READ            → opened     (a WhatsApp read == an email open)
+ *   CLICKED         → clicked    (WhatsApp button/link clicks, when enabled)
+ *   FAILED          → failed     (the backend canonicalizes failed → bounced)
+ * Returns null for statuses with no analytics mapping (dropped + logged upstream).
+ */
 function mapGupshupStatus(status: string): AnalyticsEventType | null {
   const m: Record<string, AnalyticsEventType> = {
     enqueued: "dispatched",
-    sent: "sent",
+    sent: "dispatched",
     delivered: "delivered",
-    read: "read",
+    read: "opened",
+    clicked: "clicked",
     failed: "failed",
   };
   return m[status.toLowerCase()] ?? null;
+}
+
+/**
+ * A correlation-free WhatsApp delivery receipt forwarded to the backend, which
+ * matches `external_id` against the dispatched event's `metadata.provider_message_id`.
+ */
+export interface GupshupReceipt {
+  external_id: string;
+  event: AnalyticsEventType;
+  occurred_at: string;
+  cause?: string;
+  error_code?: string;
+  /** Bare HMAC (smsign_ prefix stripped) echoed in `extra`; backend recomputes from campaign|user|org. */
+  sign?: string;
+}
+
+/**
+ * Build a forwardable receipt from a normalized GatewayAPI delivery record
+ * (externalId + eventType + echoed `extra`). Carries no correlation tag, so the
+ * backend matches by externalId; the `smsign_` from `extra` rides along as `sign`
+ * for authentication. Returns null for records that are not recognizable receipts
+ * or whose status has no analytics mapping.
+ */
+export function extractGupshupReceipt(item: unknown): GupshupReceipt | null {
+  if (!item || typeof item !== "object") return null;
+  const e = item as Record<string, unknown>;
+  const external_id =
+    typeof e.externalId === "string"
+      ? e.externalId
+      : typeof e.msgId === "string"
+        ? e.msgId
+        : undefined;
+  if (!external_id) return null;
+  const statusRaw =
+    typeof e.eventType === "string"
+      ? e.eventType
+      : typeof e.status === "string"
+        ? e.status
+        : "";
+  const event = mapGupshupStatus(statusRaw);
+  if (!event) return null;
+  const occurred_at =
+    typeof e.timestamp === "string"
+      ? new Date(e.timestamp).toISOString()
+      : new Date().toISOString();
+  const cause = typeof e.cause === "string" ? e.cause : undefined;
+  const error_code = typeof e.errorCode === "string" ? e.errorCode : undefined;
+  // Only our own `smsign_<sig>` becomes `sign` (bare hex); foreign/legacy `extra`
+  // values are ignored so the backend never tries to validate something we didn't sign.
+  const sign =
+    typeof e.extra === "string" && e.extra.startsWith(SMSIGN_PREFIX)
+      ? e.extra.slice(SMSIGN_PREFIX.length)
+      : undefined;
+  return {
+    external_id,
+    event,
+    occurred_at,
+    ...(cause ? { cause } : {}),
+    ...(error_code ? { error_code } : {}),
+    ...(sign ? { sign } : {}),
+  };
 }
 
 export function createGupshupInboundAdapter(webhookSecret: string): InboundEventAdapter {
@@ -125,10 +241,18 @@ export function createGupshupInboundAdapter(webhookSecret: string): InboundEvent
       }
     },
     parseEvents(rawBody: Buffer): unknown[] {
-      const body = JSON.parse(rawBody.toString("utf-8")) as Record<string, unknown>;
-      return [normalizeGupshupInboundRecord(body)];
+      const parsed = JSON.parse(rawBody.toString("utf-8")) as unknown;
+      // GatewayAPI delivery receipts arrive as a JSON array of records; the legacy
+      // tag-echo webhook is a single object. Normalize both to a flat record list.
+      const records = Array.isArray(parsed) ? parsed : [parsed];
+      return records.map((r) =>
+        normalizeGupshupInboundRecord(r as Record<string, unknown>)
+      );
     },
     extractCorrelation(event: unknown): Correlation | null {
+      // Tag-echo path (io/enterprise sends embed campaign metadata in `tag`).
+      // GatewayAPI delivery receipts carry no tag — they correlate later on the
+      // backend by externalId (see extractGupshupReceipt + the inbound handler).
       return extractCorrelationFromGupshupEvent(event);
     },
     stripPii(event: unknown): Record<string, unknown> {
@@ -152,6 +276,7 @@ export function createGupshupInboundAdapter(webhookSecret: string): InboundEvent
           : new Date().toISOString();
       const metadata: StandardizedEvent["metadata"] = {};
       if (typeof stripped.cause === "string") metadata.bounce_reason = stripped.cause;
+      if (typeof stripped.errorCode === "string") metadata.error_code = stripped.errorCode;
       return {
         ...c,
         channel: "whatsapp",

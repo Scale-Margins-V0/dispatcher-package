@@ -1,8 +1,9 @@
 /**
- * Gupshup inbound webhook — log-only mode (forwarding disabled).
+ * Gupshup inbound webhook — log-only mode (forwarding explicitly disabled).
  *
- * The endpoint always accepts + logs the payload and returns 200, but forwards
- * nothing to the backend event caller while the gupshup provider is disabled.
+ * Gupshup forwards by default, so this test opts out with
+ * EVENT_PROVIDERS_DISABLED=gupshup. The endpoint then always accepts + logs the
+ * payload and returns 200, but forwards nothing to the backend event caller.
  */
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -47,6 +48,7 @@ describe("POST /api/scalemargin/gupshup-events (log-only, forwarding disabled)",
     process.env.SCALEMARGIN_ANALYTICS_SECRET = "analytics-secret";
     process.env.NODE_ENV = "test";
     delete process.env.GUPSHUP_WEBHOOK_SECRET;
+    process.env.EVENT_PROVIDERS_DISABLED = "gupshup";
 
     vi.stubGlobal("fetch", fetchMock);
 
@@ -60,6 +62,7 @@ describe("POST /api/scalemargin/gupshup-events (log-only, forwarding disabled)",
 
   afterAll(() => {
     vi.unstubAllGlobals();
+    delete process.env.EVENT_PROVIDERS_DISABLED;
     shutdownEventPipeline();
     resetEventPipelineForTests();
   });

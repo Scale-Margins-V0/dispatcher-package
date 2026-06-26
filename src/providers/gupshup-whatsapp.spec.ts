@@ -24,6 +24,10 @@ describe("gupshup-whatsapp", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
+    // These tests assert the legacy self-contained JSON `extra`/`tag`. Signing is
+    // opt-in via SCALEMARGIN_ANALYTICS_SECRET; clear it so a leak from another
+    // test file can't flip the tag to a smsign_ token.
+    delete process.env.SCALEMARGIN_ANALYTICS_SECRET;
   });
 
   afterEach(() => {

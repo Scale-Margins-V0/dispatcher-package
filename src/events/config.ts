@@ -72,14 +72,14 @@ function parseProviderList(raw: string | undefined): Array<"sendgrid" | "ses" | 
  */
 export function applyProviderEnablementFromEnv(cfg: EventsConfig): void {
   const sgEnv = sendgridSigningEnvName(cfg);
-  const guEnv = gupshupSecretEnvName(cfg);
   cfg.providers.sendgrid.enabled = Boolean(process.env[sgEnv]?.trim());
   cfg.providers.ses.enabled = true;
-  // `enabled` here gates FORWARDING to the backend event caller — default off.
-  // The Gupshup webhook endpoint always accepts + logs payloads regardless; it only
-  // forwards when this is on. Turn on later via GUPSHUP_WEBHOOK_SECRET or
-  // EVENT_PROVIDERS_ENABLED=gupshup.
-  cfg.providers.gupshup.enabled = Boolean(process.env[guEnv]?.trim());
+  // `enabled` here gates FORWARDING to the backend event caller. Gupshup forwards
+  // by default (like SES) — the webhook always accepts + logs payloads, and now also
+  // forwards them. GUPSHUP_WEBHOOK_SECRET, when set, additionally HMAC-verifies the
+  // incoming signature; without it the webhook is open (unauthenticated). Turn
+  // forwarding off with EVENT_PROVIDERS_DISABLED=gupshup.
+  cfg.providers.gupshup.enabled = true;
 
   for (const p of parseProviderList(process.env.EVENT_PROVIDERS_DISABLED)) {
     cfg.providers[p].enabled = false;

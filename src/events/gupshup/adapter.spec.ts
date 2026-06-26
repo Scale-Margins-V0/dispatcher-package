@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { createGupshupInboundAdapter, normalizeGupshupInboundRecord } from "./adapter.js";
+import {
+  createGupshupInboundAdapter,
+  extractGupshupReceipt,
+  normalizeGupshupInboundRecord,
+} from "./adapter.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const secret = "test-secret";
@@ -72,5 +76,87 @@ describe("GupshupInboundAdapter", () => {
       readFileSync(join(__dirname, "../__fixtures__/gupshup", "read.json"), "utf-8")
     ) as Record<string, unknown>;
     expect(normalizeGupshupInboundRecord(legacy)).toBe(legacy);
+  });
+
+  describe("GatewayAPI delivery receipts (externalId, no tag)", () => {
+    const externalId = "5727636466279092270-1028021868126176";
+
+    function loadFlat(): Record<string, unknown> {
+      const raw = readFileSync(
+        join(__dirname, "../__fixtures__/gupshup", "gateway-receipt.json")
+      );
+      return adapter.parseEvents(raw)[0] as Record<string, unknown>;
+    }
+
+    it("parses the array form and lifts externalId/eventTs into the common shape", () => {
+      const raw = readFileSync(
+        join(__dirname, "../__fixtures__/gupshup", "gateway-receipt.json")
+      );
+      const items = adapter.parseEvents(raw);
+      expect(items).toHaveLength(1);
+      const flat = items[0] as Record<string, unknown>;
+      expect(flat.eventType).toBe("FAILED");
+      expect(flat.msgId).toBe(externalId);
+      expect(flat.externalId).toBe(externalId);
+      expect(flat.cause).toBe("WA_FrequencyCapping");
+      expect(flat.errorCode).toBe("121");
+      expect(flat.timestamp).toBe("2026-06-24T11:05:07.000Z");
+    });
+
+    it("extractCorrelation returns null for a receipt (no tag → correlated on backend)", () => {
+      expect(adapter.extractCorrelation(loadFlat())).toBeNull();
+    });
+
+    it("extractGupshupReceipt builds a forwardable receipt with mapped event + cause", () => {
+      const receipt = extractGupshupReceipt(loadFlat());
+      expect(receipt).toEqual({
+        external_id: externalId,
+        event: "failed",
+        occurred_at: "2026-06-24T11:05:07.000Z",
+        cause: "WA_FrequencyCapping",
+        error_code: "121",
+      });
+    });
+
+    it("extractGupshupReceipt returns null when there is no external id", () => {
+      expect(extractGupshupReceipt({ eventType: "READ" })).toBeNull();
+    });
+
+    it("carries our smsign_ extra through as a bare-hex sign", () => {
+      const raw = Buffer.from(
+        JSON.stringify([
+          {
+            channel: "WHATSAPP",
+            externalId: "ext-1",
+            eventType: "READ",
+            eventTs: 1782299107000,
+            extra: "smsign_88354b906ff911f19f5183d05b01c0e1",
+          },
+        ])
+      );
+      const receipt = extractGupshupReceipt(adapter.parseEvents(raw)[0]);
+      expect(receipt?.sign).toBe("88354b906ff911f19f5183d05b01c0e1");
+    });
+
+    it("ignores a foreign (non-smsign_) extra value", () => {
+      const raw = Buffer.from(
+        JSON.stringify([
+          {
+            channel: "WHATSAPP",
+            externalId: "ext-2",
+            eventType: "READ",
+            eventTs: 1782299107000,
+            extra: "88354b90-6ff9-11f1-9f51-83d05b01c0e1",
+          },
+        ])
+      );
+      const receipt = extractGupshupReceipt(adapter.parseEvents(raw)[0]);
+      expect(receipt?.sign).toBeUndefined();
+    });
+
+    it("drops the recipient phone (destAddr) from the stripped event", () => {
+      const stripped = adapter.stripPii(loadFlat());
+      expect(stripped.destination).toBeUndefined();
+    });
   });
 });

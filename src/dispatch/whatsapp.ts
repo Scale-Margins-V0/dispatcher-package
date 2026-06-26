@@ -1,4 +1,5 @@
 import { emitEvent } from "../events/index.js";
+import { computeTagSign } from "../events/tag-sign.js";
 import { registerCampaignCallback } from "../events/campaign-callback-registry.js";
 import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callback-url.js";
 import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
@@ -172,6 +173,30 @@ async function emitWhatsAppEvent(args: {
     error,
   } = args;
 
+  // A "successful" send with no provider message id can't be correlated to later
+  // GatewayAPI delivery receipts (dispatch_message_map is keyed on it), so emit a
+  // failed event with an explicit reason instead of an uncorrelatable "dispatched".
+  const hasMessageId = typeof messageId === "string" && messageId.length > 0;
+  if (success && !hasMessageId) {
+    warnUnlessVitest(
+      `[Dispatch] WhatsApp send for user=${userId} campaign=${campaign_id} succeeded but returned no provider message id — emitting failed (noProviderMessageId)`
+    );
+  }
+  const effectiveSuccess = success && hasMessageId;
+  const effectiveError =
+    success && !hasMessageId ? "noProviderMessageId" : error;
+
+  const dispatch_id = payload.dispatch_ids?.[userId];
+
+  // `smsign_<sig>` is the same HMAC placed on the outbound Gupshup `extra`/`tag`.
+  // Forwarded so the backend — which recovers campaign/user/org by externalId —
+  // can recompute it and confirm the event originated from a message we sent.
+  const sign = computeTagSign({
+    campaign_id,
+    user_id: userId,
+    organization_id: metadata.organization_id,
+  });
+
   await emitEvent({
     callbackUrl: resolvedAnalyticsUrl,
     event: {
@@ -180,20 +205,19 @@ async function emitWhatsAppEvent(args: {
       organization_id: metadata.organization_id,
       analytics_callback_url: resolvedAnalyticsUrl,
       channel: "whatsapp",
-      event: success ? "dispatched" : "failed",
+      event: effectiveSuccess ? "dispatched" : "failed",
       provider: "gupshup",
       provider_message_id: messageId ?? "unknown",
       occurred_at: new Date().toISOString(),
       metadata: {
-        ...(error ? { bounce_reason: error } : {}),
-        ...(payload.dispatch_ids?.[userId]
-          ? { dispatch_id: payload.dispatch_ids[userId] }
-          : {}),
+        ...(effectiveError ? { bounce_reason: effectiveError } : {}),
+        ...(dispatch_id ? { dispatch_id } : {}),
+        ...(sign ? { sign } : {}),
       },
     },
   });
 
   logUnlessVitest(
-    `[Dispatch] event emitted user=${userId} event=${success ? "dispatched" : "failed"} messageId=${messageId ?? "unknown"}`
+    `[Dispatch] event emitted user=${userId} event=${effectiveSuccess ? "dispatched" : "failed"} messageId=${messageId ?? "unknown"}`
   );
 }

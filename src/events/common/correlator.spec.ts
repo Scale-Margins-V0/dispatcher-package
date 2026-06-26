@@ -70,6 +70,14 @@ describe("correlator", () => {
     expect(c?.user_id).toBe("u_v2");
   });
 
+  it("returns null for a smsign_ tag (correlates on the backend by externalId, not locally)", () => {
+    expect(
+      extractCorrelationFromGupshupEvent({
+        tag: "smsign_deadbeefdeadbeefdeadbeefdeadbeef",
+      })
+    ).toBeNull();
+  });
+
   it("LookupTableCorrelator stub returns null", () => {
     const lt = new LookupTableCorrelator();
     expect(lt.lookup("any")).toBeNull();

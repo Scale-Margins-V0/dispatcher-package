@@ -110,8 +110,9 @@ export function registerInboundWebhookRoutes(app: Express): void {
     async (req, res, next) => {
       // Always log the raw payload for inspection.
       logGupshupPayload(req);
-      // Forwarding to the backend event caller is OFF by default — log only.
-      // Enable later via GUPSHUP_WEBHOOK_SECRET or EVENT_PROVIDERS_ENABLED=gupshup.
+      // Forwarding to the backend event caller is ON by default. Disable (log only)
+      // via EVENT_PROVIDERS_DISABLED=gupshup. GUPSHUP_WEBHOOK_SECRET, when set, adds
+      // HMAC signature verification on top of forwarding.
       if (!isProviderEnabled("gupshup")) {
         res.status(200).json({ received: true, forwarded: false });
         return;
