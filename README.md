@@ -131,14 +131,63 @@ pnpm run dev
 pnpm run dev:local
 ```
 
-Health check: `GET http://localhost:3100/health` (or your `PORT`).
+Operations checks:
+
+```bash
+curl http://localhost:3100/health
+curl http://localhost:3100/version
+curl http://localhost:3100/status
+```
+
+`/health` stays minimal for container probes. `/version` returns package/build identity, and `/status` returns readiness-style config status without probing client databases or provider credentials.
 
 Main routes:
 
 - `POST /api/scalemargin/dispatch` — ScaleMargin campaign dispatch (HMAC: `X-ScaleMargin-Signature`).
+- `POST /api/scalemargin/diagnostics` — signed redacted support report.
 - `POST /api/scalemargin/sendgrid-events` — SendGrid Event Webhook (when enabled in events config).
 - `POST /api/scalemargin/ses-notifications` — SES via SNS.
 - `POST /api/scalemargin/gupshup-events` — Gupshup (when enabled).
+
+---
+
+## Diagnostics and support reports
+
+`POST /api/scalemargin/diagnostics` uses the same `X-ScaleMargin-Signature` HMAC as dispatch requests and the same raw-body signing rule. It returns version metadata, selected config modes, enabled event providers, env presence booleans, placeholder names, and optional user-lookup counts.
+
+It must never return secret values, provider API keys, DB credentials, raw PII, or full resolved recipient records.
+
+```bash
+SECRET="your-dispatch-secret"
+BODY='{"checks":["user_lookup"],"sample_user_ids":["u_001"]}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')
+
+curl -fsS -X POST http://localhost:3100/api/scalemargin/diagnostics \
+  -H "content-type: application/json" \
+  -H "X-ScaleMargin-Signature: sha256=$SIG" \
+  --data "$BODY"
+```
+
+---
+
+## Release maintenance
+
+Use Changesets for dispatcher release notes and package version bumps:
+
+```bash
+pnpm changeset
+pnpm run version
+```
+
+Commit the generated `package.json`, `pnpm-lock.yaml`, `CHANGELOG.md`, and consumed changeset updates. Push a tag named `dispatcher-v<version>` from that commit to publish Docker images and a GitHub Release:
+
+```bash
+VERSION=$(node -p 'require("./package.json").version')
+git tag "dispatcher-v${VERSION}"
+git push origin "dispatcher-v${VERSION}"
+```
+
+The release workflow publishes `ghcr.io/scale-margins-v0/scalemargin-dispatcher:<version>`, `:v<version>`, and `:latest`. Roll back by redeploying the last known-good version tag in client infrastructure.
 
 ---
 

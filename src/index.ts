@@ -47,6 +47,8 @@ if (process.env.VITEST !== "true") {
 import { createEventTestCsvCaptureHandler } from "./devtools/event-test-csv-capture.js";
 import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
 import { verifyHmacSignature } from "./middleware/hmac.js";
+import { getBuildInfo } from "./ops/build-info.js";
+import { buildDiagnosticsReport, getRuntimeStatus } from "./ops/diagnostics.js";
 import { createUnsubscribeLinkGetHandler } from "./unsubscribe/link.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
@@ -125,6 +127,10 @@ app.use(
   "/api/scalemargin/validate-pii",
   express.text({ type: "application/json", limit: "1mb" })
 );
+app.use(
+  "/api/scalemargin/diagnostics",
+  express.text({ type: "application/json", limit: "1mb" })
+);
 
 // Serve locally-stored campaign images (for IMAGE_STORAGE_PROVIDER=local)
 if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
@@ -144,6 +150,26 @@ app.get("/health", (_req, res) => {
     event_test_csv_capture: Boolean(process.env.EVENT_TEST_CSV_PATH),
   });
 });
+
+// Public build identity for support and client-hosted rollout checks.
+app.get("/version", (_req, res) => {
+  res.json(getBuildInfo());
+});
+
+// Public readiness-style status. This does not probe client DB/provider credentials.
+app.get("/status", (_req, res) => {
+  res.json(getRuntimeStatus());
+});
+
+// Signed support report. Returns config shape and dependency modes, never secrets or PII values.
+app.post(
+  "/api/scalemargin/diagnostics",
+  verifyHmacSignature,
+  async (req, res) => {
+    const report = await buildDiagnosticsReport(req.body ?? {});
+    res.json(report);
+  }
+);
 
 // Signed lookup smoke test for Atlas. Returns counts and field names only.
 app.post(

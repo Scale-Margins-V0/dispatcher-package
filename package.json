@@ -1,6 +1,6 @@
 {
   "name": "scalemargin-dispatch-handler",
-  "version": "1.0.0",
+  "version": "0.2.3",
   "description": "Reference implementation for ScaleMargin webhook dispatch handler and analytics reporter. Supports AWS SES and SendGrid.",
   "packageManager": "pnpm@9.15.4",
   "main": "src/index.ts",
@@ -23,6 +23,9 @@
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "test:coverage": "vitest run --coverage",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "pnpm run build && changeset tag",
     "seed:mysql": "tsx scripts/seed/seed.ts --dialect=mysql",
     "seed:postgres": "tsx scripts/seed/seed.ts --dialect=postgres",
     "seed:sqlite": "tsx scripts/seed/seed.ts --dialect=sqlite",
@@ -43,13 +46,14 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "starkbank-ecdsa": "^1.1.1",
+    "@changesets/cli": "^2.31.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/express": "^5.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.10",
     "@types/supertest": "^6.0.2",
+    "starkbank-ecdsa": "^1.1.1",
     "supertest": "^7.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",

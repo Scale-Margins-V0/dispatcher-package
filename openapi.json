@@ -1,0 +1,1627 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ScaleMargin Dispatch Handler API",
+    "version": "0.2.3",
+    "description": "Reference implementation for the ScaleMargin Atlas dispatch handler.\n\nThe service has two halves:\n\n1. **Inbound dispatch** — Atlas POSTs HMAC-signed campaign dispatches to `/api/scalemargin/dispatch`. The handler resolves `user_ids` to PII, personalizes content, and sends via AWS SES or SendGrid.\n2. **Provider event ingest + analytics forwarding** — provider webhooks (SendGrid, SES via SNS, Gupshup) land on the `/api/scalemargin/*-events` routes, are standardized and PII-scrubbed, then forwarded as HMAC-signed analytics batches to the campaign's `analytics_callback_url`.\n\n**Authentication model.** There is no session/token auth. Each route is protected by a payload signature:\n- `/api/scalemargin/dispatch`, `/api/scalemargin/validate-pii`, and `/api/scalemargin/diagnostics` — HMAC-SHA256 of the raw request body using `SCALEMARGIN_DISPATCH_SECRET`, sent as `X-ScaleMargin-Signature: sha256=<hex>` (timing-safe compared).\n- `/api/scalemargin/sendgrid-events` — SendGrid Event Webhook ECDSA signature headers.\n- `/api/scalemargin/gupshup-events` — Gupshup HMAC header.\n- `/api/scalemargin/ses-notifications` — Amazon SNS message signature (verified against the SNS signing certificate; the signature travels inside the JSON body, not a header).\n- `/api/webhooks/campaign-analytics/capture` (dev-only) — HMAC-SHA256 using `SCALEMARGIN_ANALYTICS_SECRET`.",
+    "license": {
+      "name": "Reference implementation — adjust before production use"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:{port}",
+      "description": "Local development (PORT env, default 3100)",
+      "variables": {
+        "port": {
+          "default": "3100"
+        }
+      }
+    },
+    {
+      "url": "https://dispatch.example.com",
+      "description": "Your deployed handler (placeholder)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Dispatch",
+      "description": "Inbound campaign dispatch from ScaleMargin Atlas."
+    },
+    {
+      "name": "Provider events",
+      "description": "Inbound provider webhooks (SendGrid, SES/SNS, Gupshup) standardized and forwarded to Atlas."
+    },
+    {
+      "name": "Unsubscribe",
+      "description": "Public unsubscribe link click handler."
+    },
+    {
+      "name": "Operations",
+      "description": "Health and diagnostics."
+    },
+    {
+      "name": "Dev tools",
+      "description": "Endpoints only mounted under specific env flags; not part of the production contract."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Health check",
+        "description": "Liveness probe. Reports the configured email provider, image storage backend, and whether dev CSV capture is enabled.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Service is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                },
+                "example": {
+                  "status": "ok",
+                  "provider": "ses",
+                  "image_storage": "none",
+                  "event_test_csv_capture": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/scalemargin/dispatch": {
+      "post": {
+        "tags": [
+          "Dispatch"
+        ],
+        "summary": "Receive a campaign dispatch",
+        "description": "Accepts a signed campaign dispatch from Atlas. The body is verified against `SCALEMARGIN_DISPATCH_SECRET` before parsing. The handler **acknowledges immediately with `202`** and processes the campaign asynchronously (user lookup, personalization, send, per-recipient analytics emit). Body limit is 10 MB to accommodate base64-encoded campaign images.",
+        "operationId": "postDispatch",
+        "security": [
+          {
+            "ScaleMarginDispatchSignature": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Dispatch accepted for asynchronous processing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DispatchAcceptedResponse"
+                },
+                "example": {
+                  "accepted": true,
+                  "message": "Campaign dispatch received"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body passed signature verification but is not valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Invalid JSON body"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `X-ScaleMargin-Signature`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Invalid signature"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server misconfigured (dispatch secret not set).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Server misconfigured: missing dispatch secret"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/scalemargin/validate-pii": {
+      "post": {
+        "tags": [
+          "Dispatch"
+        ],
+        "summary": "Validate user-id → PII resolution",
+        "description": "Signed smoke test for Atlas. Resolves 1–25 `user_ids` through the configured user-lookup backend and returns **counts and field names only** — never PII values. Body is verified against `SCALEMARGIN_DISPATCH_SECRET`.",
+        "operationId": "postValidatePii",
+        "security": [
+          {
+            "ScaleMarginDispatchSignature": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidatePiiRequest"
+              },
+              "example": {
+                "user_ids": [
+                  "u_1",
+                  "u_2",
+                  "u_3"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Lookup completed (check `pii_conversion_ok`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatePiiResponse"
+                },
+                "example": {
+                  "pii_conversion_ok": true,
+                  "requested_count": 3,
+                  "found_count": 3,
+                  "missing_user_ids": [],
+                  "email_available_count": 3,
+                  "resolved_field_names": [
+                    "first_name",
+                    "last_name",
+                    "email"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`user_ids` missing, empty, or more than 25.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatePiiErrorResponse"
+                },
+                "example": {
+                  "error": "Provide 1-25 user_ids",
+                  "pii_conversion_ok": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `X-ScaleMargin-Signature`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "User lookup failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatePiiErrorResponse"
+                },
+                "example": {
+                  "error": "User lookup failed",
+                  "pii_conversion_ok": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/scalemargin/ses-notifications": {
+      "post": {
+        "tags": [
+          "Provider events"
+        ],
+        "summary": "Amazon SES events via SNS",
+        "description": "Receives Amazon SNS messages (SES event notifications). The SNS message signature is verified against the SNS signing certificate before processing.\n\n- `SubscriptionConfirmation` messages are auto-confirmed by fetching `SubscribeURL`, but only when its hostname ends in `.amazonaws.com`.\n- `Notification` messages carry SES events that are standardized, PII-scrubbed, and forwarded to the campaign's analytics callback URL (correlation resolved via SES message tags + the in-memory campaign registry).\n\nAccepts any content type (body parsed as text, max 1 MB).",
+        "operationId": "postSesNotifications",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {
+              "schema": {
+                "$ref": "#/components/schemas/SnsMessage"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnsMessage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Subscription confirmed, or events accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SnsConfirmationResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InboundAckResponse"
+                    }
+                  ]
+                },
+                "examples": {
+                  "confirmation": {
+                    "summary": "SubscriptionConfirmation",
+                    "value": {
+                      "confirmed": true
+                    }
+                  },
+                  "notification": {
+                    "summary": "Notification accepted",
+                    "value": {
+                      "received": true,
+                      "count": 2
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Invalid JSON"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid SNS message signature.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "invalid SNS signature"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SES provider disabled in events config.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "not found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/scalemargin/sendgrid-events": {
+      "post": {
+        "tags": [
+          "Provider events"
+        ],
+        "summary": "SendGrid Event Webhook",
+        "description": "Receives the SendGrid Event Webhook (an array of event objects). The ECDSA signature is verified using the configured public key (`SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`). Correlation (`campaign_id`, `user_id`, `organization_id`, `analytics_callback_url`) is read from each event's `custom_args`. Returns `404` when the SendGrid provider is not enabled. Body parsed as text, max 6 MB.",
+        "operationId": "postSendgridEvents",
+        "security": [
+          {
+            "SendGridEventWebhookSignature": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Twilio-Email-Event-Webhook-Timestamp",
+            "in": "header",
+            "required": true,
+            "description": "SendGrid Event Webhook timestamp, signed together with the body.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SendGridEvent"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Events accepted; `count` is the number forwarded after filtering/correlation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboundAckResponse"
+                },
+                "example": {
+                  "received": true,
+                  "count": 5
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not a parseable webhook payload.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "invalid webhook payload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid ECDSA signature.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "invalid signature"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SendGrid provider disabled (no signing key configured).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "not found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/scalemargin/gupshup-events": {
+      "post": {
+        "tags": [
+          "Provider events"
+        ],
+        "summary": "Gupshup WhatsApp events",
+        "description": "Receives Gupshup event callbacks. Verified with an HMAC signature header against `GUPSHUP_WEBHOOK_SECRET`. Returns `404` when the Gupshup provider is not enabled. Body parsed as text, max 1 MB.",
+        "operationId": "postGupshupEvents",
+        "security": [
+          {
+            "GupshupSignature": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GupshupEvent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Events accepted; `count` is the number forwarded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboundAckResponse"
+                },
+                "example": {
+                  "received": true,
+                  "count": 1
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not a parseable webhook payload.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "invalid webhook payload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid HMAC signature.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "invalid signature"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Gupshup provider disabled (no secret configured).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "not found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/unsubscribe": {
+      "get": {
+        "tags": [
+          "Unsubscribe"
+        ],
+        "summary": "Public unsubscribe link",
+        "description": "Client-facing unsubscribe endpoint embedded in emails (note: no `/scalemargin/` in the path). When `UNSUBSCRIBE_LINK_ANALYTICS_URL` is configured and the link carries `campaign_id` + `organization_id`, a PII-free `unsubscribed` analytics event is signed and POSTed to ScaleMargin. If `UNSUBSCRIBE_LINK_REDIRECT_URL` is set the response is a 302 redirect; otherwise a plain-text confirmation.",
+        "operationId": "getUnsubscribe",
+        "parameters": [
+          {
+            "name": "uid",
+            "in": "query",
+            "required": true,
+            "description": "Recipient user id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "campaign_id",
+            "in": "query",
+            "required": false,
+            "description": "Campaign id. Required (together with organization_id) to forward the unsubscribe to analytics.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "organization_id",
+            "in": "query",
+            "required": false,
+            "description": "Organization id. Required (together with campaign_id) to forward the unsubscribe to analytics.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unsubscribe recorded (or received but not forwarded due to missing config).",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Unsubscribe recorded."
+              }
+            }
+          },
+          "302": {
+            "description": "Redirect to `UNSUBSCRIBE_LINK_REDIRECT_URL` when configured.",
+            "headers": {
+              "Location": {
+                "description": "Configured redirect target.",
+                "schema": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required `uid` query parameter.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Missing uid"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/webhooks/campaign-analytics/capture": {
+      "post": {
+        "tags": [
+          "Dev tools"
+        ],
+        "summary": "Capture signed analytics POSTs to CSV (dev only)",
+        "description": "Only mounted when `EVENT_TEST_CSV_PATH` is set. Used in local dual-secret smoke tests: point a dispatch's `analytics_callback_url` here to capture the forwarded, HMAC-signed analytics batches to a CSV file. The body is verified against `SCALEMARGIN_ANALYTICS_SECRET`. **Not part of the production contract.**",
+        "operationId": "postCampaignAnalyticsCapture",
+        "security": [
+          {
+            "ScaleMarginAnalyticsSignature": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-ScaleMargin-Timestamp",
+            "in": "header",
+            "required": false,
+            "description": "ISO-8601 timestamp attached by the forwarder.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyticsPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch captured.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboundAckResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid analytics signature.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/images/{path}": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Serve locally-stored campaign images (conditional)",
+        "description": "Static file route, only mounted when `IMAGE_STORAGE_PROVIDER=local`. Serves campaign images written to `IMAGE_LOCAL_DIR` (default `./public/images`).",
+        "operationId": "getImage",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "description": "Relative path of the stored image.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Image bytes.",
+            "content": {
+              "image/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Image not found (or local storage not enabled)."
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Version and build identity",
+        "description": "Public, non-secret runtime build identity for client-hosted support and rollout checks.",
+        "operationId": "getVersion",
+        "responses": {
+          "200": {
+            "description": "Dispatcher build identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                },
+                "example": {
+                  "name": "scalemargin-dispatch-handler",
+                  "version": "0.2.3",
+                  "git_sha": "abc123",
+                  "build_time": "2026-07-08T00:00:00Z",
+                  "image_tag": "ghcr.io/scale-margins-v0/scalemargin-dispatcher:v0.2.3",
+                  "node_version": "v22.0.0",
+                  "uptime_seconds": 120,
+                  "environment": "production"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Readiness-style status",
+        "description": "Public config readiness summary. Does not probe client databases or provider credentials.",
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "description": "Dispatcher readiness status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                },
+                "example": {
+                  "status": "ok",
+          "version": "0.2.3",
+                  "checks": {
+                    "required_env": {
+                      "ok": true
+                    },
+                    "dispatch_config": {
+                      "ok": true
+                    },
+                    "event_config": {
+                      "ok": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/scalemargin/diagnostics": {
+      "post": {
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Signed redacted diagnostics report",
+        "description": "Support report for client-hosted dispatcher installs. Body is verified with `SCALEMARGIN_DISPATCH_SECRET`. The response includes version metadata, config modes, env presence booleans, placeholder names, enabled event providers, and optional user lookup counts only. It must never include secret values, provider API keys, DB credentials, raw PII, or full resolved recipient records.",
+        "operationId": "postDiagnostics",
+        "security": [
+          {
+            "ScaleMarginDispatchSignature": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiagnosticsRequest"
+              },
+              "example": {
+                "checks": [
+                  "user_lookup"
+                ],
+                "sample_user_ids": [
+                  "u_001"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Redacted diagnostics report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body passed signature verification but is not valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Invalid JSON body"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `X-ScaleMargin-Signature`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Invalid signature"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ScaleMarginDispatchSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-ScaleMargin-Signature",
+        "description": "HMAC-SHA256 of the raw request body keyed by `SCALEMARGIN_DISPATCH_SECRET`, formatted as `sha256=<hex>`. Compared in constant time."
+      },
+      "ScaleMarginAnalyticsSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-ScaleMargin-Signature",
+        "description": "HMAC-SHA256 of the raw request body keyed by `SCALEMARGIN_ANALYTICS_SECRET`, formatted as `sha256=<hex>`. Used for outbound analytics POSTs and the dev capture endpoint."
+      },
+      "SendGridEventWebhookSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Twilio-Email-Event-Webhook-Signature",
+        "description": "SendGrid Event Webhook ECDSA signature, verified against `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`. Must be sent with the `X-Twilio-Email-Event-Webhook-Timestamp` header."
+      },
+      "GupshupSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-gupshup-signature",
+        "description": "HMAC signature of the request body keyed by `GUPSHUP_WEBHOOK_SECRET`."
+      }
+    },
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "provider",
+          "image_storage",
+          "event_test_csv_capture"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "description": "Configured email provider.",
+            "example": "ses"
+          },
+          "image_storage": {
+            "type": "string",
+            "description": "Configured image storage provider, or \"none\".",
+            "example": "none"
+          },
+          "event_test_csv_capture": {
+            "type": "boolean",
+            "description": "Whether the dev CSV capture endpoint is mounted."
+          }
+        }
+      },
+      "DispatchPayload": {
+        "type": "object",
+        "required": [
+          "campaign_id",
+          "channel",
+          "user_ids",
+          "content",
+          "metadata"
+        ],
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "example": "camp_123"
+          },
+          "channel": {
+            "type": "string",
+            "description": "Delivery channel for the campaign.",
+            "example": "email"
+          },
+          "user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recipient user ids to resolve via the user-lookup backend.",
+            "example": [
+              "u_1",
+              "u_2"
+            ]
+          },
+          "dispatch_ids": {
+            "type": "object",
+            "description": "Optional per-user dispatch id, keyed by user_id. Echoed into analytics metadata.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "u_1": "d_aaa",
+              "u_2": "d_bbb"
+            }
+          },
+          "content": {
+            "type": "object",
+            "description": "Campaign content. Fields support personalization placeholders.",
+            "properties": {
+              "subject": {
+                "type": "string",
+                "example": "Hello {{first_name}}"
+              },
+              "html_body": {
+                "type": "string",
+                "example": "<p>Hi {{first_name}}</p>"
+              },
+              "text_body": {
+                "type": "string",
+                "example": "Hi {{first_name}}"
+              }
+            }
+          },
+          "personalization_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Field names referenced by placeholders in content.",
+            "example": [
+              "first_name",
+              "last_name"
+            ]
+          },
+          "images": {
+            "type": "array",
+            "description": "Campaign images to host/rewrite into the HTML body.",
+            "items": {
+              "$ref": "#/components/schemas/DispatchImage"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "required": [
+              "organization_id",
+              "analytics_callback_url"
+            ],
+            "properties": {
+              "organization_id": {
+                "type": "string",
+                "example": "org_abc"
+              },
+              "analytics_callback_url": {
+                "type": "string",
+                "format": "uri",
+                "description": "Where standardized analytics events for this campaign are POSTed back. Validated against an allowlist (SSRF protection).",
+                "example": "https://atlas.scalemargin.com/api/webhooks/campaign-analytics"
+              }
+            }
+          }
+        }
+      },
+      "DispatchImage": {
+        "type": "object",
+        "required": [
+          "placeholder",
+          "url",
+          "raw_url",
+          "content_type"
+        ],
+        "properties": {
+          "placeholder": {
+            "type": "string",
+            "example": "{{image:hero}}"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "raw_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "content_type": {
+            "type": "string",
+            "example": "image/png"
+          },
+          "alt_text": {
+            "type": "string"
+          },
+          "base64_data": {
+            "type": "string",
+            "description": "Optional base64-encoded image bytes (the reason the dispatch body limit is 10 MB)."
+          }
+        }
+      },
+      "DispatchAcceptedResponse": {
+        "type": "object",
+        "required": [
+          "accepted",
+          "message"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "message": {
+            "type": "string",
+            "example": "Campaign dispatch received"
+          }
+        }
+      },
+      "ValidatePiiRequest": {
+        "type": "object",
+        "required": [
+          "user_ids"
+        ],
+        "properties": {
+          "user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 25,
+            "description": "1–25 user ids to resolve."
+          }
+        }
+      },
+      "ValidatePiiResponse": {
+        "type": "object",
+        "required": [
+          "pii_conversion_ok",
+          "requested_count",
+          "found_count",
+          "missing_user_ids",
+          "email_available_count",
+          "resolved_field_names"
+        ],
+        "properties": {
+          "pii_conversion_ok": {
+            "type": "boolean",
+            "description": "True when every requested user was found and every found user had an email."
+          },
+          "requested_count": {
+            "type": "integer",
+            "example": 3
+          },
+          "found_count": {
+            "type": "integer",
+            "example": 3
+          },
+          "missing_user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Requested ids that could not be resolved."
+          },
+          "email_available_count": {
+            "type": "integer",
+            "example": 3
+          },
+          "resolved_field_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Field names present across resolved users (names only — no values)."
+          }
+        }
+      },
+      "AnalyticsPayload": {
+        "type": "object",
+        "description": "Batch of standardized analytics events POSTed back to ScaleMargin (and the shape accepted by the dev capture endpoint).",
+        "required": [
+          "campaign_id",
+          "organization_id"
+        ],
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "example": "camp_123"
+          },
+          "organization_id": {
+            "type": "string",
+            "example": "org_abc"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsEvent"
+            }
+          },
+          "summary": {
+            "$ref": "#/components/schemas/AnalyticsSummary"
+          }
+        }
+      },
+      "AnalyticsEvent": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "event",
+          "timestamp"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "event": {
+            "$ref": "#/components/schemas/AnalyticsEventType"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 event time."
+          },
+          "channel": {
+            "$ref": "#/components/schemas/AnalyticsChannel"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "Stable key for at-least-once dedup (sha256 of provider|messageId|event|occurredAt, truncated)."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "PII-scrubbed event metadata; includes self-contained correlation fields (campaign_id, organization_id, provider, provider_message_id, …)."
+          }
+        }
+      },
+      "AnalyticsSummary": {
+        "type": "object",
+        "required": [
+          "total_sent",
+          "delivered",
+          "bounced"
+        ],
+        "properties": {
+          "total_sent": {
+            "type": "integer"
+          },
+          "delivered": {
+            "type": "integer"
+          },
+          "bounced": {
+            "type": "integer"
+          },
+          "opened": {
+            "type": "integer"
+          },
+          "clicked": {
+            "type": "integer"
+          },
+          "unsubscribed": {
+            "type": "integer"
+          },
+          "complained": {
+            "type": "integer"
+          }
+        }
+      },
+      "AnalyticsEventType": {
+        "type": "string",
+        "enum": [
+          "dispatched",
+          "delivered",
+          "opened",
+          "clicked",
+          "bounced",
+          "unsubscribed",
+          "complained",
+          "failed",
+          "sent",
+          "read",
+          "deferred",
+          "expired"
+        ]
+      },
+      "AnalyticsChannel": {
+        "type": "string",
+        "enum": [
+          "email",
+          "whatsapp",
+          "sms"
+        ]
+      },
+      "InboundAckResponse": {
+        "type": "object",
+        "required": [
+          "received",
+          "count"
+        ],
+        "properties": {
+          "received": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "description": "Number of events forwarded after filtering and correlation."
+          }
+        }
+      },
+      "SnsConfirmationResponse": {
+        "type": "object",
+        "required": [
+          "confirmed"
+        ],
+        "properties": {
+          "confirmed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        }
+      },
+      "SnsMessage": {
+        "type": "object",
+        "description": "Amazon SNS message envelope. `Type` is `SubscriptionConfirmation` or `Notification`. Signature fields (`Signature`, `SigningCertURL`, …) are verified before processing.",
+        "required": [
+          "Type"
+        ],
+        "properties": {
+          "Type": {
+            "type": "string",
+            "enum": [
+              "SubscriptionConfirmation",
+              "Notification",
+              "UnsubscribeConfirmation"
+            ]
+          },
+          "MessageId": {
+            "type": "string"
+          },
+          "TopicArn": {
+            "type": "string"
+          },
+          "Message": {
+            "type": "string",
+            "description": "Stringified SES event payload (for Notification messages)."
+          },
+          "Timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "SubscribeURL": {
+            "type": "string",
+            "format": "uri",
+            "description": "Present on SubscriptionConfirmation; auto-fetched only if hostname ends with .amazonaws.com."
+          },
+          "Signature": {
+            "type": "string"
+          },
+          "SigningCertURL": {
+            "type": "string",
+            "format": "uri"
+          },
+          "SignatureVersion": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "SendGridEvent": {
+        "type": "object",
+        "description": "A single SendGrid Event Webhook object. Correlation fields are carried in custom_args echoed from the original send.",
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "SendGrid wire event name.",
+            "example": "delivered"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "timestamp": {
+            "type": "integer",
+            "description": "Unix epoch seconds."
+          },
+          "sg_message_id": {
+            "type": "string"
+          },
+          "campaign_id": {
+            "type": "string",
+            "description": "From custom_args."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "From custom_args."
+          },
+          "organization_id": {
+            "type": "string",
+            "description": "From custom_args."
+          },
+          "analytics_callback_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "From custom_args."
+          }
+        },
+        "additionalProperties": true
+      },
+      "GupshupEvent": {
+        "type": "object",
+        "description": "Gupshup event callback payload (WhatsApp message lifecycle). Shape varies by API version (v1/v2).",
+        "additionalProperties": true
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ValidatePiiErrorResponse": {
+        "type": "object",
+        "required": [
+          "error",
+          "pii_conversion_ok"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "pii_conversion_ok": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          }
+        }
+      },
+      "VersionResponse": {
+        "type": "object",
+        "required": [
+          "name",
+          "version",
+          "git_sha",
+          "build_time",
+          "image_tag",
+          "node_version",
+          "uptime_seconds",
+          "environment"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "git_sha": {
+            "type": "string"
+          },
+          "build_time": {
+            "type": "string"
+          },
+          "image_tag": {
+            "type": "string"
+          },
+          "node_version": {
+            "type": "string"
+          },
+          "uptime_seconds": {
+            "type": "integer"
+          },
+          "environment": {
+            "type": "string"
+          }
+        }
+      },
+      "CheckResult": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "StatusResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "checks"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded",
+              "error"
+            ]
+          },
+          "version": {
+            "type": "string"
+          },
+          "checks": {
+            "type": "object",
+            "required": [
+              "required_env",
+              "dispatch_config",
+              "event_config"
+            ],
+            "properties": {
+              "required_env": {
+                "$ref": "#/components/schemas/CheckResult"
+              },
+              "dispatch_config": {
+                "$ref": "#/components/schemas/CheckResult"
+              },
+              "event_config": {
+                "$ref": "#/components/schemas/CheckResult"
+              }
+            }
+          }
+        }
+      },
+      "DiagnosticsRequest": {
+        "type": "object",
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "user_lookup"
+              ]
+            }
+          },
+          "sample_user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 25
+          }
+        }
+      },
+      "UserLookupDiagnostic": {
+        "type": "object",
+        "required": [
+          "pii_conversion_ok",
+          "requested_count",
+          "found_count",
+          "missing_user_ids",
+          "email_available_count",
+          "resolved_field_names"
+        ],
+        "properties": {
+          "pii_conversion_ok": {
+            "type": "boolean"
+          },
+          "requested_count": {
+            "type": "integer"
+          },
+          "found_count": {
+            "type": "integer"
+          },
+          "missing_user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "email_available_count": {
+            "type": "integer"
+          },
+          "resolved_field_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "DiagnosticsResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "build",
+          "runtime",
+          "config",
+          "env"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/StatusResponse"
+          },
+          "build": {
+            "$ref": "#/components/schemas/VersionResponse"
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "node_version": {
+                "type": "string"
+              },
+              "uptime_seconds": {
+                "type": "integer"
+              },
+              "environment": {
+                "type": "string"
+              }
+            }
+          },
+          "config": {
+            "type": "object",
+            "properties": {
+              "dispatch_config_path": {
+                "type": "string"
+              },
+              "dispatch_config_present": {
+                "type": "boolean"
+              },
+              "email_provider": {
+                "type": "string"
+              },
+              "image_storage_provider": {
+                "type": "string"
+              },
+              "user_lookup_backend": {
+                "type": "string"
+              },
+              "user_lookup_source": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "user_lookup_batch": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "placeholder_names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "events": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          "env": {
+            "type": "object",
+            "description": "Environment variable presence only. Values are never returned.",
+            "properties": {
+              "required": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "boolean"
+                }
+              },
+              "provider": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "checks": {
+            "type": "object",
+            "properties": {
+              "user_lookup": {
+                "$ref": "#/components/schemas/UserLookupDiagnostic"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

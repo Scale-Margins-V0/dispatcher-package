@@ -9,6 +9,14 @@ RUN pnpm exec tsc
 
 FROM node:22-slim
 WORKDIR /app
+ARG DISPATCHER_VERSION=unknown
+ARG DISPATCHER_GIT_SHA=unknown
+ARG DISPATCHER_BUILD_TIME=unknown
+ARG DISPATCHER_IMAGE_TAG=unknown
+ENV DISPATCHER_VERSION=${DISPATCHER_VERSION}
+ENV DISPATCHER_GIT_SHA=${DISPATCHER_GIT_SHA}
+ENV DISPATCHER_BUILD_TIME=${DISPATCHER_BUILD_TIME}
+ENV DISPATCHER_IMAGE_TAG=${DISPATCHER_IMAGE_TAG}
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod
