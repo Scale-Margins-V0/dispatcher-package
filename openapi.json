@@ -741,7 +741,7 @@
                 },
                 "example": {
                   "status": "ok",
-          "version": "0.2.3",
+                  "version": "0.2.3",
                   "checks": {
                     "required_env": {
                       "ok": true
@@ -1449,7 +1449,8 @@
             "required": [
               "required_env",
               "dispatch_config",
-              "event_config"
+              "event_config",
+              "telemetry"
             ],
             "properties": {
               "required_env": {
@@ -1459,6 +1460,9 @@
                 "$ref": "#/components/schemas/CheckResult"
               },
               "event_config": {
+                "$ref": "#/components/schemas/CheckResult"
+              },
+              "telemetry": {
                 "$ref": "#/components/schemas/CheckResult"
               }
             }
@@ -1591,6 +1595,30 @@
               "events": {
                 "type": "object",
                 "additionalProperties": true
+              },
+              "telemetry": {
+                "type": "object",
+                "required": [
+                  "enabled",
+                  "disabled_by_env",
+                  "posthog_configured",
+                  "posthog_host"
+                ],
+                "description": "Telemetry configuration status only. The PostHog API key is never returned.",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "disabled_by_env": {
+                    "type": "boolean"
+                  },
+                  "posthog_configured": {
+                    "type": "boolean"
+                  },
+                  "posthog_host": {
+                    "type": "string"
+                  }
+                }
               }
             }
           },

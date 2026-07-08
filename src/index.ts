@@ -50,6 +50,7 @@ import { verifyHmacSignature } from "./middleware/hmac.js";
 import { getBuildInfo } from "./ops/build-info.js";
 import { buildDiagnosticsReport, getRuntimeStatus } from "./ops/diagnostics.js";
 import { createUnsubscribeLinkGetHandler } from "./unsubscribe/link.js";
+import { telemetry } from "./telemetry/posthog.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 
@@ -82,6 +83,10 @@ const REQUIRED_ENV = [
 ];
 const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
 if (missing.length > 0) {
+  telemetry.capture("dispatcher_startup_config_failed", {
+    component: "required_env",
+    missing_env_count: missing.length,
+  });
   console.error(`[FATAL] Missing required env vars: ${missing.join(", ")}`);
   console.error("See .env.example for all required variables.");
   process.exit(1);
@@ -90,6 +95,7 @@ if (missing.length > 0) {
 try {
   ensureDispatchConfigLoaded();
 } catch (error) {
+  telemetry.captureException(error, { component: "dispatch_config" });
   console.error("[FATAL] Dispatch configuration invalid:", error);
   process.exit(1);
 }
@@ -98,6 +104,7 @@ if (process.env.VITEST !== "true") {
   try {
     initializeEventPipeline();
   } catch (error) {
+    telemetry.captureException(error, { component: "event_pipeline_config" });
     console.error("[FATAL] Event pipeline configuration invalid:", error);
     process.exit(1);
   }
@@ -143,6 +150,7 @@ app.get("/api/unsubscribe", createUnsubscribeLinkGetHandler());
 
 // Health check
 app.get("/health", (_req, res) => {
+  telemetry.capture("dispatcher_health_checked");
   res.json({
     status: "ok",
     provider: process.env.EMAIL_PROVIDER || "ses",
@@ -153,12 +161,15 @@ app.get("/health", (_req, res) => {
 
 // Public build identity for support and client-hosted rollout checks.
 app.get("/version", (_req, res) => {
+  telemetry.capture("dispatcher_version_checked");
   res.json(getBuildInfo());
 });
 
 // Public readiness-style status. This does not probe client DB/provider credentials.
 app.get("/status", (_req, res) => {
-  res.json(getRuntimeStatus());
+  const status = getRuntimeStatus();
+  telemetry.capture("dispatcher_status_checked", { status: status.status });
+  res.json(status);
 });
 
 // Signed support report. Returns config shape and dependency modes, never secrets or PII values.
@@ -166,6 +177,11 @@ app.post(
   "/api/scalemargin/diagnostics",
   verifyHmacSignature,
   async (req, res) => {
+    telemetry.capture("dispatcher_diagnostics_requested", {
+      user_lookup_check_requested:
+        Array.isArray(req.body?.sample_user_ids) ||
+        req.body?.checks?.includes("user_lookup"),
+    });
     const report = await buildDiagnosticsReport(req.body ?? {});
     res.json(report);
   }
@@ -260,6 +276,11 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   );
 
   // Acknowledge immediately
+  telemetry.capture("dispatcher_dispatch_accepted", {
+    channel: payload.channel,
+    recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+    has_images: Boolean(payload.images?.length),
+  });
   res.status(202).json({
     accepted: true,
     message: "Campaign dispatch received",
@@ -267,6 +288,10 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
 
   // Process asynchronously
   processDispatch(payload, FROM_EMAIL).catch((error) => {
+    telemetry.captureException(error, {
+      component: "dispatch_processor",
+      channel: payload.channel,
+    });
     console.error(`[Dispatch] Campaign ${payload.campaign_id} failed:`, error);
   });
 });

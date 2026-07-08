@@ -32,6 +32,7 @@ import { scrubPii } from "./scrubber.js";
 import { createSendGridInboundAdapter } from "./sendgrid/adapter.js";
 import { sendGridInboundWireAllowed } from "./sendgrid/inbound-filter.js";
 import { createSesInboundAdapter } from "./ses/adapter.js";
+import { telemetry } from "../telemetry/posthog.js";
 
 let buffer: EventBuffer | null = null;
 let runtimeConfig: EventsConfig | null = null;
@@ -193,6 +194,9 @@ export function createInboundWebhookHandler(
 ): RequestHandler {
   return async (req: Request, res: Response): Promise<void> => {
     if (!enabled) {
+      telemetry.capture("dispatcher_provider_webhook_disabled", {
+        provider: adapter.name,
+      });
       res.status(404).json({ error: "not found" });
       return;
     }
@@ -209,6 +213,9 @@ export function createInboundWebhookHandler(
       })
     );
     if (!ok) {
+      telemetry.capture("dispatcher_provider_webhook_signature_failed", {
+        provider: adapter.name,
+      });
       res.status(401).json({ error: "invalid signature" });
       return;
     }
@@ -216,7 +223,11 @@ export function createInboundWebhookHandler(
     let items: unknown[];
     try {
       items = adapter.parseEvents(rawBody);
-    } catch {
+    } catch (error) {
+      telemetry.captureException(error, {
+        component: "provider_webhook_parse",
+        provider: adapter.name,
+      });
       res.status(400).json({ error: "invalid webhook payload" });
       return;
     }
@@ -321,6 +332,18 @@ export function createInboundWebhookHandler(
     console.log(
       `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} forwarded=${envelopes.length} receipts=${gupshupReceipts.length} dropped_sg_no_correlation=${sendgridUncorrelated} dropped_no_callback_url=${droppedNoCallbackUrl} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation} dropped_unsigned_receipts=${droppedUnsignedReceipts}`
     );
+    telemetry.capture("dispatcher_provider_webhook_received", {
+      provider: adapter.name,
+      raw_count: items.length,
+      forwarded_count: envelopes.length,
+      receipt_count: gupshupReceipts.length,
+      filtered_wire_count: skippedInboundWire,
+      dropped_no_callback_url_count: droppedNoCallbackUrl,
+      dropped_unsupported_count: droppedUnsupported,
+      dropped_no_correlation_count:
+        sendgridUncorrelated + droppedOtherNoCorrelation,
+      dropped_unsigned_receipt_count: droppedUnsignedReceipts,
+    });
     if (sendgridUncorrelated > 0) {
       console.warn(
         `[Events][sendgrid] Dropped ${sendgridUncorrelated} webhook event(s) — missing correlation. sample_wire_event=${sampleWireEvent || "n/a"} — ` +
@@ -333,6 +356,13 @@ export function createInboundWebhookHandler(
         console.log(`[Events] flush start size=${envelopes.length} (inbound sync)`);
       }
       const flushResult = await flushEnvelopesSync(envelopes, getSecret());
+      if (!flushResult.ok) {
+        telemetry.capture("dispatcher_analytics_forward_failed", {
+          provider: adapter.name,
+          event_count: envelopes.length,
+          error_count: flushResult.errors.length,
+        });
+      }
       if (isEventDebug() && envelopes.length > 0) {
         if (flushResult.ok) {
           console.log(`[Events] flush ok size=${envelopes.length} (inbound sync)`);

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { getBuildInfo, type BuildInfo } from "./build-info.js";
 import { loadEventsConfig, type EventsConfig } from "../events/config.js";
+import { getTelemetryStatus } from "../telemetry/posthog.js";
 import { getDispatchConfig, getIdType, configPathFromEnv } from "../user-lookup/config.js";
 import { lookupUsers } from "../user-lookup/index.js";
 
@@ -18,6 +19,7 @@ export interface RuntimeStatus {
     required_env: CheckResult;
     dispatch_config: CheckResult;
     event_config: CheckResult;
+    telemetry: CheckResult;
   };
 }
 
@@ -86,6 +88,7 @@ export function getRuntimeStatus(): RuntimeStatus {
     required_env: requiredEnvCheck(),
     dispatch_config: loadDispatchConfigCheck(),
     event_config: loadEventsConfigCheck(),
+    telemetry: { ok: true },
   };
 
   const failed = Object.values(checks).filter((check) => !check.ok);
@@ -197,6 +200,7 @@ export async function buildDiagnosticsReport(
     };
     placeholder_names: string[];
     events?: ReturnType<typeof summarizeEventsConfig>;
+    telemetry: ReturnType<typeof getTelemetryStatus>;
   };
   env: {
     required: Record<string, boolean>;
@@ -244,6 +248,7 @@ export async function buildDiagnosticsReport(
       user_lookup_batch: dispatchConfig.user_lookup.batch,
       placeholder_names: Object.keys(dispatchConfig.placeholders),
       events: summarizeEventsConfig(eventsConfig),
+      telemetry: getTelemetryStatus(),
     },
     env: {
       required: envPresence(REQUIRED_ENV),

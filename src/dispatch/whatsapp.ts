@@ -12,6 +12,7 @@ import {
   resolveDevTestRecipient,
   resolveRecipientPhone,
 } from "../providers/gupshup-whatsapp.js";
+import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
 import type { DispatchPayload } from "./types.js";
 
@@ -123,6 +124,12 @@ export async function processWhatsAppDispatch(
         );
 
     const result = await provider.send(message);
+    if (!result.success) {
+      telemetry.capture("dispatcher_provider_send_failed", {
+        provider: "gupshup",
+        channel: "whatsapp",
+      });
+    }
     sendResults.push({
       userId,
       success: result.success,
@@ -150,6 +157,14 @@ export async function processWhatsAppDispatch(
   logUnlessVitest(
     `[Dispatch] WhatsApp campaign ${campaign_id}: ${sent} sent, ${failed} failed (events emitted via pipeline)`
   );
+  telemetry.capture("dispatcher_dispatch_completed", {
+    channel: "whatsapp",
+    provider: "gupshup",
+    requested_count: user_ids.length,
+    resolved_count: sendResults.length,
+    sent_count: sent,
+    failed_count: failed,
+  });
 }
 
 async function emitWhatsAppEvent(args: {

@@ -1,7 +1,13 @@
 import type { Express } from "express";
+import { telemetry } from "./telemetry/posthog.js";
 
 export function startServer(app: Express, port: number): void {
   const server = app.listen(port, () => {
+    telemetry.capture("dispatcher_started", {
+      port,
+      email_provider: process.env.EMAIL_PROVIDER || "ses",
+      telemetry_enabled: telemetry.isEnabled(),
+    });
     console.log(`[Server] ScaleMargin Dispatch Handler running on port ${port}`);
     console.log(`[Server] Email provider: ${process.env.EMAIL_PROVIDER || "ses"}`);
     console.log(`[Server] Dispatch endpoint: POST /api/scalemargin/dispatch`);
@@ -18,6 +24,7 @@ export function startServer(app: Express, port: number): void {
     }
   });
   server.on("error", (err: NodeJS.ErrnoException) => {
+    telemetry.captureException(err, { component: "server_listen" });
     if (err.code === "EADDRINUSE") {
       console.error(
         `[FATAL] Port ${port} is already in use. Stop the other process (e.g. \`pnpm dev\` in another terminal) or use a free port:\n` +
@@ -28,5 +35,26 @@ export function startServer(app: Express, port: number): void {
     }
     console.error("[Server] listen error:", err);
     process.exit(1);
+  });
+
+  const shutdown = (signal: NodeJS.Signals): void => {
+    telemetry.capture("dispatcher_shutdown", { signal });
+    void telemetry.shutdown().finally(() => {
+      process.exit(0);
+    });
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+
+  process.on("uncaughtException", (error) => {
+    telemetry.captureException(error, { component: "uncaught_exception" });
+    void telemetry.shutdown().finally(() => {
+      console.error("[Server] uncaught exception:", error);
+      process.exit(1);
+    });
+  });
+
+  process.on("unhandledRejection", (reason) => {
+    telemetry.captureException(reason, { component: "unhandled_rejection" });
   });
 }

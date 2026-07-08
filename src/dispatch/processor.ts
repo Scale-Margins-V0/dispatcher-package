@@ -7,6 +7,7 @@ import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
 import { personalize } from "../personalize.js";
 import { getProvider } from "../providers/index.js";
 import type { EmailMessage } from "../providers/types.js";
+import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
 import { processWhatsAppDispatch } from "./whatsapp.js";
 import type { DispatchPayload } from "./types.js";
@@ -115,6 +116,12 @@ export async function processDispatch(
 
   for (const { userId, message } of messages) {
     const result = await provider.send(message);
+    if (!result.success) {
+      telemetry.capture("dispatcher_provider_send_failed", {
+        provider: provider.name,
+        channel: "email",
+      });
+    }
     sendResults.push({
       userId,
       success: result.success,
@@ -156,4 +163,13 @@ export async function processDispatch(
   logUnlessVitest(
     `[Dispatch] Campaign ${campaign_id}: ${sent} sent, ${failed} failed (events emitted via pipeline)`
   );
+  telemetry.capture("dispatcher_dispatch_completed", {
+    channel: "email",
+    provider: provider.name,
+    requested_count: user_ids.length,
+    resolved_count: messages.length,
+    sent_count: sent,
+    failed_count: failed,
+    image_count: payload.images?.length ?? 0,
+  });
 }

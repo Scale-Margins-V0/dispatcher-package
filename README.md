@@ -170,6 +170,28 @@ curl -fsS -X POST http://localhost:3100/api/scalemargin/diagnostics \
 
 ---
 
+## Anonymous telemetry
+
+Dispatcher telemetry is enabled by default with ScaleMargin's dispatcher PostHog project and sends to `POSTHOG_HOST` (`https://eu.i.posthog.com` by default). `POSTHOG_API_KEY` and `POSTHOG_HOST` can override the built-in project if ScaleMargin rotates telemetry projects. Disable telemetry completely with:
+
+```bash
+DISPATCHER_TELEMETRY_DISABLED=1
+```
+
+Telemetry is anonymous-by-design. It records operational events such as startup, health/version/status checks, dispatch accepted/completed, provider send failures, provider webhook summaries, analytics-forward failures, diagnostics requests, shutdown, and sanitized exceptions.
+
+Telemetry must not include user PII, raw request bodies, resolved recipient records, campaign ids, dispatch ids, user ids, provider API responses, database values, raw exception messages, raw stack traces, or secret/env values. Error analytics are sent as sanitized `dispatcher_error` events with category-style metadata plus a stack hash.
+
+Optional:
+
+```bash
+DISPATCHER_TELEMETRY_DISTINCT_ID=<stable-client-deployment-id>
+```
+
+The value is hashed before it is sent.
+
+---
+
 ## Release maintenance
 
 Use Changesets for dispatcher release notes and package version bumps:
