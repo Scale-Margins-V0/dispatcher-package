@@ -33,6 +33,6 @@ placeholders:
   unsubscribe_url:
     {
       source: computed,
-      expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id",
+      expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
       fallback: "#",
     }
