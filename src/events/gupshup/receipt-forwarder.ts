@@ -24,8 +24,6 @@ const MAX_RETRIES = 3;
  * before the first WhatsApp send). Receipts can arrive before any dispatch, so fall back
  * to the known backend rather than dropping them.
  */
-const DEFAULT_RECEIPTS_URL =
-  "https://dev.scalemargins.tech/api/webhooks/campaign-analytics";
 
 /**
  * Receipts have no campaign, so they cannot use a per-send analytics_callback_url.
@@ -35,7 +33,7 @@ const DEFAULT_RECEIPTS_URL =
  *   2. DEFAULT_RECEIPTS_URL fallback.
  */
 export function resolveWhatsAppReceiptsUrl(): string | undefined {
-  return process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL?.trim() || DEFAULT_RECEIPTS_URL;
+  return process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL?.trim();
 }
 
 export async function forwardGupshupReceipts(
