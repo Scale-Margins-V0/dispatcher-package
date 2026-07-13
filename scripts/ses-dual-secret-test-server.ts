@@ -311,8 +311,7 @@ const childEnv = {
   IMAGE_LOCAL_DIR: process.env.IMAGE_LOCAL_DIR || "./public/images",
   IMAGE_LOCAL_BASE_URL:
     process.env.IMAGE_LOCAL_BASE_URL || `${publicBase}/images`,
-  UNSUBSCRIBE_URL_BASE:
-    process.env.UNSUBSCRIBE_URL_BASE || `${publicBase}/api/unsubscribe`,
+  UNSUBSCRIBE_URL_BASE: process.env.UNSUBSCRIBE_URL_BASE || publicBase,
   UNSUBSCRIBE_LINK_ANALYTICS_URL: process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL || captureUrl,
   FROM_EMAIL: fromEmail,
 };

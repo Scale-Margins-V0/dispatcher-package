@@ -279,7 +279,7 @@ curl -sS -X POST ${publicBase}/api/scalemargin/dispatch \\
 
 4) Opens / clicks: In SendGrid Event Webhook settings, enable **Open** and **Click** (and any other types you want). This script sets EVENT_SENDGRID_INBOUND_EVENTS=* on the child process unless you override it in .env (use default or a comma list to reduce noise).
 
-5) Unsubscribe (double proxy): Same ngrok host as SendGrid + analytics — child defaults \`UNSUBSCRIBE_URL_BASE\` to \`<EVENT_TEST_PUBLIC_BASE_URL>/api/unsubscribe\` (client-facing path, no \`/scalemargin/\`) and \`UNSUBSCRIBE_LINK_ANALYTICS_URL\` to the CSV capture URL. Mail links include \`uid\`, \`campaign_id\`, \`organization_id\`; GET hits this app, then a PII-free signed POST mirrors SendGrid webhook forwarding. Optional \`UNSUBSCRIBE_LINK_REDIRECT_URL\` = 302 to your main product page. Override \`UNSUBSCRIBE_URL_BASE\` in .env if links should go straight to production instead.
+5) Unsubscribe (double proxy): Same ngrok host as SendGrid + analytics — child defaults \`UNSUBSCRIBE_URL_BASE\` to \`<EVENT_TEST_PUBLIC_BASE_URL>\` (dispatch host base; mail links append \`/api/unsubscribe\`) and \`UNSUBSCRIBE_LINK_ANALYTICS_URL\` to the CSV capture URL. Mail links include \`uid\`, \`campaign_id\`, \`organization_id\`; GET hits this app, then a PII-free signed POST mirrors SendGrid webhook forwarding. Optional \`UNSUBSCRIBE_LINK_REDIRECT_URL\` = 302 to your main product page. Override \`UNSUBSCRIBE_URL_BASE\` in .env if links should go straight to production instead.
 
    SendGrid Event Webhook: enable **Unsubscribed** / **Group Unsubscribed** so provider-generated unsubscribes still flow through \`/api/scalemargin/sendgrid-events\` (same analytics secret). Set EVENT_PREFERENCE_SIMULATION_LOG=0 to silence \`[Events][PreferenceSimulation]\` logs.
 
@@ -308,8 +308,7 @@ const childEnv = {
   IMAGE_LOCAL_DIR: process.env.IMAGE_LOCAL_DIR || "./public/images",
   IMAGE_LOCAL_BASE_URL:
     process.env.IMAGE_LOCAL_BASE_URL || `${publicBase}/images`,
-  UNSUBSCRIBE_URL_BASE:
-    process.env.UNSUBSCRIBE_URL_BASE || `${publicBase}/api/unsubscribe`,
+  UNSUBSCRIBE_URL_BASE: process.env.UNSUBSCRIBE_URL_BASE || publicBase,
   /** Same signed destination as dispatch metadata.analytics_callback_url (CSV capture in this test). */
   UNSUBSCRIBE_LINK_ANALYTICS_URL: process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL || captureUrl,
   FROM_EMAIL: fromEmail,
