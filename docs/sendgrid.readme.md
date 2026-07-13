@@ -31,9 +31,12 @@ Set these in `.env` (see also [`.env.example`](../.env.example)).
 | `EVENTS_CONFIG_PATH` | Optional | Path to `events.yaml`; if missing, defaults apply (see `config/events.example.yaml`). |
 | `EVENT_SENDGRID_INBOUND_EVENTS` | Optional | `default` \| `*` \| `all` \| comma list of SendGrid **wire** `event` names. Default minimal set **excludes** `open` / `click` unless you opt in. |
 | `EVENT_PREFERENCE_SIMULATION_LOG` | Optional | Set to `0` to disable `[Events][PreferenceSimulation]` console lines for `unsubscribed` / `complained`. |
-| `UNSUBSCRIBE_URL_BASE` | Mail templates | Base URL for `{{unsubscribe_url}}` in dispatch YAML (often `https://<your-host>/api/unsubscribe`). |
-| `UNSUBSCRIBE_LINK_ANALYTICS_URL` | Unsubscribe GET | If set, link clicks POST signed `unsubscribed` analytics here (typically same URL as `metadata.analytics_callback_url`). |
+| `UNSUBSCRIBE_URL_BASE` | Mail templates | Dispatch host base. Derives `env.UNSUBSCRIBE_URL_BASE` → `${UNSUBSCRIBE_URL_BASE}/api/unsubscribe` and `env.PREFERENCES_URL_BASE` → `${UNSUBSCRIBE_URL_BASE}/api/preferences` in dispatch YAML placeholders. |
+| `UNSUBSCRIBE_LINK_URL` | Optional override | Full unsubscribe endpoint URL when it must differ from `${UNSUBSCRIBE_URL_BASE}/api/unsubscribe`. |
+| `PREFERENCES_LINK_URL` | Optional override | Full preferences endpoint URL when it must differ from `${UNSUBSCRIBE_URL_BASE}/api/preferences`. |
+| `UNSUBSCRIBE_LINK_ANALYTICS_URL` | Unsubscribe/preferences | If set, link clicks and preference-center saves POST signed `unsubscribed` / `preference_update` analytics here (typically same URL as `metadata.analytics_callback_url`). |
 | `UNSUBSCRIBE_LINK_REDIRECT_URL` | Optional | After recording, **302** redirect the browser (e.g. your product “unsubscribed” page). |
+| `PREFERENCES_LINK_REDIRECT_URL` | Optional | After saving preferences, **302** redirect the browser instead of the built-in confirmation page. |
 
 Local smoke test extras: `EVENT_TEST_PUBLIC_BASE_URL`, `EVENT_TEST_CSV_PATH`, `EVENT_TEST_RECIPIENTS`, etc. — documented in [`event-dual-secret-local-test.md`](event-dual-secret-local-test.md).
 

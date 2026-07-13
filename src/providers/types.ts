@@ -78,7 +78,9 @@ export type AnalyticsEventType =
   | "sent"
   | "read"
   | "deferred"
-  | "expired";
+  | "expired"
+  /** Recipient saved the preference-center screen — logged only, never suppresses. */
+  | "preference_update";
 
 export type AnalyticsChannel = "email" | "whatsapp" | "sms";
 
