@@ -142,6 +142,11 @@ export const DEFAULT_PLACEHOLDERS: Record<string, PlaceholderEntry> = {
     expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id",
     fallback: "#",
   },
+  preferences_url: {
+    source: "computed",
+    expr: "env.PREFERENCES_URL_BASE + '?uid=' + user_id",
+    fallback: "#",
+  },
 };
 
 export const DEFAULT_DISPATCH_CONFIG: DispatchConfig = {
