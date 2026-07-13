@@ -47,6 +47,10 @@ if (process.env.VITEST !== "true") {
 import { createEventTestCsvCaptureHandler } from "./devtools/event-test-csv-capture.js";
 import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
 import { verifyHmacSignature } from "./middleware/hmac.js";
+import {
+  createPreferencesGetHandler,
+  createPreferencesPostHandler,
+} from "./preferences/link.js";
 import { createUnsubscribeLinkGetHandler } from "./unsubscribe/link.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
@@ -134,6 +138,11 @@ if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
 
 // GET /api/unsubscribe — public unsubscribe link (no /scalemargin/ in client-facing URLs); PII-free analytics POST
 app.get("/api/unsubscribe", createUnsubscribeLinkGetHandler());
+
+// GET/POST /api/preferences — public email-preferences screen (per-category opt-out, or unsubscribe from all)
+app.use("/api/preferences", express.urlencoded({ extended: false }));
+app.get("/api/preferences", createPreferencesGetHandler());
+app.post("/api/preferences", createPreferencesPostHandler());
 
 // Health check
 app.get("/health", (_req, res) => {

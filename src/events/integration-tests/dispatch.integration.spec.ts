@@ -74,7 +74,7 @@ describe("dispatch + SendGrid event pipeline (integration)", () => {
       "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE83T4O/n84iotIvIW4mdBgQ/7dAfSmpqIM8kF9mN1flpVKS3GRqe62gw+2fNNRaINXvVpiglSI8eNEc6wEA3F+g==";
     process.env.EVENT_FORWARD_MODE = "sync";
     process.env.EMAIL_PROVIDER = "sendgrid";
-    process.env.UNSUBSCRIBE_URL_BASE = "https://example.com/unsub";
+    process.env.UNSUBSCRIBE_URL_BASE = "https://example.com";
 
     vi.stubGlobal("fetch", fetchMock);
 

@@ -30,9 +30,17 @@ placeholders:
   email: { source: field, field: email, fallback: "" }
   # Use only user_id here unless every caller passes dispatch context (see processor).
   # To append campaign_id + organization_id, use that longer expr and call personalize(..., dispatchCtx).
+  # env.UNSUBSCRIBE_URL_BASE / env.PREFERENCES_URL_BASE derive from UNSUBSCRIBE_URL_BASE
+  # host + /api/unsubscribe / /api/preferences (see .env.example).
   unsubscribe_url:
     {
       source: computed,
       expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
+      fallback: "#",
+    }
+  preferences_url:
+    {
+      source: computed,
+      expr: "env.PREFERENCES_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
       fallback: "#",
     }
