@@ -18,8 +18,12 @@ const log = componentLogger("auth");
 const DEFAULT_EMAIL = "admin@scalemargins.tech";
 const DEFAULT_ORG_NAME = "ScaleMargin";
 const DEFAULT_ORG_SLUG = "scalemargin";
-const CREDENTIALS_FILE =
-  process.env.DISPATCHER_ADMIN_CREDENTIALS_FILE || "./data/initial-admin-credentials.txt";
+
+function credentialsFile(): string {
+  return (
+    process.env.DISPATCHER_ADMIN_CREDENTIALS_FILE || "./data/initial-admin-credentials.txt"
+  );
+}
 
 /** ~20 char password with mixed classes, no ambiguous chars. */
 export function generateStrongPassword(): string {
@@ -66,16 +70,17 @@ export async function seedDefaultAdmin(): Promise<void> {
   });
 
   if (generated) {
+    const file = credentialsFile();
     try {
       writeFileSync(
-        CREDENTIALS_FILE,
+        file,
         `ScaleMargin Dispatcher — initial admin credentials\n` +
           `email: ${email}\npassword: ${password}\n\n` +
           `Sign in at /admin, then change this password and delete this file.\n`,
         { mode: 0o600 }
       );
       try {
-        chmodSync(CREDENTIALS_FILE, 0o600);
+        chmodSync(file, 0o600);
       } catch {
         /* best-effort */
       }
@@ -87,7 +92,7 @@ export async function seedDefaultAdmin(): Promise<void> {
     }
     log.warn(
       `Seeded default admin ${email} with a GENERATED password. It is shown ONCE here and saved to ` +
-        `${CREDENTIALS_FILE} (chmod 600):\n\n    ${password}\n\n` +
+        `${file} (chmod 600):\n\n    ${password}\n\n` +
         "Sign in at /admin, change it, then delete that file. Set DISPATCHER_ADMIN_PASSWORD to control it."
     );
   } else {
