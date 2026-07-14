@@ -44,6 +44,21 @@ export interface AdminOverview {
       enabled_providers: string[];
     };
     telemetry: Record<string, unknown>;
+    providers: Array<{
+      channel: "email" | "whatsapp";
+      provider: string;
+      state: "active" | "ready" | "incomplete" | "not_configured";
+      active: boolean;
+      credential_sets: Array<{
+        label: string;
+        variables: Record<string, boolean>;
+        satisfied: boolean;
+      }>;
+      webhook?: {
+        enabled: boolean;
+        verification_configured: boolean;
+      };
+    }>;
   };
   env: {
     required: Record<string, boolean>;

@@ -38,6 +38,24 @@ export interface UserLookupDiagnostic {
   error?: string;
 }
 
+export type ProviderState = "active" | "ready" | "incomplete" | "not_configured";
+
+export interface ProviderDiagnostic {
+  channel: "email" | "whatsapp";
+  provider: string;
+  state: ProviderState;
+  active: boolean;
+  credential_sets: Array<{
+    label: string;
+    variables: Record<string, boolean>;
+    satisfied: boolean;
+  }>;
+  webhook?: {
+    enabled: boolean;
+    verification_configured: boolean;
+  };
+}
+
 const REQUIRED_ENV = [
   "SCALEMARGIN_DISPATCH_SECRET",
   "SCALEMARGIN_ANALYTICS_SECRET",
@@ -52,6 +70,69 @@ function envPresence(names: readonly string[]): Record<string, boolean> {
   return Object.fromEntries(
     names.map((name) => [name, Boolean(process.env[name])])
   );
+}
+
+function credentialSet(label: string, names: readonly string[]) {
+  const variables = envPresence(names);
+  return { label, variables, satisfied: Object.values(variables).every(Boolean) };
+}
+
+function providerState(active: boolean, sets: ProviderDiagnostic["credential_sets"]): ProviderState {
+  const configured = sets.some((set) => set.satisfied);
+  if (active && configured) return "active";
+  if (configured) return "ready";
+  return active ? "incomplete" : "not_configured";
+}
+
+function summarizeProviders(
+  emailProvider: string,
+  eventsConfig: EventsConfig
+): ProviderDiagnostic[] {
+  const sendgridSets = [credentialSet("API key", ["SENDGRID_API_KEY"])];
+  const sesSets = [
+    credentialSet("AWS access keys", ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]),
+    credentialSet("AWS region", ["AWS_REGION"]),
+  ];
+  const gupshupSets = [
+    credentialSet("API key delivery", ["GUPSHUP_API_KEY", "GUPSHUP_SRC_NAME", "GUPSHUP_SOURCE"]),
+    credentialSet("Enterprise delivery", ["GUPSHUP_USER_ID", "GUPSHUP_PASSWORD"]),
+  ];
+
+  return [
+    {
+      channel: "email",
+      provider: "sendgrid",
+      active: emailProvider === "sendgrid",
+      credential_sets: sendgridSets,
+      state: providerState(emailProvider === "sendgrid", sendgridSets),
+      webhook: {
+        enabled: eventsConfig.providers.sendgrid.enabled,
+        verification_configured: Boolean(process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY?.trim()),
+      },
+    },
+    {
+      channel: "email",
+      provider: "ses",
+      active: emailProvider === "ses",
+      credential_sets: sesSets,
+      state: providerState(emailProvider === "ses", sesSets),
+      webhook: {
+        enabled: eventsConfig.providers.ses.enabled,
+        verification_configured: Boolean(process.env.SES_EVENT_CONFIG_SET?.trim()),
+      },
+    },
+    {
+      channel: "whatsapp",
+      provider: "gupshup",
+      active: true,
+      credential_sets: gupshupSets,
+      state: providerState(true, gupshupSets),
+      webhook: {
+        enabled: eventsConfig.providers.gupshup.enabled,
+        verification_configured: Boolean(process.env.GUPSHUP_WEBHOOK_SECRET?.trim()),
+      },
+    },
+  ];
 }
 
 function safeError(error: unknown): string {
@@ -201,6 +282,7 @@ export async function buildDiagnosticsReport(
     placeholder_names: string[];
     events?: ReturnType<typeof summarizeEventsConfig>;
     telemetry: ReturnType<typeof getTelemetryStatus>;
+    providers: ProviderDiagnostic[];
   };
   env: {
     required: Record<string, boolean>;
@@ -249,6 +331,7 @@ export async function buildDiagnosticsReport(
       placeholder_names: Object.keys(dispatchConfig.placeholders),
       events: summarizeEventsConfig(eventsConfig),
       telemetry: getTelemetryStatus(),
+      providers: summarizeProviders(emailProvider, eventsConfig),
     },
     env: {
       required: envPresence(REQUIRED_ENV),

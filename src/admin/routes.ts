@@ -47,6 +47,7 @@ export const registerAdminRoutes = (app: Express): void => {
           placeholder_names: report.config.placeholder_names,
           events: report.config.events,
           telemetry: report.config.telemetry,
+          providers: report.config.providers,
         },
         env: report.env,
       });
