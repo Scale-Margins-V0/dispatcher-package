@@ -8,6 +8,13 @@
       "when": 1784037549657,
       "tag": "0000_violet_glorian",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1784045139607,
+      "tag": "0001_perpetual_hawkeye",
+      "breakpoints": true
     }
   ]
 }

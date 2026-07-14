@@ -155,3 +155,109 @@ export const dispatcherMeta = pgTable("dispatcher_meta", {
   value: text("value").notNull(),
   updated_at: ts("updated_at").notNull(),
 });
+
+// ---------------------------------------------------------------------------
+// Better Auth tables. JS property names match Better Auth model fields; DB
+// columns snake_case. Keep in lockstep with sqlite.ts / mysql.ts.
+// ---------------------------------------------------------------------------
+
+const authId = (name: string) => varchar(name, { length: 255 });
+
+export const user = pgTable("user", {
+  id: authId("id").primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  email: id191("email").notNull().unique(),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  image: text("image"),
+  role: varchar("role", { length: 64 }),
+  banned: boolean("banned").default(false),
+  banReason: text("ban_reason"),
+  banExpires: ts("ban_expires"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+});
+
+export const session = pgTable(
+  "session",
+  {
+    id: authId("id").primaryKey(),
+    userId: authId("user_id").notNull(),
+    token: id191("token").notNull().unique(),
+    expiresAt: ts("expires_at").notNull(),
+    ipAddress: varchar("ip_address", { length: 64 }),
+    userAgent: text("user_agent"),
+    activeOrganizationId: authId("active_organization_id"),
+    impersonatedBy: authId("impersonated_by"),
+    createdAt: ts("created_at").notNull(),
+    updatedAt: ts("updated_at").notNull(),
+  },
+  (t) => [index("session_user_id_idx").on(t.userId)]
+);
+
+export const account = pgTable(
+  "account",
+  {
+    id: authId("id").primaryKey(),
+    userId: authId("user_id").notNull(),
+    accountId: authId("account_id").notNull(),
+    providerId: varchar("provider_id", { length: 128 }).notNull(),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: ts("access_token_expires_at"),
+    refreshTokenExpiresAt: ts("refresh_token_expires_at"),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: ts("created_at").notNull(),
+    updatedAt: ts("updated_at").notNull(),
+  },
+  (t) => [index("account_user_id_idx").on(t.userId)]
+);
+
+export const verification = pgTable(
+  "verification",
+  {
+    id: authId("id").primaryKey(),
+    identifier: id191("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    createdAt: ts("created_at"),
+    updatedAt: ts("updated_at"),
+  },
+  (t) => [index("verification_identifier_idx").on(t.identifier)]
+);
+
+export const organization = pgTable("organization", {
+  id: authId("id").primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  slug: id191("slug").notNull().unique(),
+  logo: text("logo"),
+  metadata: text("metadata"),
+  createdAt: ts("created_at").notNull(),
+});
+
+export const member = pgTable(
+  "member",
+  {
+    id: authId("id").primaryKey(),
+    organizationId: authId("organization_id").notNull(),
+    userId: authId("user_id").notNull(),
+    role: varchar("role", { length: 64 }).notNull().default("member"),
+    createdAt: ts("created_at").notNull(),
+  },
+  (t) => [index("member_org_idx").on(t.organizationId)]
+);
+
+export const invitation = pgTable(
+  "invitation",
+  {
+    id: authId("id").primaryKey(),
+    organizationId: authId("organization_id").notNull(),
+    email: id191("email").notNull(),
+    role: varchar("role", { length: 64 }),
+    status: varchar("status", { length: 32 }).notNull().default("pending"),
+    expiresAt: ts("expires_at").notNull(),
+    inviterId: authId("inviter_id").notNull(),
+  },
+  (t) => [index("invitation_org_idx").on(t.organizationId)]
+);

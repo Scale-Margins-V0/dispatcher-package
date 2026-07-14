@@ -8,6 +8,13 @@
       "when": 1784037549262,
       "tag": "0000_striped_vampiro",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784045139092,
+      "tag": "0001_foamy_skreet",
+      "breakpoints": true
     }
   ]
 }

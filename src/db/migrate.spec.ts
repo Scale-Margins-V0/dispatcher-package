@@ -32,6 +32,13 @@ describe("runDispatcherMigrations (sqlite)", () => {
       "app_logs",
       "dev_sent_campaigns",
       "dispatcher_meta",
+      "user",
+      "session",
+      "account",
+      "verification",
+      "organization",
+      "member",
+      "invitation",
     ]) {
       expect(names).toContain(expected);
     }

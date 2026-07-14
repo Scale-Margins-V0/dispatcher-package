@@ -41,6 +41,7 @@
     "@google-cloud/storage": "^7.14.0",
     "@sendgrid/eventwebhook": "^8.0.0",
     "@sendgrid/mail": "^8.1.4",
+    "better-auth": "^1.6.23",
     "better-sqlite3": "^11.8.0",
     "cookie-session": "^2.1.1",
     "drizzle-orm": "^0.45.2",
