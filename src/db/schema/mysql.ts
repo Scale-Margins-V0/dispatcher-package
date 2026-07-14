@@ -260,6 +260,7 @@ export const invitation = mysqlTable(
     status: varchar("status", { length: 32 }).notNull().default("pending"),
     expiresAt: ts("expires_at").notNull(),
     inviterId: authId("inviter_id").notNull(),
+    createdAt: ts("created_at").notNull(),
   },
   (t) => [index("invitation_org_idx").on(t.organizationId)]
 );

@@ -15,6 +15,13 @@
       "when": 1784045139607,
       "tag": "0001_perpetual_hawkeye",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1784046458383,
+      "tag": "0002_daily_red_wolf",
+      "breakpoints": true
     }
   ]
 }

@@ -249,6 +249,7 @@ export const invitation = sqliteTable(
     status: text("status").notNull().default("pending"),
     expiresAt: ts("expires_at").notNull(),
     inviterId: text("inviter_id").notNull(),
+    createdAt: ts("created_at").notNull(),
   },
   (t) => [index("invitation_org_idx").on(t.organizationId)]
 );

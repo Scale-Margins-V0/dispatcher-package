@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type Express } from "express";
 import { toNodeHandler } from "better-auth/node";
+import { registerAcceptRoute } from "../auth/accept.js";
 import { getAuth } from "../auth/index.js";
 import { requireSession, sessionProbe } from "../auth/middleware.js";
 import { getBuildInfo } from "../ops/build-info.js";
@@ -25,6 +26,8 @@ export const registerAdminRoutes = (app: Express): void => {
 
   // Public probe for the SPA to decide whether to show the sign-in screen.
   app.get("/admin/api/session", sessionProbe);
+  // Public invite-accept bridge (creates the account for a valid invitation).
+  registerAcceptRoute(app);
 
   // Everything else under /admin/api requires a valid session.
   app.use("/admin/api", requireSession);
