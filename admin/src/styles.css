@@ -378,7 +378,12 @@ button.ghost svg { width: 13px; vertical-align: -2px; margin-right: 3px; }
 .accordion-item.open { border-color: var(--faint); }
 .accordion-head { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; background: transparent; border: 0; color: var(--text); cursor: pointer; text-align: left; }
 .accordion-head:hover { background: var(--hover); }
-.accordion-title { font-weight: 650; font-size: 14px; text-transform: capitalize; }
+.accordion-title { display: inline-flex; align-items: center; gap: 10px; font-weight: 650; font-size: 14px; text-transform: capitalize; }
+.provider-logo { width: 22px; height: 22px; border-radius: 5px; flex: none; }
+.provider-logo-fallback { display: inline-flex; align-items: center; justify-content: center; background: var(--raised); color: var(--muted); font: 700 11px var(--font); }
+.provider-docs { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; color: var(--muted); font-size: 12.5px; font-weight: 500; text-decoration: none; }
+.provider-docs:hover { color: var(--text); }
+.provider-docs svg { width: 13px; height: 13px; }
 .accordion-meta { display: flex; align-items: center; gap: 10px; }
 .accordion-chevron { width: 16px; height: 16px; color: var(--faint); transition: transform .16s; flex: none; }
 .accordion-item.open .accordion-chevron { transform: rotate(180deg); }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { fetchActivity, fetchOverview, fetchSession, signIn, signOut } from "./api";
-import { ActivityIcon, AlertIcon, BellIcon, ChatIcon, CheckIcon, ChevronIcon, ClockIcon, GridIcon, MailIcon, MessageIcon, MonitorIcon, MoonIcon, RefreshIcon, ServerIcon, ShieldIcon, SlidersIcon, SunIcon, UsersIcon } from "./icons";
+import { ActivityIcon, AlertIcon, BellIcon, ChatIcon, CheckIcon, ChevronIcon, ClockIcon, ExternalLinkIcon, GridIcon, MailIcon, MessageIcon, MonitorIcon, MoonIcon, RefreshIcon, ServerIcon, ShieldIcon, SlidersIcon, SunIcon, UsersIcon } from "./icons";
+import { PROVIDER_DOCS, ProviderLogo } from "./logos";
 import AcceptInvite from "./pages/AcceptInvite";
 import Logs from "./pages/Logs";
 import Settings from "./pages/Settings";
@@ -74,14 +75,16 @@ const cap = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
 function ProviderAccordionItem({ provider, open, onToggle }: { provider: ProviderInfo; open: boolean; onToggle: () => void }) {
   const stateTone = provider.state === "active" || provider.state === "ready" ? "green" : provider.state === "incomplete" ? "amber" : "muted";
+  const docs = PROVIDER_DOCS[provider.provider.toLowerCase()];
   return <div className={`accordion-item ${open ? "open" : ""}`}>
     <button type="button" className="accordion-head" onClick={onToggle}>
-      <span className="accordion-title">{cap(provider.provider)}</span>
+      <span className="accordion-title"><ProviderLogo provider={provider.provider} />{cap(provider.provider)}</span>
       <span className="accordion-meta"><Badge tone={stateTone}>{provider.state.replaceAll("_", " ")}</Badge><ChevronIcon className="accordion-chevron" /></span>
     </button>
     {open && <div className="accordion-body">
       <div className="provider-sets">{provider.credential_sets.map((set) => <div className="provider-set" key={set.label}><div className="provider-set-label"><span className={`dot ${set.satisfied ? "dot-green" : "dot-amber"}`} />{set.label}<Badge tone={set.satisfied ? "green" : "amber"}>{set.satisfied ? "ready" : "missing"}</Badge></div><div className="provider-envs">{Object.entries(set.variables).map(([name, present]) => <span className={`provider-env ${present ? "present" : "absent"}`} key={name}>{name}</span>)}</div></div>)}</div>
       {provider.webhook && <div className="provider-webhook"><span>Webhook</span><Badge tone={provider.webhook.enabled ? "green" : "muted"}>{provider.webhook.enabled ? "enabled" : "off"}</Badge>{provider.webhook.verification_configured && <span className="verified"><CheckIcon />verification set</span>}</div>}
+      {docs && <a className="provider-docs" href={docs.url} target="_blank" rel="noreferrer noopener"><ExternalLinkIcon />{docs.label}</a>}
     </div>}
   </div>;
 }
