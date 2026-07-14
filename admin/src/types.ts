@@ -169,3 +169,38 @@ export interface DispatchDetail {
   dispatch: DispatchActivity;
   recipient_failures: RecipientFailure[];
 }
+
+export interface SessionUser {
+  id: string;
+  email: string;
+  name: string;
+  role: string | null;
+}
+
+export interface SessionInfo {
+  authenticated: boolean;
+  user?: SessionUser;
+}
+
+export interface OrgMember {
+  id: string;
+  role: string;
+  createdAt?: string;
+  user: { id: string; name: string; email: string };
+}
+
+export interface OrgSummary {
+  id: string;
+  name: string;
+  slug: string;
+  members?: OrgMember[];
+}
+
+export interface PendingInvitation {
+  id: string;
+  email: string;
+  role: string | null;
+  status: string;
+  expiresAt?: string;
+  accept_url: string;
+}

@@ -334,3 +334,26 @@ td.actions-cell { text-align: right; white-space: nowrap; }
 .log-message { font-size: 13px; line-height: 1.5; }
 .stack-trace { font: 12px/1.6 var(--mono); background: light-dark(#f7f7f7, #1a1a1a); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 .detail-row td { background: light-dark(#fafafa, #1f1f1f); }
+
+/* --- Settings: sub-tabs, invitations, account --- */
+.subtabs { display: flex; flex-direction: row; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+.subtab { padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 13.5px; font-weight: 500; cursor: pointer; margin-bottom: -1px; }
+.subtab:hover { color: var(--text); }
+.subtab.active { color: var(--text); font-weight: 650; border-bottom-color: var(--accent); }
+.you-tag { color: var(--muted); font-size: 12px; }
+.muted-dash { color: var(--faint); }
+.invite-form { margin-bottom: 18px; display: flex; flex-direction: column; gap: 12px; }
+.invite-form form { display: flex; gap: 10px; flex-wrap: wrap; }
+.invite-form input[type="email"] { flex: 1; min-width: 220px; padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); outline: none; font-size: 13px; }
+.invite-form select, .stacked-form select, table select { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: 13px; }
+.invite-form button[type="submit"], .stacked-form button[type="submit"] { padding: 9px 16px; border: 0; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-ink); font-weight: 600; cursor: pointer; white-space: nowrap; }
+.invite-result { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+.invite-result svg { width: 15px; color: var(--green); }
+.invite-link { flex: 1; min-width: 240px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--accent-soft); padding: 4px 8px; border-radius: var(--radius-xs); font: 12px var(--mono); }
+button.ghost svg { width: 13px; vertical-align: -2px; margin-right: 3px; }
+.account-panel { margin-bottom: 16px; max-width: 560px; }
+.stacked-form { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+.stacked-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.stacked-form input { padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); outline: none; font-size: 13px; }
+.stacked-form button[type="submit"] { align-self: flex-start; }
+.account-panel .compact-list dt { color: var(--muted); font-size: 12px; }
