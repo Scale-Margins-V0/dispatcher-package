@@ -6,7 +6,7 @@ import {
   updateVariable,
   validateVariable,
 } from "../api";
-import { AlertIcon, CheckIcon, RefreshIcon, SlidersIcon } from "../icons";
+import { AlertIcon, CheckIcon, SlidersIcon } from "../icons";
 import type { AdminVariable, VariablePayload } from "../types";
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -186,7 +186,7 @@ function Editor({
   );
 }
 
-export default function Variables() {
+export default function Variables({ refreshSignal = 0 }: { refreshSignal?: number }) {
   const [variables, setVariables] = useState<AdminVariable[] | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [error, setError] = useState("");
@@ -204,7 +204,7 @@ export default function Variables() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshSignal]);
 
   const edit = (variable: AdminVariable) =>
     setEditor({
@@ -254,9 +254,6 @@ export default function Variables() {
           </p>
         </div>
         <div className="head-actions">
-          <button type="button" className="refresh-button" onClick={() => void load()}>
-            <RefreshIcon /> Refresh
-          </button>
           <button type="button" onClick={() => setEditor(emptyEditor())}>
             New variable
           </button>
@@ -288,14 +285,13 @@ export default function Variables() {
         </div>
       )}
       {variables && variables.length > 0 && (
-        <section className="table-wrap">
-          <table>
+        <section className="table-wrap scroll-x">
+          <table className="variables-table">
             <thead>
               <tr>
                 <th>Placeholder</th>
                 <th>Source</th>
                 <th>Definition</th>
-                <th>Fallback</th>
                 <th>Sample</th>
                 <th>Status</th>
                 <th>Actions</th>
@@ -310,22 +306,29 @@ export default function Variables() {
                       {variable.source}
                     </Badge>
                   </td>
-                  <td className="mono definition-cell">
+                  <td
+                    className="mono definition-cell"
+                    title={
+                      (variable.source === "field" ? variable.field : variable.expr) +
+                      (variable.fallback ? `  (fallback: ${variable.fallback})` : "")
+                    }
+                  >
                     {variable.source === "field" ? variable.field : variable.expr}
                   </td>
-                  <td>{variable.fallback ?? "—"}</td>
-                  <td className="mono">{variable.preview || "—"}</td>
+                  <td className="mono preview-cell" title={variable.preview}>{variable.preview || "—"}</td>
                   <td>
-                    <Badge tone={variable.enabled ? "green" : "muted"}>
+                    <button
+                      type="button"
+                      className={`badge badge-${variable.enabled ? "green" : "muted"} status-toggle`}
+                      onClick={() => void toggle(variable)}
+                      title={variable.enabled ? "Click to disable" : "Click to enable"}
+                    >
                       {variable.enabled ? "enabled" : "disabled"}
-                    </Badge>
+                    </button>
                   </td>
                   <td className="actions-cell">
                     <button type="button" className="ghost" onClick={() => edit(variable)}>
                       Edit
-                    </button>
-                    <button type="button" className="ghost" onClick={() => void toggle(variable)}>
-                      {variable.enabled ? "Disable" : "Enable"}
                     </button>
                     {pendingDelete === variable.name ? (
                       <>

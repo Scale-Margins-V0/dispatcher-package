@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchLogs } from "../api";
-import { AlertIcon, ClockIcon, RefreshIcon } from "../icons";
+import { AlertIcon, ClockIcon } from "../icons";
 import type { LogEntry } from "../types";
 
 const LEVELS = ["", "debug", "info", "warn", "error", "fatal"] as const;
@@ -12,7 +12,7 @@ const formatTime = (value: string) => new Date(value).toLocaleString();
 
 type Filters = { level: string; campaign_id: string; q: string };
 
-export default function Logs() {
+export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) {
   const [filters, setFilters] = useState<Filters>({ level: "", campaign_id: "", q: "" });
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -44,7 +44,7 @@ export default function Logs() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshSignal]);
 
   return (
     <>
@@ -56,9 +56,6 @@ export default function Logs() {
             messages and stack traces, correlated by request and campaign.
           </p>
         </div>
-        <button type="button" className="refresh-button" onClick={() => void load()} disabled={loading}>
-          <RefreshIcon className={loading ? "spin" : ""} /> Refresh
-        </button>
       </header>
       <section className="panel log-filters">
         <select
@@ -97,7 +94,7 @@ export default function Logs() {
         </div>
       )}
       {logs.length > 0 && (
-        <section className="table-wrap">
+        <section className="table-wrap scroll-x">
           <table>
             <thead>
               <tr>

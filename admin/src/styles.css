@@ -297,10 +297,11 @@ td { overflow-wrap: anywhere; }
 
 /* --- Variables editor + Logs viewer (stateful dispatcher) --- */
 .head-actions { display: flex; gap: 10px; align-items: center; }
-.head-actions button, .editor-actions button { padding: 8px 14px; border: 0; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-ink); font-weight: 600; cursor: pointer; }
-button.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); font-weight: 500; padding: 6px 12px; border-radius: var(--radius-sm); cursor: pointer; }
-button.ghost:hover { border-color: var(--accent-ring); }
-button.danger { background: light-dark(#b42318, #f97066); color: light-dark(#ffffff, #1c1c1c); border: 0; padding: 6px 12px; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer; }
+.head-actions button, .editor-actions button { padding: 8px 14px; border: 0; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-ink); font-weight: 600; cursor: pointer; white-space: nowrap; }
+button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); font-weight: 500; padding: 5px 10px; border-radius: var(--radius-xs); font-size: 12px; cursor: pointer; white-space: nowrap; }
+button.ghost:hover { border-color: var(--accent-ring); color: var(--text); background: var(--hover); }
+button.danger { background: transparent; color: var(--red); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); padding: 5px 10px; border-radius: var(--radius-xs); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+button.danger:hover { background: var(--red-soft); }
 .variable-editor form { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .form-grid label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
@@ -311,9 +312,16 @@ button.danger { background: light-dark(#b42318, #f97066); color: light-dark(#fff
 .editor-actions { display: flex; gap: 10px; }
 .variable-preview { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
 .variable-preview code { background: var(--accent-soft); padding: 2px 6px; border-radius: 4px; }
-.definition-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.actions-cell { display: flex; gap: 6px; flex-wrap: wrap; }
+.table-wrap.scroll-x { overflow-x: auto; }
+.definition-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-cell { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+td.actions-cell { text-align: right; white-space: nowrap; }
+.actions-cell { display: flex; gap: 6px; flex-wrap: nowrap; justify-content: flex-end; }
 .row-muted td { opacity: 0.55; }
+.variables-table td { vertical-align: middle; }
+.variables-table td.mono { white-space: nowrap; }
+.status-toggle { cursor: pointer; border: 1px solid transparent; transition: border-color .12s; }
+.status-toggle:hover { border-color: var(--accent-ring); }
 .log-filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .log-filters input { min-width: 200px; flex: 1; }
 .log-row { cursor: pointer; }
