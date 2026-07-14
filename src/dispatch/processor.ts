@@ -9,6 +9,7 @@ import { getProvider } from "../providers/index.js";
 import type { EmailMessage } from "../providers/types.js";
 import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
+import { ensurePlaceholdersFresh } from "../variables/service.js";
 import { processWhatsAppDispatch } from "./whatsapp.js";
 import type { DispatchPayload } from "./types.js";
 
@@ -23,6 +24,10 @@ export async function processDispatch(
   payload: DispatchPayload,
   fromEmail: string
 ): Promise<{ sent: number; failed: number } | undefined> {
+  // Pick up variable edits made via the admin API since the last dispatch —
+  // one refresh per campaign so the whole run uses a consistent set.
+  await ensurePlaceholdersFresh();
+
   if (payload.channel === "whatsapp") {
     await processWhatsAppDispatch(payload);
     return undefined;

@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
+import { getPlaceholderSnapshot } from "../variables/service.js";
 import type { IdType } from "./mapper.js";
 
 /** Vitest sets `VITEST=true`; avoid noisy stderr for expected test paths. */
@@ -307,7 +308,10 @@ export function ensureDispatchConfigLoaded(): void {
 }
 
 export function getPlaceholderRegistry(): Record<string, PlaceholderEntry> {
-  return getDispatchConfig().placeholders;
+  // Once the state DB is bootstrapped, its variables table is the source of
+  // truth (editable at runtime via the admin API). YAML/defaults remain the
+  // fallback for processes that never init the DB (unit tests, tooling).
+  return getPlaceholderSnapshot() ?? getDispatchConfig().placeholders;
 }
 
 export function getSqliteFile(config: DispatchConfig): string {

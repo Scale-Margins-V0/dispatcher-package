@@ -5,6 +5,7 @@ import express, { type Express } from "express";
 import { getBuildInfo } from "../ops/build-info.js";
 import { buildDiagnosticsReport } from "../ops/diagnostics.js";
 import { getAdminActivity } from "./activity.js";
+import { registerVariableRoutes } from "./api/variables.js";
 import { adminSecurityHeaders, adminSession, loginAdmin, logoutAdmin, verifyAdminAccess } from "./auth.js";
 
 const assetsDirectory = join(dirname(fileURLToPath(import.meta.url)), "../../admin-dist");
@@ -17,6 +18,8 @@ export const registerAdminRoutes = (app: Express): void => {
     res.json({ authenticated: Boolean(req.session?.adminAuthenticated && req.session.expiresAt && req.session.expiresAt > Date.now()) });
   });
   app.use("/admin/api", verifyAdminAccess);
+
+  registerVariableRoutes(app);
 
   app.get("/admin/api/overview", async (_req, res) => {
     try {

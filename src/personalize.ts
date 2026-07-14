@@ -144,6 +144,49 @@ export function evaluateComputedExpression(
   return out;
 }
 
+/** Canned record for admin-side expression validation and previews. */
+export const SAMPLE_PREVIEW_USER: UserRecord = {
+  user_id: "usr_1024",
+  email: "sample.user@example.com",
+  fields: {
+    first_name: "Ada",
+    last_name: "Lovelace",
+    company_name: "Acme Corp",
+    email: "sample.user@example.com",
+    phone: "15550100",
+  },
+};
+
+const SAMPLE_PREVIEW_CTX: PersonalizeDispatchContext = {
+  campaign_id: "cmp_sample",
+  organization_id: "org_sample",
+};
+
+/**
+ * Server-side validation for admin-supplied computed expressions. Runs the
+ * real evaluator against the sample record so anything that passes here also
+ * resolves at dispatch time.
+ */
+export function validateComputedExpression(
+  expr: string
+): { ok: true } | { ok: false; error: string } {
+  if (!expr.trim()) return { ok: false, error: "expression is empty" };
+  try {
+    evaluateComputedExpression(expr, SAMPLE_PREVIEW_USER, SAMPLE_PREVIEW_CTX);
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "invalid expression",
+    };
+  }
+}
+
+/** What a placeholder definition renders to for the sample record. */
+export function renderPlaceholderPreview(def: PlaceholderEntry): string {
+  return resolvePlaceholder(def, SAMPLE_PREVIEW_USER, SAMPLE_PREVIEW_CTX);
+}
+
 function resolvePlaceholder(
   def: PlaceholderEntry,
   user: UserRecord,

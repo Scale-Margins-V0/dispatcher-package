@@ -17,6 +17,15 @@ export function tableFor(dbx: DispatcherDb, name: StateTableName): any {
 }
 
 /**
+ * The drizzle instance widened for cross-dialect query building. The three
+ * database types share the select/insert/update/delete surface; TS can't unify
+ * them, so repos build queries through this and type their own boundaries.
+ */
+export function queryDb(dbx: DispatcherDb): any {
+  return dbx.db;
+}
+
+/**
  * Cross-dialect upsert. `conflictKeys` are TS property names on the table
  * (identical across the three schema files); ignored by MySQL, which keys on
  * the primary/unique constraint itself.
