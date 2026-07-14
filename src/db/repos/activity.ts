@@ -1,0 +1,174 @@
+import { and, desc, eq, gt, gte, ne, or, sql } from "drizzle-orm";
+import { getDb } from "../client.js";
+import { queryDb, tableFor, upsert } from "../dialect-helpers.js";
+import type {
+  DispatchRunRow,
+  RecipientFailureRow,
+  WebhookActivityRow,
+} from "../schema/index.js";
+
+const num = (value: unknown): number => Number(value ?? 0);
+
+export async function upsertDispatchRun(
+  run: Omit<DispatchRunRow, "updated_at">
+): Promise<void> {
+  const now = new Date();
+  const values = { ...run, updated_at: now };
+  const { id: _id, ...updateSet } = values;
+  await upsert(getDb(), "dispatchRuns", values, ["id"], updateSet);
+}
+
+export async function insertRecipientFailure(row: RecipientFailureRow): Promise<void> {
+  const dbx = getDb();
+  await queryDb(dbx).insert(tableFor(dbx, "dispatchRecipientFailures")).values(row);
+}
+
+export async function insertWebhookActivity(row: WebhookActivityRow): Promise<void> {
+  const dbx = getDb();
+  await queryDb(dbx).insert(tableFor(dbx, "webhookActivity")).values(row);
+}
+
+export type ActivitySnapshot = {
+  summary: {
+    accepted_dispatches: number;
+    completed_dispatches: number;
+    sent: number;
+    failed: number;
+    webhook_success_rate: number | null;
+  };
+  dispatches: DispatchRunRow[];
+  webhooks: WebhookActivityRow[];
+  failures: Array<DispatchRunRow | WebhookActivityRow>;
+};
+
+function toRun(raw: Record<string, unknown>): DispatchRunRow {
+  return raw as unknown as DispatchRunRow;
+}
+
+function toWebhook(raw: Record<string, unknown>): WebhookActivityRow {
+  return raw as unknown as WebhookActivityRow;
+}
+
+export async function getActivitySnapshot(limit = 50): Promise<ActivitySnapshot> {
+  const dbx = getDb();
+  const q = queryDb(dbx);
+  const runs = tableFor(dbx, "dispatchRuns");
+  const webhooks = tableFor(dbx, "webhookActivity");
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  const [acceptedRow] = await q.select({ n: sql`count(*)` }).from(runs);
+  const [completedRow] = await q
+    .select({
+      n: sql`count(*)`,
+      sent: sql`coalesce(sum(${runs.sent_count}), 0)`,
+      failed: sql`coalesce(sum(${runs.failed_count}), 0)`,
+    })
+    .from(runs)
+    .where(eq(runs.status, "completed"));
+
+  const [outboundRow] = await q
+    .select({
+      total: sql`count(*)`,
+      delivered: sql`sum(case when ${webhooks.status} = 'delivered' then 1 else 0 end)`,
+    })
+    .from(webhooks)
+    .where(and(eq(webhooks.direction, "outbound"), gte(webhooks.occurred_at, dayAgo)));
+
+  const latestRuns: Record<string, unknown>[] = await q
+    .select()
+    .from(runs)
+    .orderBy(desc(runs.occurred_at), desc(runs.id))
+    .limit(limit);
+  const latestWebhooks: Record<string, unknown>[] = await q
+    .select()
+    .from(webhooks)
+    .orderBy(desc(webhooks.occurred_at), desc(webhooks.id))
+    .limit(limit);
+
+  const failedRuns: Record<string, unknown>[] = await q
+    .select()
+    .from(runs)
+    .where(or(eq(runs.status, "failed"), gt(runs.failed_count, 0)))
+    .orderBy(desc(runs.occurred_at), desc(runs.id))
+    .limit(limit);
+  const failedWebhooks: Record<string, unknown>[] = await q
+    .select()
+    .from(webhooks)
+    .where(ne(webhooks.status, "delivered"))
+    .orderBy(desc(webhooks.occurred_at), desc(webhooks.id))
+    .limit(limit);
+
+  const outboundTotal = num(outboundRow?.total);
+  return {
+    summary: {
+      accepted_dispatches: num(acceptedRow?.n),
+      completed_dispatches: num(completedRow?.n),
+      sent: num(completedRow?.sent),
+      failed: num(completedRow?.failed),
+      webhook_success_rate: outboundTotal
+        ? Math.round((num(outboundRow?.delivered) / outboundTotal) * 1000) / 10
+        : null,
+    },
+    dispatches: latestRuns.map(toRun),
+    webhooks: latestWebhooks.map(toWebhook),
+    failures: [...failedRuns.map(toRun), ...failedWebhooks.map(toWebhook)].slice(0, limit),
+  };
+}
+
+export type RunPage = { runs: DispatchRunRow[]; next_cursor: { ts: Date; id: string } | null };
+
+export async function listDispatchRuns(options: {
+  campaign_id?: string;
+  status?: string;
+  cursor?: { ts: Date; id: string };
+  limit: number;
+}): Promise<RunPage> {
+  const dbx = getDb();
+  const runs = tableFor(dbx, "dispatchRuns");
+  const conditions: unknown[] = [];
+  if (options.campaign_id) conditions.push(eq(runs.campaign_id, options.campaign_id));
+  if (options.status) conditions.push(eq(runs.status, options.status));
+  if (options.cursor) {
+    conditions.push(
+      or(
+        sql`${runs.occurred_at} < ${options.cursor.ts}`,
+        and(eq(runs.occurred_at, options.cursor.ts), sql`${runs.id} < ${options.cursor.id}`)
+      )
+    );
+  }
+  let builder = queryDb(dbx).select().from(runs);
+  if (conditions.length > 0) builder = builder.where(and(...(conditions as never[])));
+  const raw: Record<string, unknown>[] = await builder
+    .orderBy(desc(runs.occurred_at), desc(runs.id))
+    .limit(options.limit + 1);
+  const rows = raw.map(toRun);
+  const hasMore = rows.length > options.limit;
+  const page = hasMore ? rows.slice(0, options.limit) : rows;
+  const last = page[page.length - 1];
+  return {
+    runs: page,
+    next_cursor: hasMore && last ? { ts: last.occurred_at, id: last.id } : null,
+  };
+}
+
+export async function getDispatchRun(id: string): Promise<{
+  run: DispatchRunRow;
+  recipient_failures: RecipientFailureRow[];
+} | null> {
+  const dbx = getDb();
+  const q = queryDb(dbx);
+  const runs = tableFor(dbx, "dispatchRuns");
+  const failures = tableFor(dbx, "dispatchRecipientFailures");
+  const raw: Record<string, unknown>[] = await q.select().from(runs).where(eq(runs.id, id));
+  if (!raw[0]) return null;
+  const failureRows: Record<string, unknown>[] = await q
+    .select()
+    .from(failures)
+    .where(eq(failures.dispatch_run_id, id))
+    .orderBy(desc(failures.occurred_at))
+    .limit(500);
+  return {
+    run: toRun(raw[0]),
+    recipient_failures: failureRows as unknown as RecipientFailureRow[],
+  };
+}

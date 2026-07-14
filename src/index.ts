@@ -41,6 +41,9 @@ import { recordDispatchActivity } from "./admin/activity.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
 import { logUnlessVitest } from "./logging.js";
+import { bindCampaignId } from "./logging/context.js";
+import { componentLogger } from "./logging/logger.js";
+import { requestIdMiddleware } from "./middleware/request-id.js";
 import { registerInboundWebhookRoutes } from "./routes/inbound-webhooks.js";
 import { startServer } from "./server-start.js";
 
@@ -132,6 +135,7 @@ app.disable("x-powered-by");
 // Acme and supported deployments terminate TLS at one ingress proxy. This lets
 // Express emit Secure admin cookies when that proxy reports HTTPS.
 app.set("trust proxy", 1);
+app.use(requestIdMiddleware);
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
 
@@ -295,10 +299,13 @@ if (process.env.EVENT_TEST_CSV_PATH) {
 // POST /api/scalemargin/dispatch — Campaign Dispatch Handler
 // ---------------------------------------------------------------------------
 
+const dispatchLog = componentLogger("dispatch");
+
 app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   const payload = req.body as DispatchPayload;
   const activityId = crypto.randomUUID();
   const startedAt = performance.now();
+  bindCampaignId(String(payload.campaign_id ?? "unknown"));
 
   logUnlessVitest(
     `[Dispatch] Received campaign ${payload.campaign_id} — ` +
@@ -314,6 +321,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   recordDispatchActivity({
     id: activityId,
     campaign_id: String(payload.campaign_id ?? "unknown"),
+    organization_id: payload.metadata?.organization_id,
     channel: String(payload.channel ?? "unknown"),
     provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
     status: "accepted",
@@ -326,10 +334,11 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   });
 
   // Process asynchronously
-  processDispatch(payload, FROM_EMAIL).then((result) => {
+  processDispatch(payload, FROM_EMAIL, activityId).then((result) => {
     recordDispatchActivity({
       id: activityId,
       campaign_id: String(payload.campaign_id ?? "unknown"),
+      organization_id: payload.metadata?.organization_id,
       channel: String(payload.channel ?? "unknown"),
       provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
       status: "completed",
@@ -343,6 +352,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
     recordDispatchActivity({
       id: activityId,
       campaign_id: String(payload.campaign_id ?? "unknown"),
+      organization_id: payload.metadata?.organization_id,
       channel: String(payload.channel ?? "unknown"),
       provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
       status: "failed",
@@ -350,12 +360,17 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
       duration_ms: Math.round(performance.now() - startedAt),
       occurred_at: new Date().toISOString(),
       error_category: error instanceof Error ? error.name : "processing_error",
+      error_message: error instanceof Error ? error.message : String(error),
+      error_stack: error instanceof Error ? error.stack : undefined,
     });
     telemetry.captureException(error, {
       component: "dispatch_processor",
       channel: payload.channel,
     });
-    console.error(`[Dispatch] Campaign ${payload.campaign_id} failed:`, error);
+    dispatchLog.error(
+      { err: error instanceof Error ? error : new Error(String(error)) },
+      `Campaign ${payload.campaign_id} failed`
+    );
   });
 });
 registerInboundWebhookRoutes(app);

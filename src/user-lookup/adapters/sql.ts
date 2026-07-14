@@ -5,6 +5,7 @@
 import Database from "better-sqlite3";
 import { createPool, type Pool as MysqlPool } from "mysql2/promise";
 import { Pool as PgPool } from "pg";
+import { componentLogger } from "../../logging/logger.js";
 import type { DispatchConfig } from "../config.js";
 import { getIdType, getSqliteFile } from "../config.js";
 import {
@@ -19,6 +20,8 @@ import {
   type SqlDialect,
 } from "../sql-build.js";
 import type { UserLookupAdapter, UserRecord } from "../types.js";
+
+const log = componentLogger("user-lookup.sql");
 
 export class SqlAdapter implements UserLookupAdapter {
   private mysqlPool: MysqlPool | null = null;
@@ -123,7 +126,7 @@ export class SqlAdapter implements UserLookupAdapter {
       const c = coerceIdForType(w, idType);
       if (c === null) {
         if (process.env.VITEST !== "true") {
-          console.warn(
+          log.warn(
             `[UserLookup] Skipping invalid id for id_type=${idType}: ${JSON.stringify(w)}`
           );
         }
@@ -165,7 +168,7 @@ export class SqlAdapter implements UserLookupAdapter {
     }
 
     if (process.env.VITEST !== "true") {
-      console.log(
+      log.info(
         `[UserLookup][${this.dialect}] Resolved ${out.size}/${userIds.length} users`
       );
     }

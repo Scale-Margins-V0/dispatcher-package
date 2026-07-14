@@ -4,6 +4,9 @@ import { buildPayloadForGroup, postAnalyticsWithRetry } from "../events/forwarde
 import { logPreferenceSideEffectSimulation } from "../events/preference-side-effect-log.js";
 import { scrubPii } from "../events/scrubber.js";
 import type { StandardizedEvent } from "../events/common/types.js";
+import { componentLogger } from "../logging/logger.js";
+
+const log = componentLogger("preferences");
 
 /**
  * Recipient-selectable email categories. Keys must match
@@ -31,7 +34,11 @@ function readBodyField(body: unknown, name: string): string | undefined {
 
 function logUnlessVitest(...args: unknown[]): void {
   if (process.env.VITEST === "true") return;
-  console.warn(...args);
+  const [first, ...rest] = args;
+  log.warn(
+    rest.length > 0 ? { details: rest } : {},
+    typeof first === "string" ? first : JSON.stringify(first)
+  );
 }
 
 function escapeHtml(value: string): string {

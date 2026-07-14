@@ -4,6 +4,9 @@ import { buildPayloadForGroup, postAnalyticsWithRetry } from "../events/forwarde
 import { logPreferenceSideEffectSimulation } from "../events/preference-side-effect-log.js";
 import { scrubPii } from "../events/scrubber.js";
 import type { StandardizedEvent } from "../events/common/types.js";
+import { componentLogger } from "../logging/logger.js";
+
+const log = componentLogger("unsubscribe");
 
 function readParam(req: Parameters<RequestHandler>[0], name: string): string | undefined {
   const q = req.query[name];
@@ -14,7 +17,11 @@ function readParam(req: Parameters<RequestHandler>[0], name: string): string | u
 
 function logUnlessVitest(...args: unknown[]): void {
   if (process.env.VITEST === "true") return;
-  console.warn(...args);
+  const [first, ...rest] = args;
+  log.warn(
+    rest.length > 0 ? { details: rest } : {},
+    typeof first === "string" ? first : JSON.stringify(first)
+  );
 }
 
 export function createUnsubscribeLinkGetHandler(): RequestHandler {

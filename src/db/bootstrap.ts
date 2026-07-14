@@ -3,9 +3,11 @@
  * Called once from src/index.ts before the event pipeline starts.
  */
 
+import { warmCampaignCallbackCache } from "../events/campaign-callback-registry.js";
 import { importYamlPlaceholdersOnce } from "../variables/import-yaml.js";
 import { createDispatcherDb, isDbInitialized, getDb, setDbSingleton, type DispatcherDb } from "./client.js";
 import { runDispatcherMigrations } from "./migrate.js";
+import { startRetentionJob } from "./retention.js";
 
 export async function initDispatcherDb(): Promise<DispatcherDb> {
   if (isDbInitialized()) return getDb();
@@ -13,5 +15,7 @@ export async function initDispatcherDb(): Promise<DispatcherDb> {
   await runDispatcherMigrations(dbx);
   setDbSingleton(dbx);
   await importYamlPlaceholdersOnce();
+  await warmCampaignCallbackCache();
+  startRetentionJob();
   return dbx;
 }

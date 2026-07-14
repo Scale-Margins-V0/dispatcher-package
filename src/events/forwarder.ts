@@ -6,6 +6,9 @@ import { createHash, createHmac } from "node:crypto";
 import type { AnalyticsEvent, AnalyticsPayload } from "../providers/types.js";
 import type { StandardizedEvent } from "./common/types.js";
 import { recordWebhookActivity, redactDestination } from "../admin/activity.js";
+import { componentLogger } from "../logging/logger.js";
+
+const log = componentLogger("events.forwarder");
 
 const MAX_RETRIES = 3;
 
@@ -140,7 +143,8 @@ export function buildPayloadForGroup(params: {
 export async function postAnalyticsWithRetry(
   callbackUrl: string,
   payload: AnalyticsPayload,
-  secret: string
+  secret: string,
+  maxRetries: number = MAX_RETRIES
 ): Promise<{ success: boolean; error?: string }> {
   if (!secret) {
     return { success: false, error: "Analytics secret not configured" };
@@ -154,7 +158,7 @@ export async function postAnalyticsWithRetry(
   const signature = signPayload(body, secret);
 
   let lastError: string | undefined;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const started = performance.now();
     try {
       const response = await fetch(callbackUrl, {
@@ -167,7 +171,7 @@ export async function postAnalyticsWithRetry(
         body,
       });
       const elapsed = Math.round(performance.now() - started);
-      console.log(
+      log.info(
         `[Forwarder] POST ${callbackUrl} attempt=${attempt} status=${response.status} elapsed=${elapsed}ms`
       );
 
@@ -179,10 +183,10 @@ export async function postAnalyticsWithRetry(
       if (response.status >= 400 && response.status < 500 && response.status !== 429) {
         const errorText = await response.text();
         const preview = errorText.slice(0, 200);
-        console.warn(
+        log.warn(
           `[Forwarder] permanent client error status=${response.status} body_preview=${JSON.stringify(preview)}`
         );
-        recordWebhookActivity({ id: crypto.randomUUID(), provider: "scalemargin", direction: "outbound", status: "failed", event_count: payload.events?.length ?? 0, http_status: response.status, duration_ms: elapsed, attempt: attempt + 1, occurred_at: new Date().toISOString(), destination: redactDestination(callbackUrl), error_category: "client_error" });
+        recordWebhookActivity({ id: crypto.randomUUID(), provider: "scalemargin", direction: "outbound", status: "failed", event_count: payload.events?.length ?? 0, http_status: response.status, duration_ms: elapsed, attempt: attempt + 1, occurred_at: new Date().toISOString(), destination: redactDestination(callbackUrl), error_category: "client_error", error_message: `${response.status}: ${preview}` });
         return { success: false, error: `${response.status}: ${errorText}` };
       }
 
@@ -190,18 +194,18 @@ export async function postAnalyticsWithRetry(
     } catch (error) {
       const elapsed = Math.round(performance.now() - started);
       lastError = error instanceof Error ? error.message : "Unknown error";
-      console.warn(
+      log.warn(
         `[Forwarder] POST ${callbackUrl} attempt=${attempt} elapsed=${elapsed}ms network_error=${lastError}`
       );
     }
 
-    if (attempt < MAX_RETRIES) {
+    if (attempt < maxRetries) {
       const delay = Math.pow(2, attempt) * 1000;
       await new Promise((r) => setTimeout(r, delay));
     }
   }
 
-  recordWebhookActivity({ id: crypto.randomUUID(), provider: "scalemargin", direction: "outbound", status: "failed", event_count: payload.events?.length ?? 0, attempt: MAX_RETRIES + 1, occurred_at: new Date().toISOString(), destination: redactDestination(callbackUrl), error_category: "retry_exhausted" });
+  recordWebhookActivity({ id: crypto.randomUUID(), provider: "scalemargin", direction: "outbound", status: "failed", event_count: payload.events?.length ?? 0, attempt: maxRetries + 1, occurred_at: new Date().toISOString(), destination: redactDestination(callbackUrl), error_category: "retry_exhausted", error_message: lastError });
 
   return { success: false, error: lastError };
 }

@@ -28,5 +28,6 @@ COPY drizzle/ ./drizzle/
 RUN mkdir -p /app/data
 ENV NODE_ENV=production
 EXPOSE 3100
-HEALTHCHECK --interval=30s --timeout=3s CMD curl -f http://localhost:3100/health || exit 1
+# node:22-slim has no curl; probe via Node's fetch
+HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://localhost:3100/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "dist/index.js"]

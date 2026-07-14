@@ -14,8 +14,11 @@
  * that org's analytics secret.
  */
 
+import { componentLogger } from "../../logging/logger.js";
 import { signPayload } from "../forwarder.js";
 import type { GupshupReceipt } from "./adapter.js";
+
+const log = componentLogger("events.gupshup");
 
 const MAX_RETRIES = 3;
 
@@ -46,13 +49,13 @@ export async function forwardGupshupReceipts(
 
   const url = resolveWhatsAppReceiptsUrl();
   if (!url) {
-    console.warn(
+    log.warn(
       `[GupshupReceipts] No backend analytics URL known yet — no WhatsApp message has been dispatched through this process since startup — dropping ${receipts.length} receipt(s)`
     );
     return { success: false, error: "no receipts URL configured" };
   }
   if (!secret) {
-    console.warn(
+    log.warn(
       `[GupshupReceipts] SCALEMARGIN_ANALYTICS_SECRET not configured — dropping ${receipts.length} receipt(s)`
     );
     return { success: false, error: "analytics secret not configured" };
@@ -76,7 +79,7 @@ export async function forwardGupshupReceipts(
         body,
       });
       const elapsed = Math.round(performance.now() - started);
-      console.log(
+      log.info(
         `[GupshupReceipts] POST ${url} attempt=${attempt} status=${response.status} count=${receipts.length} elapsed=${elapsed}ms`
       );
 
@@ -84,7 +87,7 @@ export async function forwardGupshupReceipts(
 
       if (response.status >= 400 && response.status < 500 && response.status !== 429) {
         const errorText = await response.text();
-        console.warn(
+        log.warn(
           `[GupshupReceipts] permanent client error status=${response.status} body_preview=${JSON.stringify(errorText.slice(0, 200))}`
         );
         return { success: false, error: `${response.status}: ${errorText}` };
@@ -94,7 +97,7 @@ export async function forwardGupshupReceipts(
     } catch (error) {
       const elapsed = Math.round(performance.now() - started);
       lastError = error instanceof Error ? error.message : "Unknown error";
-      console.warn(
+      log.warn(
         `[GupshupReceipts] POST ${url} attempt=${attempt} elapsed=${elapsed}ms network_error=${lastError}`
       );
     }

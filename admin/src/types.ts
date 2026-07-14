@@ -69,6 +69,7 @@ export interface AdminOverview {
 export interface DispatchActivity {
   id: string;
   campaign_id: string;
+  organization_id?: string;
   channel: string;
   provider: string;
   status: "accepted" | "completed" | "failed";
@@ -78,6 +79,8 @@ export interface DispatchActivity {
   duration_ms?: number;
   occurred_at: string;
   error_category?: string;
+  error_message?: string;
+  error_stack?: string;
 }
 
 export interface WebhookActivity {
@@ -92,11 +95,12 @@ export interface WebhookActivity {
   occurred_at: string;
   destination?: string;
   error_category?: string;
+  error_message?: string;
 }
 
 export interface AdminActivity {
   generated_at: string;
-  scope: { retention: string; max_items: number; started_at: string };
+  scope: { retention: string; started_at: string };
   summary: {
     accepted_dispatches: number;
     completed_dispatches: number;
@@ -107,4 +111,61 @@ export interface AdminActivity {
   dispatches: DispatchActivity[];
   failures: Array<DispatchActivity | WebhookActivity>;
   webhooks: WebhookActivity[];
+}
+
+export interface AdminVariable {
+  name: string;
+  source: "field" | "computed";
+  field: string | null;
+  expr: string | null;
+  fallback: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  updated_by: string | null;
+  preview: string;
+}
+
+export interface VariablePayload {
+  name: string;
+  source: "field" | "computed";
+  field?: string;
+  expr?: string;
+  fallback?: string;
+  enabled?: boolean;
+}
+
+export interface LogEntry {
+  id: string;
+  ts: string;
+  level: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
+  request_id: string | null;
+  campaign_id: string | null;
+  component: string | null;
+  message: string;
+  stack: string | null;
+  context: Record<string, unknown> | null;
+}
+
+export interface LogPage {
+  generated_at: string;
+  logs: LogEntry[];
+  next_cursor: string | null;
+}
+
+export interface RecipientFailure {
+  id: string;
+  dispatch_run_id: string;
+  campaign_id: string;
+  user_id: string;
+  provider: string;
+  error_category: string;
+  error_message: string;
+  error_stack: string | null;
+  occurred_at: string;
+}
+
+export interface DispatchDetail {
+  dispatch: DispatchActivity;
+  recipient_failures: RecipientFailure[];
 }

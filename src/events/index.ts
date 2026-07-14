@@ -26,6 +26,9 @@ import {
   type GupshupReceipt,
 } from "./gupshup/adapter.js";
 import { forwardGupshupReceipts } from "./gupshup/receipt-forwarder.js";
+import { isDbInitialized } from "../db/client.js";
+import { deliverDueBatch, enqueueEvents } from "./outbox.js";
+import { componentLogger } from "../logging/logger.js";
 import { logPreferenceSideEffectSimulation } from "./preference-side-effect-log.js";
 import { resolveAnalyticsCallbackUrl } from "./resolve-analytics-callback-url.js";
 import { scrubPii } from "./scrubber.js";
@@ -33,6 +36,8 @@ import { createSendGridInboundAdapter } from "./sendgrid/adapter.js";
 import { sendGridInboundWireAllowed } from "./sendgrid/inbound-filter.js";
 import { createSesInboundAdapter } from "./ses/adapter.js";
 import { telemetry } from "../telemetry/posthog.js";
+
+const log = componentLogger("events");
 
 let buffer: EventBuffer | null = null;
 let runtimeConfig: EventsConfig | null = null;
@@ -59,7 +64,7 @@ function getBuffer(): EventBuffer {
       diskDir: cfg.delivery.buffer.dir,
       memoryMaxSize: cfg.delivery.buffer.max_events_memory,
       onDropOldest: () => {
-        console.warn(
+        log.warn(
           "[EventsBuffer] Ring full — dropped oldest envelope (best-effort / overflow)"
         );
       },
@@ -80,6 +85,13 @@ function ensureIdempotency(event: StandardizedEvent): void {
   }
 }
 
+/** Outbox is the durable buffer; the in-memory ring is a fallback for when the state DB is unavailable (e.g. unit tests without a DB). */
+function outboxActive(): boolean {
+  return isDbInitialized();
+}
+
+const OUTBOX_FLUSH_LIMIT = 5000;
+
 async function drainAndFlushAll(): Promise<void> {
   const buf = getBuffer();
   const secret = getSecret();
@@ -89,14 +101,14 @@ async function drainAndFlushAll(): Promise<void> {
   }
   if (drained.length > 0) {
     if (isEventDebug()) {
-      console.log(`[Events] flush start size=${drained.length}`);
+      log.info(`[Events] flush start size=${drained.length}`);
     }
     const r = await flushEnvelopesSync(drained, secret);
     if (isEventDebug()) {
       if (r.ok) {
-        console.log(`[Events] flush ok size=${drained.length}`);
+        log.info(`[Events] flush ok size=${drained.length}`);
       } else {
-        console.warn(`[Events] flush err size=${drained.length} errors=${r.errors.join("; ")}`);
+        log.warn(`[Events] flush err size=${drained.length} errors=${r.errors.join("; ")}`);
       }
     }
   }
@@ -112,11 +124,15 @@ export function initializeEventPipeline(): void {
   mergeEventsEnvOverrides(runtimeConfig);
   assertEventsConfigEnv(runtimeConfig);
   logResolvedEventsConfig(runtimeConfig);
-  getBuffer();
+  if (!outboxActive()) getBuffer();
   const cfg = runtimeConfig;
   if (cfg.forward.mode === "batched") {
     flusherTimer = setInterval(() => {
       void (async () => {
+        if (outboxActive()) {
+          await deliverDueBatch(cfg.forward.batch_size, getSecret());
+          return;
+        }
         const batch = getBuffer().drain(cfg.forward.batch_size);
         if (batch.length === 0) {return;}
         await flushEnvelopesSync(batch, getSecret());
@@ -143,9 +159,16 @@ export async function emitEvent(envelope: EventEnvelope): Promise<void> {
   ensureIdempotency(envelope.event);
   if (isEventDebug()) {
     const ev = envelope.event;
-    console.log(
+    log.info(
       `[Events] emit campaign=${ev.campaign_id} user=${ev.user_id} event=${ev.event} provider=${ev.provider} messageId=${ev.provider_message_id}`
     );
+  }
+  if (outboxActive()) {
+    await enqueueEvents([envelope]);
+    if (cfg.forward.mode === "sync") {
+      await deliverDueBatch(OUTBOX_FLUSH_LIMIT, getSecret());
+    }
+    return;
   }
   getBuffer().push(envelope);
   if (cfg.forward.mode === "sync") {
@@ -273,13 +296,13 @@ export function createInboundWebhookHandler(
             );
           } else {
             droppedOtherNoCorrelation++;
-            console.warn(
+            log.warn(
               `[Events][gupshup] Dropping event — missing correlation and not a forwardable receipt`
             );
           }
         } else {
           droppedOtherNoCorrelation++;
-          console.warn(
+          log.warn(
             `[Events][${adapter.name}] Dropping event — missing correlation fields`
           );
         }
@@ -291,7 +314,7 @@ export function createInboundWebhookHandler(
       });
       if (!url) {
         droppedNoCallbackUrl++;
-        console.warn(
+        log.warn(
           `[Events][${adapter.name}] Dropping event — no analytics_callback_url, no campaign registry entry, and no valid SCALEMARGIN_ANALYTICS_CALLBACK_URL for ${c.campaign_id}`
         );
         continue;
@@ -329,7 +352,7 @@ export function createInboundWebhookHandler(
       "event" in sendgridUncorrelatedSample
         ? String((sendgridUncorrelatedSample as { event?: unknown }).event ?? "")
         : "";
-    console.log(
+    log.info(
       `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} forwarded=${envelopes.length} receipts=${gupshupReceipts.length} dropped_sg_no_correlation=${sendgridUncorrelated} dropped_no_callback_url=${droppedNoCallbackUrl} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation} dropped_unsigned_receipts=${droppedUnsignedReceipts}`
     );
     telemetry.capture("dispatcher_provider_webhook_received", {
@@ -345,15 +368,21 @@ export function createInboundWebhookHandler(
       dropped_unsigned_receipt_count: droppedUnsignedReceipts,
     });
     if (sendgridUncorrelated > 0) {
-      console.warn(
+      log.warn(
         `[Events][sendgrid] Dropped ${sendgridUncorrelated} webhook event(s) — missing correlation. sample_wire_event=${sampleWireEvent || "n/a"} — ` +
           explainSendGridCorrelationDrop(sendgridUncorrelatedSample)
       );
     }
 
-    if (cfg.forward.mode === "sync") {
+    if (outboxActive()) {
+      // Durable: persist before delivering so a restart mid-flight loses nothing.
+      if (envelopes.length > 0) await enqueueEvents(envelopes);
+      if (cfg.forward.mode === "sync" && envelopes.length > 0) {
+        await deliverDueBatch(Math.max(OUTBOX_FLUSH_LIMIT, envelopes.length), getSecret());
+      }
+    } else if (cfg.forward.mode === "sync") {
       if (isEventDebug() && envelopes.length > 0) {
-        console.log(`[Events] flush start size=${envelopes.length} (inbound sync)`);
+        log.info(`[Events] flush start size=${envelopes.length} (inbound sync)`);
       }
       const flushResult = await flushEnvelopesSync(envelopes, getSecret());
       if (!flushResult.ok) {
@@ -365,9 +394,9 @@ export function createInboundWebhookHandler(
       }
       if (isEventDebug() && envelopes.length > 0) {
         if (flushResult.ok) {
-          console.log(`[Events] flush ok size=${envelopes.length} (inbound sync)`);
+          log.info(`[Events] flush ok size=${envelopes.length} (inbound sync)`);
         } else {
-          console.warn(
+          log.warn(
             `[Events] flush err size=${envelopes.length} (inbound sync) errors=${flushResult.errors.join("; ")}`
           );
         }

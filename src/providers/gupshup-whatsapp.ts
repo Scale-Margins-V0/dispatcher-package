@@ -12,9 +12,12 @@
  */
 
 import { applyGupshupTag } from "../events/outbound/gupshup-tagger.js";
+import { componentLogger } from "../logging/logger.js";
 import { personalize, type PersonalizeDispatchContext } from "../personalize.js";
 import type { UserRecord } from "../user-lookup/types.js";
 import type { SendContext, SendResult } from "./types.js";
+
+const log = componentLogger("providers.gupshup");
 
 export type GupshupAuthMode = "apikey" | "enterprise";
 
@@ -616,7 +619,7 @@ export function logGupshupOutboundPayload(
   if (process.env.VITEST === "true") return;
   try {
     const preview = previewGupshupSendRequest(message, config);
-    console.log(
+    log.info(
       "[gupshup-send] Outbound WhatsApp → Gupshup:\n" +
         JSON.stringify(
           {
@@ -632,9 +635,9 @@ export function logGupshupOutboundPayload(
         )
     );
   } catch (error) {
-    console.warn(
-      "[gupshup-send] Could not log outbound payload:",
-      error instanceof Error ? error.message : error
+    log.warn(
+      { err: error instanceof Error ? error : new Error(String(error)) },
+      "[gupshup-send] Could not log outbound payload"
     );
   }
 }
@@ -647,7 +650,7 @@ export function shouldLogGupshupTestPayload(): boolean {
 }
 
 function logGupshupTestPayload(preview: GupshupSendRequestPreview): void {
-  console.log(
+  log.info(
     "[gupshup-event-test] Outbound request payload:\n" +
       JSON.stringify(
         {
@@ -923,9 +926,9 @@ export async function sendGupshupWhatsApp(
     try {
       logGupshupTestPayload(previewGupshupSendRequest(message, config));
     } catch (error) {
-      console.warn(
-        "[gupshup-event-test] Could not preview outbound payload:",
-        error instanceof Error ? error.message : error
+      log.warn(
+        { err: error instanceof Error ? error : new Error(String(error)) },
+        "[gupshup-event-test] Could not preview outbound payload"
       );
     }
   }

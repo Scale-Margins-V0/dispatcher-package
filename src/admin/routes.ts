@@ -5,6 +5,8 @@ import express, { type Express } from "express";
 import { getBuildInfo } from "../ops/build-info.js";
 import { buildDiagnosticsReport } from "../ops/diagnostics.js";
 import { getAdminActivity } from "./activity.js";
+import { registerHistoryRoutes } from "./api/history.js";
+import { registerLogRoutes } from "./api/logs.js";
 import { registerVariableRoutes } from "./api/variables.js";
 import { adminSecurityHeaders, adminSession, loginAdmin, logoutAdmin, verifyAdminAccess } from "./auth.js";
 
@@ -20,6 +22,8 @@ export const registerAdminRoutes = (app: Express): void => {
   app.use("/admin/api", verifyAdminAccess);
 
   registerVariableRoutes(app);
+  registerLogRoutes(app);
+  registerHistoryRoutes(app);
 
   app.get("/admin/api/overview", async (_req, res) => {
     try {
@@ -61,8 +65,13 @@ export const registerAdminRoutes = (app: Express): void => {
     }
   });
 
-  app.get("/admin/api/activity", (_req, res) => {
-    res.json({ generated_at: new Date().toISOString(), ...getAdminActivity() });
+  app.get("/admin/api/activity", async (_req, res) => {
+    try {
+      const activity = await getAdminActivity();
+      res.json({ generated_at: new Date().toISOString(), ...activity });
+    } catch {
+      res.status(500).json({ error: "Unable to load dispatcher activity" });
+    }
   });
 
   if (!existsSync(assetsDirectory)) {

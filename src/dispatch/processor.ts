@@ -1,3 +1,5 @@
+import { recordRecipientFailure } from "../admin/activity.js";
+import { hasDevSentCampaign, markDevSentCampaign } from "../db/repos/dev-sent.js";
 import { emitEvent } from "../events/index.js";
 import { registerCampaignCallback } from "../events/campaign-callback-registry.js";
 import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callback-url.js";
@@ -15,14 +17,10 @@ import type { DispatchPayload } from "./types.js";
 
 export type { DispatchPayload } from "./types.js";
 
-// DEV_RECIPIENT_EMAIL de-dupe: campaign_ids already routed to the dev address in
-// this process. Dispatches for the same campaign can arrive one user at a time, so
-// we send just one dev email per campaign. Cleared on restart (in-memory only).
-const devSentCampaigns = new Set<string>();
-
 export async function processDispatch(
   payload: DispatchPayload,
-  fromEmail: string
+  fromEmail: string,
+  dispatchRunId?: string
 ): Promise<{ sent: number; failed: number } | undefined> {
   // Pick up variable edits made via the admin API since the last dispatch —
   // one refresh per campaign so the whole run uses a consistent set.
@@ -66,7 +64,7 @@ export async function processDispatch(
   const provider = getProvider();
   const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
 
-  if (devRecipient && devSentCampaigns.has(campaign_id)) {
+  if (devRecipient && (await hasDevSentCampaign(campaign_id))) {
     logUnlessVitest(
       `[Dispatch] DEV mode — campaign ${campaign_id} already routed to ${devRecipient} this run, skipping`
     );
@@ -79,6 +77,16 @@ export async function processDispatch(
     const user = users.get(userId);
     if (!user) {
       warnUnlessVitest(`[Dispatch] User ${userId} not found in database, skipping`);
+      if (dispatchRunId) {
+        recordRecipientFailure({
+          dispatch_run_id: dispatchRunId,
+          campaign_id,
+          user_id: userId,
+          provider: provider.name,
+          error_category: "user_not_found",
+          error_message: `User ${userId} not found in user lookup — skipped`,
+        });
+      }
       continue;
     }
 
@@ -116,7 +124,7 @@ export async function processDispatch(
     });
 
     if (devRecipient) {
-      devSentCampaigns.add(campaign_id);
+      await markDevSentCampaign(campaign_id);
       logUnlessVitest(
         `[Dispatch] DEV mode — routing campaign ${campaign_id} (${user_ids.length} recipients) to ${devRecipient}, one email per campaign`
       );
@@ -140,6 +148,16 @@ export async function processDispatch(
         provider: provider.name,
         channel: "email",
       });
+      if (dispatchRunId) {
+        recordRecipientFailure({
+          dispatch_run_id: dispatchRunId,
+          campaign_id,
+          user_id: userId,
+          provider: provider.name,
+          error_category: "delivery_failure",
+          error_message: result.error ?? "provider send failed",
+        });
+      }
     }
     sendResults.push({
       userId,

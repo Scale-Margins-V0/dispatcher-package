@@ -7,39 +7,23 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import {
-  drizzle as drizzleSqlite,
-  type BetterSQLite3Database,
-} from "drizzle-orm/better-sqlite3";
-import { drizzle as drizzleMysql, type MySql2Database } from "drizzle-orm/mysql2";
-import {
-  drizzle as drizzlePg,
-  type NodePgDatabase,
-} from "drizzle-orm/node-postgres";
-import { createPool, type Pool as MysqlPool } from "mysql2/promise";
+import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3";
+import { drizzle as drizzleMysql } from "drizzle-orm/mysql2";
+import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
+import { createPool } from "mysql2/promise";
 import { Pool as PgPool } from "pg";
 import { resolveDbEnv, type DispatcherDbEnv } from "./env.js";
-import { tablesByDialect, type MysqlTables, type PgTables, type SqliteTables } from "./schema/index.js";
+import { tablesByDialect } from "./schema/index.js";
+import type { DispatcherDb } from "./types.js";
 
-export type DispatcherDb =
-  | {
-      dialect: "sqlite";
-      db: BetterSQLite3Database;
-      tables: SqliteTables;
-      sqlite: Database.Database;
-    }
-  | {
-      dialect: "mysql";
-      db: MySql2Database;
-      tables: MysqlTables;
-      pool: MysqlPool;
-    }
-  | {
-      dialect: "postgres";
-      db: NodePgDatabase;
-      tables: PgTables;
-      pool: PgPool;
-    };
+export type { DispatcherDb } from "./types.js";
+export {
+  getDb,
+  isDbInitialized,
+  setDbSingleton,
+  setDbForTests,
+  resetDbForTests,
+} from "./state.js";
 
 export function createDispatcherDb(env: {
   dialect: "sqlite";
@@ -100,33 +84,4 @@ export function createDispatcherDb(env?: DispatcherDbEnv): DispatcherDb {
     tables: tablesByDialect.postgres,
     pool,
   };
-}
-
-let singleton: DispatcherDb | null = null;
-
-/** The active state DB. Throws if initDispatcherDb() has not run yet. */
-export function getDb(): DispatcherDb {
-  if (!singleton) {
-    throw new Error(
-      "Dispatcher state DB not initialized — initDispatcherDb() must run at startup before repos are used"
-    );
-  }
-  return singleton;
-}
-
-/** Whether the state DB has been initialized (used by soft consumers like the log sink). */
-export function isDbInitialized(): boolean {
-  return singleton !== null;
-}
-
-export function setDbSingleton(dbx: DispatcherDb): void {
-  singleton = dbx;
-}
-
-export function setDbForTests(dbx: DispatcherDb): void {
-  singleton = dbx;
-}
-
-export function resetDbForTests(): void {
-  singleton = null;
 }

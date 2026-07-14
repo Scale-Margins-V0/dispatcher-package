@@ -2,6 +2,9 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { Storage as GCSStorage } from "@google-cloud/storage";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { componentLogger } from "../logging/logger.js";
+
+const log = componentLogger("images.storage");
 
 export interface ImageStorageProvider {
   name: string;
@@ -163,12 +166,12 @@ export function getImageStorage(): ImageStorageProvider | null {
       _instance = new LocalImageStorage();
       break;
     default:
-      console.warn(
+      log.warn(
         `[ImageStorage] Unknown provider: "${provider}". Supported: s3, gcs, local`
       );
       return null;
   }
 
-  console.log(`[ImageStorage] Using provider: ${_instance.name}`);
+  log.info(`[ImageStorage] Using provider: ${_instance.name}`);
   return _instance;
 }
