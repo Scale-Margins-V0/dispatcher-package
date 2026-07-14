@@ -35,6 +35,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
+import { registerAdminRoutes } from "./admin/routes.js";
+import { recordDispatchActivity } from "./admin/activity.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
 import { logUnlessVitest } from "./logging.js";
@@ -115,8 +117,11 @@ if (process.env.VITEST !== "true") {
 }
 
 const app: Express = express();
+app.disable("x-powered-by");
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
+
+registerAdminRoutes(app);
 
 if (FROM_EMAIL === "noreply@example.com" && process.env.VITEST !== "true") {
   console.warn(
@@ -278,6 +283,8 @@ if (process.env.EVENT_TEST_CSV_PATH) {
 
 app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   const payload = req.body as DispatchPayload;
+  const activityId = crypto.randomUUID();
+  const startedAt = performance.now();
 
   logUnlessVitest(
     `[Dispatch] Received campaign ${payload.campaign_id} — ` +
@@ -290,13 +297,46 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
     recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
     has_images: Boolean(payload.images?.length),
   });
+  recordDispatchActivity({
+    id: activityId,
+    campaign_id: String(payload.campaign_id ?? "unknown"),
+    channel: String(payload.channel ?? "unknown"),
+    provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
+    status: "accepted",
+    recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+    occurred_at: new Date().toISOString(),
+  });
   res.status(202).json({
     accepted: true,
     message: "Campaign dispatch received",
   });
 
   // Process asynchronously
-  processDispatch(payload, FROM_EMAIL).catch((error) => {
+  processDispatch(payload, FROM_EMAIL).then((result) => {
+    recordDispatchActivity({
+      id: activityId,
+      campaign_id: String(payload.campaign_id ?? "unknown"),
+      channel: String(payload.channel ?? "unknown"),
+      provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
+      status: "completed",
+      recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+      sent_count: result?.sent,
+      failed_count: result?.failed,
+      duration_ms: Math.round(performance.now() - startedAt),
+      occurred_at: new Date().toISOString(),
+    });
+  }).catch((error) => {
+    recordDispatchActivity({
+      id: activityId,
+      campaign_id: String(payload.campaign_id ?? "unknown"),
+      channel: String(payload.channel ?? "unknown"),
+      provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
+      status: "failed",
+      recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+      duration_ms: Math.round(performance.now() - startedAt),
+      occurred_at: new Date().toISOString(),
+      error_category: error instanceof Error ? error.name : "processing_error",
+    });
     telemetry.captureException(error, {
       component: "dispatch_processor",
       channel: payload.channel,

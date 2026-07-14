@@ -139,6 +139,31 @@ curl http://localhost:3100/version
 curl http://localhost:3100/status
 ```
 
+### Internal operations GUI
+
+The optional read-only dashboard is served by the same Express process at
+`/admin`. It is disabled unless both `DISPATCHER_ADMIN_USER` and
+`DISPATCHER_ADMIN_PASSWORD` are set. Operators sign in through the dashboard and
+receive a short-lived, signed, HTTP-only session cookie; admin APIs remain
+server-protected. Set `DISPATCHER_ADMIN_SESSION_SECRET` to a separate random
+32+ character value in production.
+
+The dashboard includes runtime/configuration status, recent dispatches, failures,
+and analytics webhook attempts. Activity is deliberately PII-free, bounded to
+200 records, and process-local, so it resets whenever the dispatcher restarts.
+
+For local development, run the dispatcher and Vite in separate terminals:
+
+```bash
+pnpm run dev
+pnpm run dev:admin
+```
+
+Vite serves `http://localhost:5173/admin/` with hot reload and proxies the admin
+API to the dispatcher on port 3100. `pnpm run build` produces both the server in
+`dist/` and the static dashboard in `admin-dist/`; production still runs one
+Node process and one container.
+
 `/health` stays minimal for container probes. `/version` returns package/build identity, and `/status` returns readiness-style config status without probing client databases or provider credentials.
 
 Main routes:

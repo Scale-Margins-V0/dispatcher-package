@@ -22,10 +22,10 @@ const devSentCampaigns = new Set<string>();
 export async function processDispatch(
   payload: DispatchPayload,
   fromEmail: string
-): Promise<void> {
+): Promise<{ sent: number; failed: number } | undefined> {
   if (payload.channel === "whatsapp") {
     await processWhatsAppDispatch(payload);
-    return;
+    return undefined;
   }
 
   const { campaign_id, user_ids, content, metadata } = payload;
@@ -65,7 +65,7 @@ export async function processDispatch(
     logUnlessVitest(
       `[Dispatch] DEV mode — campaign ${campaign_id} already routed to ${devRecipient} this run, skipping`
     );
-    return;
+    return { sent: 0, failed: 0 };
   }
 
   const messages: Array<{ userId: string; message: EmailMessage }> = [];
@@ -186,4 +186,5 @@ export async function processDispatch(
     failed_count: failed,
     image_count: payload.images?.length ?? 0,
   });
+  return { sent, failed };
 }

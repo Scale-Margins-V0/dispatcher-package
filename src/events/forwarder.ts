@@ -5,6 +5,7 @@
 import { createHash, createHmac } from "node:crypto";
 import type { AnalyticsEvent, AnalyticsPayload } from "../providers/types.js";
 import type { StandardizedEvent } from "./common/types.js";
+import { recordWebhookActivity, redactDestination } from "../admin/activity.js";
 
 const MAX_RETRIES = 3;
 
@@ -171,6 +172,7 @@ export async function postAnalyticsWithRetry(
       );
 
       if (response.ok) {
+        recordWebhookActivity({ id: crypto.randomUUID(), provider: "scalemargin", direction: "outbound", status: "delivered", event_count: payload.events?.length ?? 0, http_status: response.status, duration_ms: elapsed, attempt: attempt + 1, occurred_at: new Date().toISOString(), destination: redactDestination(callbackUrl) });
         return { success: true };
       }
 
@@ -180,6 +182,7 @@ export async function postAnalyticsWithRetry(
         console.warn(
           `[Forwarder] permanent client error status=${response.status} body_preview=${JSON.stringify(preview)}`
         );
+        recordWebhookActivity({ id: crypto.randomUUID(), provider: "scalemargin", direction: "outbound", status: "failed", event_count: payload.events?.length ?? 0, http_status: response.status, duration_ms: elapsed, attempt: attempt + 1, occurred_at: new Date().toISOString(), destination: redactDestination(callbackUrl), error_category: "client_error" });
         return { success: false, error: `${response.status}: ${errorText}` };
       }
 
@@ -197,6 +200,8 @@ export async function postAnalyticsWithRetry(
       await new Promise((r) => setTimeout(r, delay));
     }
   }
+
+  recordWebhookActivity({ id: crypto.randomUUID(), provider: "scalemargin", direction: "outbound", status: "failed", event_count: payload.events?.length ?? 0, attempt: MAX_RETRIES + 1, occurred_at: new Date().toISOString(), destination: redactDestination(callbackUrl), error_category: "retry_exhausted" });
 
   return { success: false, error: lastError };
 }

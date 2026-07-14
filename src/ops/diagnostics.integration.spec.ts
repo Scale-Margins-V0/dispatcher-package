@@ -87,6 +87,56 @@ placeholders:
     rmSync(workDir, { recursive: true, force: true });
     delete process.env.USER_LOOKUP_CONFIG_PATH;
     delete process.env.SENDGRID_API_KEY;
+    delete process.env.DISPATCHER_ADMIN_USER;
+    delete process.env.DISPATCHER_ADMIN_PASSWORD;
+  });
+
+  it("keeps admin routes disabled when credentials are not configured", async () => {
+    delete process.env.DISPATCHER_ADMIN_USER;
+    delete process.env.DISPATCHER_ADMIN_PASSWORD;
+
+    const res = await request(app).get("/admin/api/overview");
+
+    expect(res.status).toBe(503);
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("rejects invalid admin credentials", async () => {
+    process.env.DISPATCHER_ADMIN_USER = "operator";
+    process.env.DISPATCHER_ADMIN_PASSWORD = "correct-horse-battery-staple";
+
+    const res = await request(app)
+      .post("/admin/api/login")
+      .send({ username: "operator", password: "wrong-password" });
+
+    expect(res.status).toBe(401);
+    expect(res.headers["www-authenticate"]).toBeUndefined();
+  });
+
+  it("returns a protected and redacted admin overview", async () => {
+    process.env.DISPATCHER_ADMIN_USER = "operator";
+    process.env.DISPATCHER_ADMIN_PASSWORD = "correct-horse-battery-staple";
+
+    const admin = request.agent(app);
+    const login = await admin
+      .post("/admin/api/login")
+      .send({ username: "operator", password: "correct-horse-battery-staple" });
+    const res = await admin.get("/admin/api/overview");
+
+    expect(login.status).toBe(200);
+    const setCookie = login.headers["set-cookie"];
+    const cookies = (Array.isArray(setCookie) ? setCookie.join(";") : setCookie ?? "").toLowerCase();
+    expect(cookies).toContain("httponly");
+    expect(cookies).toContain("samesite=strict");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+    expect(res.headers["x-frame-options"]).toBe("DENY");
+    expect(res.body.status.status).toBe("ok");
+    expect(res.body.config.user_lookup_backend).toBe("sqlite");
+    expect(res.body.config.dispatch_config_path).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain("SG.secret-value");
+    expect(JSON.stringify(res.body)).not.toContain("ada@example.com");
+    expect(JSON.stringify(res.body)).not.toContain("919876543210");
   });
 
   it("returns public health, version, and status", async () => {

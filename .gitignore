@@ -1,6 +1,7 @@
 # Dependencies & build
 node_modules/
 dist/
+admin-dist/
 
 # pnpm — https://pnpm.io/npmrc#store-dir
 # Local store when `store-dir` (or PNPM_HOME) points inside the repo (common in sandboxes / CI caches).
