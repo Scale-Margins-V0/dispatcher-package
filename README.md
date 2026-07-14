@@ -117,6 +117,59 @@ If `config/events.yaml` is **missing**, built-in defaults apply (see example hea
 
 ---
 
+## State database
+
+The dispatcher keeps its **own** SQL database, separate from the client
+user-lookup database (`DB_*`). It stores the dynamic variables (placeholders),
+dispatch/webhook activity and failures, structured application logs, the
+campaign→analytics-callback registry, and a durable analytics **event outbox**.
+This is what makes variables editable at runtime and keeps operational history
+across restarts.
+
+**Attach any SQL database via `DISPATCHER_DB_*`** (no code changes, migrations
+run automatically at startup):
+
+| Variable | Meaning |
+| --- | --- |
+| `DISPATCHER_DB_DIALECT` | `sqlite` (default), `mysql`, or `postgres` |
+| `DISPATCHER_DB_URL` | connection string (or SQLite file path / `file:` URL) |
+| `DISPATCHER_DB_HOST/PORT/USER/PASSWORD/NAME` | discrete settings if you prefer not to use a URL |
+
+- **Zero-config default:** with nothing set, the dispatcher uses a local SQLite
+  file at `./data/dispatcher.db` — it is stateful out of the box. Mount/persist
+  `data/` (or attach a networked DB) to keep state across container restarts.
+- **Production:** point `DISPATCHER_DB_*` at a MySQL or Postgres instance. A
+  dedicated database/schema (e.g. `dispatcher_state`) is recommended.
+- Single-replica model: the event outbox does not use row-claim locking, so run
+  one dispatcher replica per state database.
+
+Retention (a background sweep prunes on an hourly tick):
+
+| Variable | Default | Applies to |
+| --- | --- | --- |
+| `DISPATCHER_LOG_RETENTION_DAYS` | 14 | `app_logs` age cap |
+| `DISPATCHER_LOG_MAX_ROWS` | 200000 | `app_logs` row cap (oldest deleted) |
+| `DISPATCHER_LOG_LEVEL` | `info` | minimum level written |
+| `DISPATCHER_OUTBOX_MAX_ATTEMPTS` | 10 | delivery attempts before an event is marked failed |
+
+Dispatch/webhook history is kept 90 days; delivered outbox rows 7 days; failed
+outbox rows 30 days; unused callback registrations 30 days.
+
+### Docker Compose
+
+[`docker-compose.yml`](docker-compose.yml) brings up the dispatcher with a MySQL
+state database:
+
+```bash
+docker compose up --build          # dispatcher + MySQL 8
+docker compose --profile postgres up --build   # dispatcher + Postgres 16
+```
+
+Set `DISPATCHER_ADMIN_USER` / `DISPATCHER_ADMIN_PASSWORD` in `.env` to enable the
+admin GUI at `http://localhost:3100/admin`.
+
+---
+
 ## Run the server (development)
 
 **Watch mode** (TypeScript directly via `tsx`). Loads repo-root **`.env`** into the process (same rules as the event-test scripts: last duplicate key in the file wins; non-empty shell exports are not overwritten).
@@ -148,9 +201,14 @@ receive a short-lived, signed, HTTP-only session cookie; admin APIs remain
 server-protected. Set `DISPATCHER_ADMIN_SESSION_SECRET` to a separate random
 32+ character value in production.
 
-The dashboard includes runtime/configuration status, recent dispatches, failures,
-and analytics webhook attempts. Activity is deliberately PII-free, bounded to
-200 records, and process-local, so it resets whenever the dispatcher restarts.
+The dashboard includes runtime/configuration status, recent dispatches, failures
+(with the real error message and stack trace), analytics webhook attempts, a
+**Logs** viewer over the structured application logs, and a read-write
+**Variables** editor for personalization placeholders (create/edit/enable/delete;
+changes take effect on the next dispatch with no restart). Dispatch/webhook
+activity, failures, and logs are persisted in the [state database](#state-database),
+so they survive restarts (subject to the retention windows below). Recipient
+identifiers and message content are still never stored — only opaque `user_id`s.
 
 For local development, run the dispatcher and Vite in separate terminals:
 
