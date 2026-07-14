@@ -1,4 +1,5 @@
 import type { Express } from "express";
+import { closeDispatcherDb } from "./db/shutdown.js";
 import { telemetry } from "./telemetry/posthog.js";
 
 export function startServer(app: Express, port: number): void {
@@ -39,9 +40,11 @@ export function startServer(app: Express, port: number): void {
 
   const shutdown = (signal: NodeJS.Signals): void => {
     telemetry.capture("dispatcher_shutdown", { signal });
-    void telemetry.shutdown().finally(() => {
-      process.exit(0);
-    });
+    void Promise.allSettled([telemetry.shutdown(), closeDispatcherDb()]).finally(
+      () => {
+        process.exit(0);
+      }
+    );
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);

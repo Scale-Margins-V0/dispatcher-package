@@ -34,6 +34,7 @@ import express, { type Express } from "express";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { initDispatcherDb } from "./db/bootstrap.js";
 import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { recordDispatchActivity } from "./admin/activity.js";
@@ -103,6 +104,16 @@ try {
 } catch (error) {
   telemetry.captureException(error, { component: "dispatch_config" });
   console.error("[FATAL] Dispatch configuration invalid:", error);
+  process.exit(1);
+}
+
+// State DB (variables, activity, logs, outbox). SQLite file by default;
+// point DISPATCHER_DB_* at MySQL/Postgres to attach an external DB.
+try {
+  await initDispatcherDb();
+} catch (error) {
+  telemetry.captureException(error, { component: "state_db" });
+  console.error("[FATAL] Dispatcher state DB initialization failed:", error);
   process.exit(1);
 }
 

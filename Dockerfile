@@ -23,6 +23,9 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/admin-dist ./admin-dist
+# State-DB migrations must ship with the app — the startup migrator reads them.
+COPY drizzle/ ./drizzle/
+RUN mkdir -p /app/data
 ENV NODE_ENV=production
 EXPOSE 3100
 HEALTHCHECK --interval=30s --timeout=3s CMD curl -f http://localhost:3100/health || exit 1
