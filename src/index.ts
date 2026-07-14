@@ -118,6 +118,9 @@ if (process.env.VITEST !== "true") {
 
 const app: Express = express();
 app.disable("x-powered-by");
+// Acme and supported deployments terminate TLS at one ingress proxy. This lets
+// Express emit Secure admin cookies when that proxy reports HTTPS.
+app.set("trust proxy", 1);
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
 
