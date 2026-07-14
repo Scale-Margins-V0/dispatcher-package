@@ -3,13 +3,18 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DispatcherDb } from "../../db/client.js";
 import { createTestDb, destroyTestDb } from "../../db/test-utils.js";
+import {
+  SIGN_IN_PATH,
+  TEST_ADMIN_EMAIL,
+  TEST_ADMIN_PASSWORD,
+  seedTestAdmin,
+  setupAuthForTest,
+  teardownAuthForTest,
+} from "../../auth/test-utils.js";
 import { personalize } from "../../personalize.js";
 import { resetDispatchConfigForTests } from "../../user-lookup/config.js";
 import { resetPlaceholdersForTests } from "../../variables/service.js";
 import { registerAdminRoutes } from "../routes.js";
-
-const ADMIN_USER = "ops-admin";
-const ADMIN_PASSWORD = "correct-horse-battery-staple";
 
 let dbx: DispatcherDb;
 let app: Express;
@@ -17,16 +22,16 @@ let app: Express;
 const loginAgent = async () => {
   const agent = request.agent(app);
   const res = await agent
-    .post("/admin/api/login")
-    .send({ username: ADMIN_USER, password: ADMIN_PASSWORD });
+    .post(SIGN_IN_PATH)
+    .send({ email: TEST_ADMIN_EMAIL, password: TEST_ADMIN_PASSWORD });
   expect(res.status).toBe(200);
   return agent;
 };
 
 beforeEach(async () => {
-  process.env.DISPATCHER_ADMIN_USER = ADMIN_USER;
-  process.env.DISPATCHER_ADMIN_PASSWORD = ADMIN_PASSWORD;
   dbx = await createTestDb();
+  setupAuthForTest();
+  await seedTestAdmin();
   resetPlaceholdersForTests();
   resetDispatchConfigForTests();
   app = express();
@@ -34,11 +39,10 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  teardownAuthForTest();
   destroyTestDb(dbx);
   resetPlaceholdersForTests();
   resetDispatchConfigForTests();
-  delete process.env.DISPATCHER_ADMIN_USER;
-  delete process.env.DISPATCHER_ADMIN_PASSWORD;
 });
 
 describe("/admin/api/variables", () => {

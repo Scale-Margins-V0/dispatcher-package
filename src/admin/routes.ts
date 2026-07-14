@@ -2,28 +2,37 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type Express } from "express";
+import { toNodeHandler } from "better-auth/node";
+import { getAuth } from "../auth/index.js";
+import { requireSession, sessionProbe } from "../auth/middleware.js";
 import { getBuildInfo } from "../ops/build-info.js";
 import { buildDiagnosticsReport } from "../ops/diagnostics.js";
 import { getAdminActivity } from "./activity.js";
 import { registerHistoryRoutes } from "./api/history.js";
 import { registerLogRoutes } from "./api/logs.js";
+import { registerMemberRoutes } from "./api/members.js";
 import { registerVariableRoutes } from "./api/variables.js";
-import { adminSecurityHeaders, adminSession, loginAdmin, logoutAdmin, verifyAdminAccess } from "./auth.js";
+import { adminSecurityHeaders } from "./auth.js";
 
 const assetsDirectory = join(dirname(fileURLToPath(import.meta.url)), "../../admin-dist");
 
 export const registerAdminRoutes = (app: Express): void => {
-  app.use("/admin", adminSecurityHeaders, adminSession());
-  app.post("/admin/api/login", express.json({ limit: "8kb" }), loginAdmin);
-  app.post("/admin/api/logout", verifyAdminAccess, logoutAdmin);
-  app.get("/admin/api/session", (req, res) => {
-    res.json({ authenticated: Boolean(req.session?.adminAuthenticated && req.session.expiresAt && req.session.expiresAt > Date.now()) });
-  });
-  app.use("/admin/api", verifyAdminAccess);
+  app.use("/admin", adminSecurityHeaders);
+
+  // Better Auth owns sign-in/out, sessions, and org/member/invitation endpoints.
+  // Must be mounted before any body parser and before the auth guard.
+  app.all("/admin/api/auth/*", toNodeHandler(getAuth()));
+
+  // Public probe for the SPA to decide whether to show the sign-in screen.
+  app.get("/admin/api/session", sessionProbe);
+
+  // Everything else under /admin/api requires a valid session.
+  app.use("/admin/api", requireSession);
 
   registerVariableRoutes(app);
   registerLogRoutes(app);
   registerHistoryRoutes(app);
+  registerMemberRoutes(app);
 
   app.get("/admin/api/overview", async (_req, res) => {
     try {
