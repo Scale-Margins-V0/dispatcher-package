@@ -194,21 +194,44 @@ curl http://localhost:3100/status
 
 ### Internal operations GUI
 
-The optional read-only dashboard is served by the same Express process at
-`/admin`. It is disabled unless both `DISPATCHER_ADMIN_USER` and
-`DISPATCHER_ADMIN_PASSWORD` are set. Operators sign in through the dashboard and
-receive a short-lived, signed, HTTP-only session cookie; admin APIs remain
-server-protected. Set `DISPATCHER_ADMIN_SESSION_SECRET` to a separate random
-32+ character value in production.
+The dashboard is served by the same Express process at `/admin`, with real
+multi-user authentication (individual accounts, roles, and invitations) powered
+by [Better Auth](https://better-auth.com). Its tables live in the
+[state database](#state-database) and migrate automatically.
 
-The dashboard includes runtime/configuration status, recent dispatches, failures
-(with the real error message and stack trace), analytics webhook attempts, a
-**Logs** viewer over the structured application logs, and a read-write
-**Variables** editor for personalization placeholders (create/edit/enable/delete;
-changes take effect on the next dispatch with no restart). Dispatch/webhook
-activity, failures, and logs are persisted in the [state database](#state-database),
-so they survive restarts (subject to the retention windows below). Recipient
-identifiers and message content are still never stored — only opaque `user_id`s.
+**First-boot default account.** On the first start with an empty database the
+dispatcher seeds a default **owner** in the `ScaleMargin` organization:
+
+- email — `DISPATCHER_ADMIN_EMAIL` (default `admin@scalemargins.tech`)
+- password — `DISPATCHER_ADMIN_PASSWORD` if set (min 12 chars); otherwise a strong
+  random password is generated, **printed once to the logs**, and written to
+  `data/initial-admin-credentials.txt` (chmod 600). Sign in, change it under
+  **Settings → Account**, then delete that file.
+
+Set `BETTER_AUTH_SECRET` to a random 32+ character value in production so
+sessions survive redeploys (otherwise one is generated and persisted to
+`data/.better-auth-secret`). Set `DISPATCHER_PUBLIC_URL` so invitation links and
+secure-cookie behavior use the correct host.
+
+**Members & invitations (Settings pages).** The console is **invite-only** — no
+public self-registration. Under **Settings** an owner/admin can manage members
+and roles (`owner`/`admin`/`member`), invite teammates by email (each invite
+produces a **copyable link**, also emailed automatically when `EMAIL_PROVIDER`
+is configured), and change their own password. A brand-new invitee opens the
+invite link, sets a name and password, and is signed straight into the console.
+
+The dashboard also includes runtime/configuration status, recent dispatches,
+failures (with the real error message and stack trace), analytics webhook
+attempts, a **Logs** viewer over the structured application logs, and a
+read-write **Variables** editor for personalization placeholders
+(create/edit/enable/delete; changes take effect on the next dispatch with no
+restart). Dispatch/webhook activity, failures, logs, and accounts are persisted
+in the [state database](#state-database) and survive restarts (subject to the
+retention windows below). Recipient identifiers and message content are still
+never stored — only opaque `user_id`s.
+
+_(The previous single shared-credential login — `DISPATCHER_ADMIN_USER` /
+`DISPATCHER_ADMIN_SESSION_SECRET` — has been replaced by the account system above.)_
 
 For local development, run the dispatcher and Vite in separate terminals:
 
