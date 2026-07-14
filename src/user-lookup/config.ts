@@ -139,12 +139,12 @@ export const DEFAULT_PLACEHOLDERS: Record<string, PlaceholderEntry> = {
   email: { source: "field", field: "email", fallback: "" },
   unsubscribe_url: {
     source: "computed",
-    expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id",
+    expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
     fallback: "#",
   },
   preferences_url: {
     source: "computed",
-    expr: "env.PREFERENCES_URL_BASE + '?uid=' + user_id",
+    expr: "env.PREFERENCES_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
     fallback: "#",
   },
 };

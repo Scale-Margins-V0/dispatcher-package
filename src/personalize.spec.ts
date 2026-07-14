@@ -110,8 +110,9 @@ describe("personalize", () => {
   it("renders full_name and unsubscribe_url", () => {
     vi.stubEnv("UNSUBSCRIBE_URL_BASE", "https://ex.com");
     const u = baseUser();
-    expect(personalize("{{full_name}} {{unsubscribe_url}}", u)).toBe(
-      "Ada Lovelace https://ex.com/api/unsubscribe?uid=u-1"
+    const ctx = { campaign_id: "cmp_1", organization_id: "org_1" };
+    expect(personalize("{{full_name}} {{unsubscribe_url}}", u, ctx)).toBe(
+      "Ada Lovelace https://ex.com/api/unsubscribe?uid=u-1&campaign_id=cmp_1&organization_id=org_1"
     );
     vi.unstubAllEnvs();
   });
@@ -120,6 +121,7 @@ describe("personalize", () => {
     vi.stubEnv("UNSUBSCRIBE_URL_BASE", "https://brand.example");
     const tpl =
       "{{first_name}} | {{company_name}} | {{unsubscribe_url}}";
+    const ctx = { campaign_id: "cmp_2", organization_id: "org_2" };
     const alice = baseUser();
     const bob: UserRecord = {
       user_id: "acct-b",
@@ -131,11 +133,11 @@ describe("personalize", () => {
         email: "bob@example.com",
       },
     };
-    expect(personalize(tpl, alice)).toBe(
-      "Ada | Analytical | https://brand.example/api/unsubscribe?uid=u-1"
+    expect(personalize(tpl, alice, ctx)).toBe(
+      "Ada | Analytical | https://brand.example/api/unsubscribe?uid=u-1&campaign_id=cmp_2&organization_id=org_2"
     );
-    expect(personalize(tpl, bob)).toBe(
-      "Bob | Fix-It Co | https://brand.example/api/unsubscribe?uid=acct-b"
+    expect(personalize(tpl, bob, ctx)).toBe(
+      "Bob | Fix-It Co | https://brand.example/api/unsubscribe?uid=acct-b&campaign_id=cmp_2&organization_id=org_2"
     );
     vi.unstubAllEnvs();
   });
@@ -143,15 +145,18 @@ describe("personalize", () => {
   it("multiple template shapes for one user (subject vs html vs computed)", () => {
     vi.stubEnv("UNSUBSCRIBE_URL_BASE", "https://go.example");
     const u = baseUser();
+    const ctx = { campaign_id: "cmp_3", organization_id: "org_3" };
     expect(personalize("Dear {{last_name}} family", u)).toBe(
       "Dear Lovelace family"
     );
-    expect(personalize("<p>{{email}}</p><a href=\"{{unsubscribe_url}}\">opt out</a>", u)).toContain(
-      "a@b.com"
-    );
     expect(
-      personalize("<p>{{email}}</p><a href=\"{{unsubscribe_url}}\">opt out</a>", u)
-    ).toContain("https://go.example/api/unsubscribe?uid=u-1");
+      personalize("<p>{{email}}</p><a href=\"{{unsubscribe_url}}\">opt out</a>", u, ctx)
+    ).toContain("a@b.com");
+    expect(
+      personalize("<p>{{email}}</p><a href=\"{{unsubscribe_url}}\">opt out</a>", u, ctx)
+    ).toContain(
+      "https://go.example/api/unsubscribe?uid=u-1&campaign_id=cmp_3&organization_id=org_3"
+    );
     vi.unstubAllEnvs();
   });
 
