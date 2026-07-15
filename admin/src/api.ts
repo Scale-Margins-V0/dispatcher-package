@@ -77,6 +77,8 @@ export const deleteVariable = (name: string) =>
   json<{ deleted: boolean }>(`/admin/api/variables/${encodeURIComponent(name)}`, { method: "DELETE" });
 export const validateVariable = (payload: VariablePayload) =>
   json<{ ok: boolean; error?: string; preview?: string }>("/admin/api/variables/validate", { method: "POST", ...jsonBody(payload) });
+export const testVariable = (payload: VariablePayload) =>
+  json<{ ok: boolean; value?: string; error?: string }>("/admin/api/variables/test", { method: "POST", ...jsonBody(payload) });
 
 export const fetchLogs = (params: Record<string, string>) =>
   json<LogPage>(`/admin/api/logs?${new URLSearchParams(params).toString()}`);

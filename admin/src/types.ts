@@ -113,12 +113,24 @@ export interface AdminActivity {
   webhooks: WebhookActivity[];
 }
 
+export type VariableSource = "field" | "computed" | "constant" | "query" | "api";
+
+export interface ApiVarConfig {
+  method: "GET" | "POST";
+  url: string;
+  headers?: Record<string, string>;
+  json_path?: string;
+  body?: string;
+  timeout_ms?: number;
+}
+
 export interface AdminVariable {
   name: string;
-  source: "field" | "computed";
+  source: VariableSource;
   field: string | null;
   expr: string | null;
   fallback: string | null;
+  config: Record<string, unknown> | null;
   enabled: boolean;
   created_at: string;
   updated_at: string;
@@ -128,9 +140,12 @@ export interface AdminVariable {
 
 export interface VariablePayload {
   name: string;
-  source: "field" | "computed";
+  source: VariableSource;
   field?: string;
   expr?: string;
+  value?: string;
+  sql?: string;
+  api?: ApiVarConfig;
   fallback?: string;
   enabled?: boolean;
 }
