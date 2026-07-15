@@ -103,6 +103,42 @@ export class SqlAdapter implements UserLookupAdapter {
     return res.rows as Record<string, unknown>[];
   }
 
+  /**
+   * Run a scalar SELECT for a `query` variable. `{{token}}` placeholders are
+   * rewritten to dialect-bound parameters (never string-interpolated), so
+   * recipient data can't inject SQL. SELECT/WITH only, single statement.
+   */
+  async runScalarQuery(
+    namedSql: string,
+    bindings: Record<string, string>
+  ): Promise<string | null> {
+    const trimmed = namedSql.trim().replace(/;\s*$/, "");
+    if (!/^(select|with)\b/i.test(trimmed)) {
+      throw new Error("SQL variable must be a SELECT/WITH query");
+    }
+    if (trimmed.includes(";")) {
+      throw new Error("SQL variable must be a single statement");
+    }
+    const values: unknown[] = [];
+    const text = trimmed.replace(
+      /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g,
+      (_m, name: string) => {
+        if (!(name in bindings)) {
+          throw new Error(`unknown SQL token {{${name}}}`);
+        }
+        values.push(bindings[name]);
+        return this.dialect === "postgres" ? `$${values.length}` : "?";
+      }
+    );
+    const rows = await this.runQuery(text, values);
+    const first = rows[0];
+    if (!first) return null;
+    const key = Object.keys(first)[0];
+    if (key === undefined) return null;
+    const v = first[key];
+    return v === null || v === undefined ? null : String(v);
+  }
+
   async lookupUsers(userIds: string[]): Promise<Map<string, UserRecord>> {
     const out = new Map<string, UserRecord>();
     if (userIds.length === 0) return out;

@@ -1,8 +1,11 @@
 /**
  * Admin CRUD for dynamic variables (placeholders). Mounted behind
- * verifyAdminAccess in registerAdminRoutes. Every write refreshes the
- * in-process placeholder snapshot, so edits apply to the next dispatch
- * without a restart.
+ * requireSession in registerAdminRoutes. Every write refreshes the in-process
+ * placeholder snapshot, so edits apply to the next dispatch without a restart.
+ *
+ * Source types: field | computed | constant | query (SQL) | api (HTTP fetch).
+ * query/api config lives in the `config` JSON column; api header values are
+ * redacted in responses and preserved on edit when left masked.
  */
 
 import express, {
@@ -22,68 +25,120 @@ import {
   type NewVariable,
 } from "../../db/repos/variables.js";
 import type { VariableRow } from "../../db/schema/index.js";
-import {
-  renderPlaceholderPreview,
-  validateComputedExpression,
-} from "../../personalize.js";
+import { renderPlaceholderPreview, validateComputedExpression } from "../../personalize.js";
 import type { PlaceholderEntry } from "../../user-lookup/config.js";
+import { rowToPlaceholderEntry } from "../../variables/mapping.js";
+import { testVariableDefinition } from "../../variables/resolver.js";
 import { refreshPlaceholders } from "../../variables/service.js";
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+/** Header values are redacted to this in responses; sending it back means "keep existing". */
+export const HEADER_MASK = "••••••••";
+
+const apiSchema = z.object({
+  method: z.enum(["GET", "POST"]).default("GET"),
+  url: z.string().min(1).max(2000),
+  headers: z.record(z.string(), z.string()).optional(),
+  json_path: z.string().max(200).optional().default(""),
+  body: z.string().max(8000).optional(),
+  timeout_ms: z.number().int().min(100).max(30000).optional(),
+});
 
 const variablePayloadSchema = z
   .object({
-    name: z
-      .string()
-      .min(1)
-      .max(191)
-      .regex(NAME_RE, "name must match ^[a-zA-Z_][a-zA-Z0-9_]*$"),
-    source: z.enum(["field", "computed"]),
+    name: z.string().min(1).max(191).regex(NAME_RE, "name must match ^[a-zA-Z_][a-zA-Z0-9_]*$"),
+    source: z.enum(["field", "computed", "constant", "query", "api"]),
     field: z.string().min(1).max(191).optional(),
     expr: z.string().min(1).max(4000).optional(),
+    value: z.string().max(8000).optional(),
+    sql: z.string().min(1).max(8000).optional(),
+    api: apiSchema.optional(),
     fallback: z.string().max(4000).optional(),
     enabled: z.boolean().optional(),
   })
   .superRefine((data, ctx) => {
-    if (data.source === "field" && !data.field) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "field is required when source is field",
-        path: ["field"],
-      });
-    }
+    const require = (cond: boolean, path: string, message: string) => {
+      if (!cond) ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: [path] });
+    };
+    if (data.source === "field") require(!!data.field, "field", "field is required for a field variable");
+    if (data.source === "constant") require(data.value !== undefined, "value", "value is required for a constant");
     if (data.source === "computed") {
-      if (!data.expr) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "expr is required when source is computed",
-          path: ["expr"],
-        });
-      } else {
+      require(!!data.expr, "expr", "expr is required for a computed variable");
+      if (data.expr) {
         const check = validateComputedExpression(data.expr);
         if (!check.ok) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `invalid expression: ${check.error}`,
-            path: ["expr"],
-          });
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: `invalid expression: ${check.error}`, path: ["expr"] });
         }
       }
     }
+    if (data.source === "query") {
+      require(!!data.sql, "sql", "sql is required for a query variable");
+      if (data.sql && !/^\s*(select|with)\b/i.test(data.sql)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "SQL must be a SELECT/WITH query", path: ["sql"] });
+      }
+    }
+    if (data.source === "api") {
+      require(!!data.api, "api", "api config is required for an api variable");
+    }
   });
 
-function toEntry(row: VariableRow): PlaceholderEntry {
-  return row.source === "field"
-    ? {
-        source: "field",
-        field: row.field ?? "",
-        ...(row.fallback !== null ? { fallback: row.fallback } : {}),
-      }
-    : {
-        source: "computed",
-        expr: row.expr ?? "",
-        ...(row.fallback !== null ? { fallback: row.fallback } : {}),
+type Payload = z.infer<typeof variablePayloadSchema>;
+
+function payloadToEntry(d: Payload): PlaceholderEntry {
+  const fb = d.fallback !== undefined ? { fallback: d.fallback } : {};
+  switch (d.source) {
+    case "field":
+      return { source: "field", field: d.field!, ...fb };
+    case "computed":
+      return { source: "computed", expr: d.expr!, ...fb };
+    case "constant":
+      return { source: "constant", value: d.value ?? "", ...fb };
+    case "query":
+      return { source: "query", sql: d.sql!, ...fb };
+    case "api":
+      return {
+        source: "api",
+        api: {
+          method: d.api!.method,
+          url: d.api!.url,
+          ...(d.api!.headers ? { headers: d.api!.headers } : {}),
+          json_path: d.api!.json_path ?? "",
+          ...(d.api!.body ? { body: d.api!.body } : {}),
+          ...(d.api!.timeout_ms ? { timeout_ms: d.api!.timeout_ms } : {}),
+        },
+        ...fb,
       };
+  }
+}
+
+function entryToRowFields(e: PlaceholderEntry): {
+  field: string | null;
+  expr: string | null;
+  config: Record<string, unknown> | null;
+} {
+  switch (e.source) {
+    case "field":
+      return { field: e.field, expr: null, config: null };
+    case "computed":
+      return { field: null, expr: e.expr, config: null };
+    case "constant":
+      return { field: null, expr: null, config: { value: e.value } };
+    case "query":
+      return { field: null, expr: null, config: { sql: e.sql } };
+    case "api":
+      return { field: null, expr: null, config: { ...e.api } };
+  }
+}
+
+/** GUI-facing config with api header values redacted. */
+function serializeConfig(row: VariableRow): Record<string, unknown> | null {
+  if (row.source !== "api" || !row.config) return row.config;
+  const cfg = row.config as Record<string, unknown>;
+  const headers = (cfg.headers as Record<string, string> | undefined) ?? undefined;
+  const redacted = headers
+    ? Object.fromEntries(Object.keys(headers).map((k) => [k, headers[k] ? HEADER_MASK : ""]))
+    : undefined;
+  return { ...cfg, ...(redacted ? { headers: redacted } : {}) };
 }
 
 function serialize(row: VariableRow) {
@@ -93,25 +148,46 @@ function serialize(row: VariableRow) {
     field: row.field,
     expr: row.expr,
     fallback: row.fallback,
+    config: serializeConfig(row),
     enabled: row.enabled,
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString(),
     updated_by: row.updated_by,
-    preview: renderPlaceholderPreview(toEntry(row)),
+    preview: renderPlaceholderPreview(rowToPlaceholderEntry(row)),
   };
 }
 
-function adminUser(): string | null {
-  return process.env.DISPATCHER_ADMIN_USER ?? null;
+function authedUser(req: Request): string | null {
+  return (req as { authUser?: { email?: string } }).authUser?.email ?? null;
+}
+
+/** Replace masked api header values with the existing stored ones. */
+function mergeMaskedHeaders(data: Payload, existing: VariableRow | null): void {
+  if (data.source !== "api" || !data.api?.headers) return;
+  const prev = (existing?.config as { headers?: Record<string, string> } | null)?.headers ?? {};
+  for (const [k, v] of Object.entries(data.api.headers)) {
+    if (v === HEADER_MASK) data.api.headers[k] = prev[k] ?? "";
+  }
+}
+
+function toNewVariable(data: Payload, req: Request): NewVariable {
+  const { field, expr, config } = entryToRowFields(payloadToEntry(data));
+  return {
+    name: data.name,
+    source: data.source,
+    field,
+    expr,
+    config,
+    fallback: data.fallback ?? null,
+    enabled: data.enabled ?? true,
+    updated_by: authedUser(req),
+  };
 }
 
 function badRequest(res: Response, error: z.ZodError): void {
   res.status(400).json({
     error: "Invalid variable payload",
-    details: error.issues.map((issue) => ({
-      path: issue.path.join("."),
-      message: issue.message,
-    })),
+    details: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
   });
 }
 
@@ -129,24 +205,25 @@ export const registerVariableRoutes = (app: Express): void => {
     "/admin/api/variables",
     asyncHandler(async (_req: Request, res: Response) => {
       const rows = await listVariables();
-      res.json({
-        generated_at: new Date().toISOString(),
-        variables: rows.map(serialize),
-      });
+      res.json({ generated_at: new Date().toISOString(), variables: rows.map(serialize) });
     })
   );
 
-  app.post("/admin/api/variables", json, asyncHandler(async (req: Request, res: Response) => {
-    const parsed = variablePayloadSchema.safeParse(req.body);
-    if (!parsed.success) return badRequest(res, parsed.error);
-    if (await getVariable(parsed.data.name)) {
-      res.status(409).json({ error: `Variable "${parsed.data.name}" already exists` });
-      return;
-    }
-    const row = await createVariable(toNewVariable(parsed.data));
-    await refreshPlaceholders();
-    res.status(201).json({ variable: serialize(row) });
-  }));
+  app.post(
+    "/admin/api/variables",
+    json,
+    asyncHandler(async (req: Request, res: Response) => {
+      const parsed = variablePayloadSchema.safeParse(req.body);
+      if (!parsed.success) return badRequest(res, parsed.error);
+      if (await getVariable(parsed.data.name)) {
+        res.status(409).json({ error: `Variable "${parsed.data.name}" already exists` });
+        return;
+      }
+      const row = await createVariable(toNewVariable(parsed.data, req));
+      await refreshPlaceholders();
+      res.status(201).json({ variable: serialize(row) });
+    })
+  );
 
   app.put(
     "/admin/api/variables/:name",
@@ -155,19 +232,19 @@ export const registerVariableRoutes = (app: Express): void => {
       const parsed = variablePayloadSchema.safeParse(req.body);
       if (!parsed.success) return badRequest(res, parsed.error);
       const currentName = String(req.params.name);
-      if (parsed.data.name !== currentName && (await getVariable(parsed.data.name))) {
-        res
-          .status(409)
-          .json({ error: `Variable "${parsed.data.name}" already exists` });
-        return;
-      }
-      const row = await updateVariable(currentName, toNewVariable(parsed.data));
-      if (!row) {
+      const existing = await getVariable(currentName);
+      if (!existing) {
         res.status(404).json({ error: `Variable "${currentName}" not found` });
         return;
       }
+      if (parsed.data.name !== currentName && (await getVariable(parsed.data.name))) {
+        res.status(409).json({ error: `Variable "${parsed.data.name}" already exists` });
+        return;
+      }
+      mergeMaskedHeaders(parsed.data, existing);
+      const row = await updateVariable(currentName, toNewVariable(parsed.data, req));
       await refreshPlaceholders();
-      res.json({ variable: serialize(row) });
+      res.json({ variable: serialize(row!) });
     })
   );
 
@@ -190,43 +267,33 @@ export const registerVariableRoutes = (app: Express): void => {
     asyncHandler(async (req: Request, res: Response) => {
       const parsed = variablePayloadSchema.safeParse(req.body);
       if (!parsed.success) {
-        res.json({
-          ok: false,
-          error: parsed.error.issues
-            .map((issue) => issue.message)
-            .join("; "),
-        });
+        res.json({ ok: false, error: parsed.error.issues.map((i) => i.message).join("; ") });
         return;
       }
-      const entry: PlaceholderEntry =
-        parsed.data.source === "field"
-          ? {
-              source: "field",
-              field: parsed.data.field!,
-              ...(parsed.data.fallback !== undefined
-                ? { fallback: parsed.data.fallback }
-                : {}),
-            }
-          : {
-              source: "computed",
-              expr: parsed.data.expr!,
-              ...(parsed.data.fallback !== undefined
-                ? { fallback: parsed.data.fallback }
-                : {}),
-            };
-      res.json({ ok: true, preview: renderPlaceholderPreview(entry) });
+      // Sync preview for field/computed/constant; query/api need the live test.
+      const entry = payloadToEntry(parsed.data);
+      const preview =
+        entry.source === "query" || entry.source === "api"
+          ? undefined
+          : renderPlaceholderPreview(entry);
+      res.json({ ok: true, ...(preview !== undefined ? { preview } : {}) });
+    })
+  );
+
+  // Live test — runs query/api for real against the sample user; returns value or error.
+  app.post(
+    "/admin/api/variables/test",
+    json,
+    asyncHandler(async (req: Request, res: Response) => {
+      const parsed = variablePayloadSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.json({ ok: false, error: parsed.error.issues.map((i) => i.message).join("; ") });
+        return;
+      }
+      // Fill masked headers from the stored variable so a test uses the real secret.
+      mergeMaskedHeaders(parsed.data, await getVariable(parsed.data.name));
+      const result = await testVariableDefinition(payloadToEntry(parsed.data));
+      res.json(result);
     })
   );
 };
-
-function toNewVariable(data: z.infer<typeof variablePayloadSchema>): NewVariable {
-  return {
-    name: data.name,
-    source: data.source,
-    field: data.source === "field" ? data.field : null,
-    expr: data.source === "computed" ? data.expr : null,
-    fallback: data.fallback ?? null,
-    enabled: data.enabled ?? true,
-    updated_by: adminUser(),
-  };
-}
