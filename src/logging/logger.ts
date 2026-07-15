@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import pino from "pino";
 import { logContext } from "./context.js";
 import { dbLogSink } from "./db-sink.js";
+import { logWebhookSink } from "./webhook-sink.js";
 
 const isVitest = process.env.VITEST === "true";
 const level = process.env.DISPATCHER_LOG_LEVEL || "info";
@@ -36,7 +37,12 @@ function stdoutStream(): pino.StreamEntry {
 
 const streams: pino.StreamEntry[] = isVitest
   ? []
-  : [stdoutStream(), { level: "info", stream: dbLogSink }];
+  : [
+      stdoutStream(),
+      { level: "info", stream: dbLogSink },
+      // Receives all levels; the sink filters by the configured min level.
+      { level: "trace", stream: logWebhookSink },
+    ];
 
 export const logger = pino(
   {
