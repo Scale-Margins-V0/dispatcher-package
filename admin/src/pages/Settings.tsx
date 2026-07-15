@@ -3,24 +3,38 @@ import {
   cancelInvitation,
   changePassword,
   fetchInvitations,
+  fetchLogsTokenStatus,
+  fetchLogWebhook,
   fetchMembers,
   fetchOrganization,
+  generateLogsToken,
   inviteMember,
   removeMember,
+  saveLogWebhook,
+  testLogWebhook,
   updateMemberRole,
   updateOrganization,
 } from "../api";
-import { AlertIcon, CheckIcon, CopyIcon, UsersIcon } from "../icons";
-import type { OrgMember, OrgSummary, PendingInvitation, SessionUser } from "../types";
+import { AlertIcon, CheckIcon, CopyIcon, ShieldIcon, UsersIcon } from "../icons";
+import type {
+  LogLevelName,
+  LogWebhookSettings,
+  OrgMember,
+  OrgSummary,
+  PendingInvitation,
+  SessionUser,
+} from "../types";
 
-type Tab = "members" | "invitations" | "account" | "organization";
+type Tab = "members" | "invitations" | "account" | "organization" | "observability";
 const TABS: Array<[Tab, string]> = [
   ["members", "Members"],
   ["invitations", "Invitations"],
   ["account", "Account"],
   ["organization", "Organization"],
+  ["observability", "Observability"],
 ];
 const ROLES = ["owner", "admin", "member"];
+const LOG_LEVELS: LogLevelName[] = ["trace", "debug", "info", "warn", "error", "fatal"];
 
 function readTab(): Tab {
   const seg = window.location.hash.replace(/^#\/?/, "").split("?")[0].split("/")[1];
@@ -407,6 +421,154 @@ function Organization({ canEdit }: { canEdit: boolean }) {
   );
 }
 
+function Observability() {
+  const [wh, setWh] = useState<LogWebhookSettings | null>(null);
+  const [token, setToken] = useState<{ configured: boolean; updated_at: string | null } | null>(null);
+  const [newToken, setNewToken] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const [w, t] = await Promise.all([fetchLogWebhook(), fetchLogsTokenStatus()]);
+      setWh(w.webhook);
+      setToken(t);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to load settings");
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const input = (w: LogWebhookSettings) => ({
+    enabled: w.enabled,
+    url: w.url,
+    min_level: w.min_level,
+    // Send the secret only when the user changed it away from the mask.
+    ...(w.secret && w.secret !== "••••••••" ? { secret: w.secret } : {}),
+  });
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!wh) return;
+    setSaved(false);
+    setError("");
+    try {
+      const res = await saveLogWebhook(input(wh));
+      setWh(res.webhook);
+      setSaved(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to save");
+    }
+  };
+  const sendTest = async () => {
+    if (!wh) return;
+    setTest(null);
+    try {
+      const r = await testLogWebhook(input(wh));
+      setTest(r.ok ? { ok: true, text: `Delivered (HTTP ${r.status ?? 200})` } : { ok: false, text: r.error ?? "Failed" });
+    } catch (reason) {
+      setTest({ ok: false, text: reason instanceof Error ? reason.message : "Failed" });
+    }
+  };
+  const rotate = async () => {
+    try {
+      const r = await generateLogsToken();
+      setNewToken(r.token);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to generate token");
+    }
+  };
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard blocked */
+    }
+  };
+
+  if (!wh || !token) {
+    return error ? <ErrorNote message={error} /> : <div className="loading-state"><span className="loader" />Loading…</div>;
+  }
+
+  return (
+    <>
+      {error && <ErrorNote message={error} />}
+      <section className="panel account-panel">
+        <div className="panel-title"><AlertIcon /> Log webhook</div>
+        <p className="field-hint" style={{ margin: "4px 0 0" }}>
+          POST each log at or above the chosen level to your endpoint (JSON body, optionally HMAC-signed).
+        </p>
+        <form className="stacked-form" onSubmit={(e) => void save(e)}>
+          <label className="check-label">
+            <input type="checkbox" checked={wh.enabled} onChange={(e) => setWh({ ...wh, enabled: e.target.checked })} />
+            Enabled
+          </label>
+          <label>
+            Endpoint URL
+            <input value={wh.url} onChange={(e) => setWh({ ...wh, url: e.target.value })} placeholder="https://logs.example.com/ingest" />
+          </label>
+          <label>
+            Minimum level
+            <select value={wh.min_level} onChange={(e) => setWh({ ...wh, min_level: e.target.value as LogLevelName })}>
+              {LOG_LEVELS.map((l) => (
+                <option key={l} value={l}>
+                  {l}{l === "warn" ? " (default)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Signing secret <span className="field-hint">optional — adds X-Dispatcher-Log-Signature</span>
+            <input value={wh.secret} onChange={(e) => setWh({ ...wh, secret: e.target.value })} placeholder="(none)" />
+          </label>
+          {saved && <div className="variable-preview"><CheckIcon /> Saved.</div>}
+          {test && (
+            <div className={test.ok ? "variable-preview" : "login-error"}>
+              {test.ok ? <CheckIcon /> : <AlertIcon />} {test.text}
+            </div>
+          )}
+          <div className="editor-actions">
+            <button type="submit">Save</button>
+            <button type="button" className="ghost" onClick={() => void sendTest()}>Send test</button>
+          </div>
+        </form>
+      </section>
+
+      <section className="panel account-panel">
+        <div className="panel-title"><ShieldIcon /> Logs API token</div>
+        <p className="field-hint" style={{ margin: "4px 0 0" }}>
+          Bearer token for <code>GET /logs</code>. {token.configured ? "A token is configured." : "No token yet."}
+        </p>
+        {newToken && (
+          <div className="invite-result">
+            <CheckIcon /> New token (shown once):
+            <code className="invite-link">{newToken}</code>
+            <button type="button" className="ghost" onClick={() => void copy(newToken)}>
+              <CopyIcon /> {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+        )}
+        <pre className="stack-trace" style={{ marginTop: 12 }}>
+          curl -H "Authorization: Bearer &lt;token&gt;" \{"\n"}  "{window.location.origin}/logs?since=1h&amp;min_level=warn&amp;limit=50"
+        </pre>
+        <div className="editor-actions" style={{ marginTop: 12 }}>
+          <button type="button" onClick={() => void rotate()}>
+            {token.configured ? "Rotate token" : "Generate token"}
+          </button>
+        </div>
+      </section>
+    </>
+  );
+}
+
 export default function Settings({
   user,
   refreshSignal = 0,
@@ -449,6 +611,7 @@ export default function Settings({
         {tab === "invitations" && <Invitations />}
         {tab === "account" && <Account me={user} />}
         {tab === "organization" && <Organization canEdit={canManageOrg} />}
+        {tab === "observability" && <Observability />}
       </div>
     </>
   );

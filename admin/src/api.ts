@@ -4,6 +4,8 @@ import type {
   AdminVariable,
   DispatchDetail,
   LogPage,
+  LogWebhookInput,
+  LogWebhookSettings,
   OrgMember,
   OrgSummary,
   PendingInvitation,
@@ -66,6 +68,18 @@ export const inviteMember = (email: string, role: string) =>
   );
 export const cancelInvitation = (invitationId: string) =>
   json<{ cancelled: boolean }>("/admin/api/settings/invitations/cancel", { method: "POST", ...jsonBody({ invitationId }) });
+
+// --- Observability: log webhook + /logs API token ---
+export const fetchLogWebhook = () =>
+  json<{ webhook: LogWebhookSettings }>("/admin/api/settings/log-webhook");
+export const saveLogWebhook = (cfg: LogWebhookInput) =>
+  json<{ webhook: LogWebhookSettings }>("/admin/api/settings/log-webhook", { method: "PUT", ...jsonBody(cfg) });
+export const testLogWebhook = (cfg: LogWebhookInput) =>
+  json<{ ok: boolean; status?: number; error?: string }>("/admin/api/settings/log-webhook/test", { method: "POST", ...jsonBody(cfg) });
+export const fetchLogsTokenStatus = () =>
+  json<{ configured: boolean; updated_at: string | null }>("/admin/api/settings/logs-token");
+export const generateLogsToken = () =>
+  json<{ token: string }>("/admin/api/settings/logs-token", { method: "POST", ...jsonBody({}) });
 
 export const fetchVariables = () =>
   json<{ variables: AdminVariable[] }>("/admin/api/variables");
