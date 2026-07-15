@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { fetchLogs } from "../api";
-import { AlertIcon, ClockIcon } from "../icons";
+import { AlertIcon, ChevronIcon, ClockIcon } from "../icons";
 import type { LogEntry } from "../types";
 
 const LEVELS = ["", "debug", "info", "warn", "error", "fatal"] as const;
@@ -16,7 +16,7 @@ export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) 
   const [filters, setFilters] = useState<Filters>({ level: "", campaign_id: "", q: "" });
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
-  const [selected, setSelected] = useState<LogEntry | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -106,21 +106,63 @@ export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) 
               </tr>
             </thead>
             <tbody>
-              {logs.map((log) => (
-                <tr
-                  key={log.id}
-                  className={`log-row ${selected?.id === log.id ? "active" : ""}`}
-                  onClick={() => setSelected(selected?.id === log.id ? null : log)}
-                >
-                  <td className="mono nowrap">{formatTime(log.ts)}</td>
-                  <td>
-                    <span className={`badge badge-${levelTone(log.level)}`}>{log.level}</span>
-                  </td>
-                  <td className="mono">{log.component ?? "—"}</td>
-                  <td className="mono">{log.campaign_id ?? "—"}</td>
-                  <td className="message-cell">{log.message}</td>
-                </tr>
-              ))}
+              {logs.map((log) => {
+                const open = openId === log.id;
+                return (
+                  <Fragment key={log.id}>
+                    <tr
+                      className={`log-row ${open ? "active" : ""}`}
+                      onClick={() => setOpenId(open ? null : log.id)}
+                    >
+                      <td className="mono nowrap">{formatTime(log.ts)}</td>
+                      <td>
+                        <span className={`badge badge-${levelTone(log.level)}`}>{log.level}</span>
+                      </td>
+                      <td className="mono">{log.component ?? "—"}</td>
+                      <td className="mono">{log.campaign_id ?? "—"}</td>
+                      <td className="message-cell">
+                        <ChevronIcon className={`log-chevron ${open ? "open" : ""}`} />
+                        {log.message}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr className="log-detail-row">
+                        <td colSpan={5}>
+                          <div className="log-detail-inner">
+                            <dl className="log-meta">
+                              <div>
+                                <dt>Time</dt>
+                                <dd className="mono">{log.ts}</dd>
+                              </div>
+                              <div>
+                                <dt>Level</dt>
+                                <dd>{log.level}</dd>
+                              </div>
+                              <div>
+                                <dt>Request</dt>
+                                <dd className="mono">{log.request_id ?? "—"}</dd>
+                              </div>
+                              <div>
+                                <dt>Campaign</dt>
+                                <dd className="mono">{log.campaign_id ?? "—"}</dd>
+                              </div>
+                              <div>
+                                <dt>Component</dt>
+                                <dd className="mono">{log.component ?? "—"}</dd>
+                              </div>
+                            </dl>
+                            <div className="log-message">{log.message}</div>
+                            {log.stack && <pre className="stack-trace">{log.stack}</pre>}
+                            {log.context && (
+                              <pre className="stack-trace">{JSON.stringify(log.context, null, 2)}</pre>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </section>
@@ -129,43 +171,6 @@ export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) 
         <button type="button" className="ghost load-more" onClick={() => void load(true, cursor)} disabled={loading}>
           {loading ? "Loading…" : "Load older entries"}
         </button>
-      )}
-      {selected && (
-        <section className="panel log-detail">
-          <div className="panel-title">
-            Entry detail
-            <button type="button" className="ghost" onClick={() => setSelected(null)}>
-              Close
-            </button>
-          </div>
-          <dl className="compact-list spaced">
-            <div>
-              <dt>Time</dt>
-              <dd className="mono">{selected.ts}</dd>
-            </div>
-            <div>
-              <dt>Level</dt>
-              <dd>{selected.level}</dd>
-            </div>
-            <div>
-              <dt>Request</dt>
-              <dd className="mono">{selected.request_id ?? "—"}</dd>
-            </div>
-            <div>
-              <dt>Campaign</dt>
-              <dd className="mono">{selected.campaign_id ?? "—"}</dd>
-            </div>
-            <div>
-              <dt>Component</dt>
-              <dd className="mono">{selected.component ?? "—"}</dd>
-            </div>
-          </dl>
-          <div className="log-message">{selected.message}</div>
-          {selected.stack && <pre className="stack-trace">{selected.stack}</pre>}
-          {selected.context && (
-            <pre className="stack-trace">{JSON.stringify(selected.context, null, 2)}</pre>
-          )}
-        </section>
       )}
     </>
   );
