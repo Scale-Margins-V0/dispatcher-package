@@ -258,6 +258,31 @@ against a sample user so you can preview the value before saving.
 _(The previous single shared-credential login — `DISPATCHER_ADMIN_USER` /
 `DISPATCHER_ADMIN_SESSION_SECRET` — has been replaced by the account system above.)_
 
+#### Observability: `/logs` API + log webhook
+
+Configured under **Settings → Observability**.
+
+**`GET /logs`** — a query API over the persisted structured logs, for external
+log tooling. Authenticate with `Authorization: Bearer <token>` (generate/rotate
+the token in Settings — it's shown once and stored hashed; a valid admin session
+also works, and `DISPATCHER_LOGS_API_TOKEN` env overrides the stored token).
+Query params: `from`/`to` (ISO or epoch ms), `since` (`15m`/`2h`/`7d`), `level`
+or `min_level`, `component`, `campaign_id`, `request_id`, `q` (message search),
+`limit` (≤1000), `cursor` (keyset), `order` (`desc`/`asc`).
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  "https://dispatcher.example.com/logs?since=1h&min_level=warn&limit=50"
+```
+
+**Log webhook** — POST each log at or above a configurable **minimum level**
+(default `warn`) to an endpoint you set, as a JSON body, optionally HMAC-signed
+(`X-Dispatcher-Log-Signature: sha256=…` when a signing secret is set). Delivery
+is fire-and-forget, concurrency-capped, and drops under overload — a slow or
+dead endpoint never blocks the app. `warn`+ is the safe default; setting the
+minimum to `trace`/`info` forwards a high-volume firehose. The signing secret is
+stored in the state DB and redacted in API responses.
+
 For local development, run the dispatcher and Vite in separate terminals:
 
 ```bash
