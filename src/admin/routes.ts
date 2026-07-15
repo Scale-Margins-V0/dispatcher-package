@@ -12,6 +12,7 @@ import { getAdminActivity } from "./activity.js";
 import { registerHistoryRoutes } from "./api/history.js";
 import { registerLogRoutes } from "./api/logs.js";
 import { registerMemberRoutes } from "./api/members.js";
+import { registerObservabilityRoutes } from "./api/observability.js";
 import { registerVariableRoutes } from "./api/variables.js";
 import { adminSecurityHeaders } from "./auth.js";
 
@@ -36,6 +37,7 @@ export const registerAdminRoutes = (app: Express): void => {
   registerLogRoutes(app);
   registerHistoryRoutes(app);
   registerMemberRoutes(app);
+  registerObservabilityRoutes(app);
 
   app.get("/admin/api/overview", async (_req, res) => {
     try {

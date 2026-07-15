@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, like, lt, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, like, lt, lte, or } from "drizzle-orm";
 import { getDb } from "../client.js";
 import { queryDb, tableFor } from "../dialect-helpers.js";
 import type { AppLogRow, LogLevel } from "../schema/index.js";
@@ -25,12 +25,16 @@ export async function insertLogs(rows: AppLogRow[]): Promise<void> {
 
 export type LogQuery = {
   level?: LogLevel;
+  /** Match any of these levels (e.g. min-level expansion). Ignored if `level` set. */
+  levels?: LogLevel[];
   from?: Date;
   to?: Date;
   campaign_id?: string;
   component?: string;
+  request_id?: string;
   q?: string;
   cursor?: { ts: Date; id: string };
+  order?: "asc" | "desc";
   limit: number;
 };
 
@@ -42,26 +46,37 @@ export type LogPage = {
 export async function queryLogs(query: LogQuery): Promise<LogPage> {
   const dbx = getDb();
   const table = tableFor(dbx, "appLogs");
+  const ascending = query.order === "asc";
   const conditions: unknown[] = [];
   if (query.level) conditions.push(eq(table.level, query.level));
+  else if (query.levels && query.levels.length > 0) conditions.push(inArray(table.level, query.levels));
   if (query.from) conditions.push(gte(table.ts, query.from));
   if (query.to) conditions.push(lte(table.ts, query.to));
   if (query.campaign_id) conditions.push(eq(table.campaign_id, query.campaign_id));
   if (query.component) conditions.push(eq(table.component, query.component));
+  if (query.request_id) conditions.push(eq(table.request_id, query.request_id));
   if (query.q) conditions.push(like(table.message, `%${query.q.replaceAll("%", "\\%")}%`));
   if (query.cursor) {
+    // Keyset: page in the same direction as the sort order (ts then id tiebreak).
     conditions.push(
-      or(
-        lt(table.ts, query.cursor.ts),
-        and(eq(table.ts, query.cursor.ts), lt(table.id, query.cursor.id))
-      )
+      ascending
+        ? or(
+            gt(table.ts, query.cursor.ts),
+            and(eq(table.ts, query.cursor.ts), gt(table.id, query.cursor.id))
+          )
+        : or(
+            lt(table.ts, query.cursor.ts),
+            and(eq(table.ts, query.cursor.ts), lt(table.id, query.cursor.id))
+          )
     );
   }
 
   let builder = queryDb(dbx).select().from(table);
   if (conditions.length > 0) builder = builder.where(and(...(conditions as never[])));
+  const orderTs = ascending ? asc(table.ts) : desc(table.ts);
+  const orderId = ascending ? asc(table.id) : desc(table.id);
   const raw: Record<string, unknown>[] = await builder
-    .orderBy(desc(table.ts), desc(table.id))
+    .orderBy(orderTs, orderId)
     .limit(query.limit + 1);
 
   const rows = raw.map(toRow);
