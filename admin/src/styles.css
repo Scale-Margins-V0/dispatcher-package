@@ -310,8 +310,26 @@ button.danger:hover { background: var(--red-soft); }
 .form-grid input:focus, .log-filters input:focus { border-color: var(--faint); box-shadow: 0 0 0 3px var(--accent-soft); }
 .form-grid label.check-label { flex-direction: row; align-items: center; gap: 8px; align-self: end; padding-bottom: 10px; }
 .editor-actions { display: flex; gap: 10px; }
-.variable-preview { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.variable-preview code { background: var(--accent-soft); padding: 2px 6px; border-radius: 4px; }
+.variable-preview { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.variable-preview svg { width: 15px; color: var(--green); flex: none; }
+.variable-preview code { background: var(--accent-soft); padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+/* Per-type editor fields (outside the 2-col grid) */
+.variable-editor .field-row { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.variable-editor .field-row input, .variable-editor .code-input, .api-form input, .api-form select { padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); outline: none; font-size: 13px; width: 100%; }
+.variable-editor .field-row input:focus, .variable-editor .code-input:focus, .api-form input:focus { border-color: var(--faint); box-shadow: 0 0 0 3px var(--accent-soft); }
+.code-input { font: 12.5px/1.5 var(--mono); resize: vertical; }
+.field-hint { font-weight: 400; color: var(--faint); font-size: 11px; margin-left: 6px; }
+.faint-hint { color: var(--faint); font-style: italic; }
+.check-label { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.api-form { display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 14px; }
+.api-row { display: flex; gap: 12px; }
+.api-row label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.api-method { width: 110px; flex: none; }
+.api-url, .api-jsonpath { flex: 1; }
+.api-timeout { width: 130px; flex: none; }
+.field-label-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--muted); }
+.header-row { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 8px; }
+.header-row button.ghost { padding: 6px 10px; }
 .table-wrap.scroll-x { overflow-x: auto; }
 .definition-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-cell { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }

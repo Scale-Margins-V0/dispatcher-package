@@ -3,45 +3,161 @@ import {
   createVariable,
   deleteVariable,
   fetchVariables,
+  testVariable,
   updateVariable,
   validateVariable,
 } from "../api";
 import { AlertIcon, CheckIcon, SlidersIcon } from "../icons";
-import type { AdminVariable, VariablePayload } from "../types";
+import type { AdminVariable, VariablePayload, VariableSource } from "../types";
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+const SOURCE_OPTIONS: Array<[VariableSource, string]> = [
+  ["field", "Field — copy a lookup column"],
+  ["computed", "Concatenation — expression"],
+  ["constant", "Constant — fixed value"],
+  ["query", "SQL query — from the connected DB"],
+  ["api", "API fetch — from an HTTP endpoint"],
+];
+const SOURCE_TONE: Record<VariableSource, string> = {
+  field: "muted",
+  computed: "amber",
+  constant: "muted",
+  query: "green",
+  api: "green",
+};
+const isDynamic = (s: VariableSource) => s === "query" || s === "api";
 
 function Badge({ tone = "muted", children }: { tone?: string; children: ReactNode }) {
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 
+type HeaderRow = { key: string; value: string };
+type ApiState = {
+  method: "GET" | "POST";
+  url: string;
+  headers: HeaderRow[];
+  json_path: string;
+  body: string;
+  timeout_ms: string;
+};
 type EditorState = {
-  original?: string; // name being edited; undefined = create
+  original?: string;
   name: string;
-  source: "field" | "computed";
+  source: VariableSource;
   field: string;
   expr: string;
+  value: string;
+  sql: string;
+  api: ApiState;
   fallback: string;
   enabled: boolean;
 };
+
+const emptyApi = (): ApiState => ({ method: "GET", url: "", headers: [], json_path: "", body: "", timeout_ms: "" });
 
 const emptyEditor = (): EditorState => ({
   name: "",
   source: "field",
   field: "",
   expr: "",
+  value: "",
+  sql: "",
+  api: emptyApi(),
   fallback: "",
   enabled: true,
 });
 
-const toPayload = (state: EditorState): VariablePayload => ({
-  name: state.name.trim(),
-  source: state.source,
-  ...(state.source === "field" ? { field: state.field.trim() } : {}),
-  ...(state.source === "computed" ? { expr: state.expr.trim() } : {}),
-  ...(state.fallback !== "" ? { fallback: state.fallback } : {}),
-  enabled: state.enabled,
-});
+function toPayload(state: EditorState): VariablePayload {
+  const base: VariablePayload = {
+    name: state.name.trim(),
+    source: state.source,
+    ...(state.fallback !== "" ? { fallback: state.fallback } : {}),
+    enabled: state.enabled,
+  };
+  switch (state.source) {
+    case "field":
+      return { ...base, field: state.field.trim() };
+    case "computed":
+      return { ...base, expr: state.expr.trim() };
+    case "constant":
+      return { ...base, value: state.value };
+    case "query":
+      return { ...base, sql: state.sql.trim() };
+    case "api":
+      return {
+        ...base,
+        api: {
+          method: state.api.method,
+          url: state.api.url.trim(),
+          headers: Object.fromEntries(
+            state.api.headers.filter((h) => h.key.trim()).map((h) => [h.key.trim(), h.value])
+          ),
+          json_path: state.api.json_path.trim(),
+          ...(state.api.body.trim() ? { body: state.api.body } : {}),
+          ...(state.api.timeout_ms.trim() ? { timeout_ms: Number(state.api.timeout_ms) } : {}),
+        },
+      };
+  }
+}
+
+function variableToPayload(v: AdminVariable): VariablePayload {
+  const cfg = (v.config ?? {}) as Record<string, unknown>;
+  const base: VariablePayload = {
+    name: v.name,
+    source: v.source,
+    ...(v.fallback !== null ? { fallback: v.fallback } : {}),
+    enabled: v.enabled,
+  };
+  switch (v.source) {
+    case "field":
+      return { ...base, field: v.field ?? "" };
+    case "computed":
+      return { ...base, expr: v.expr ?? "" };
+    case "constant":
+      return { ...base, value: String(cfg.value ?? "") };
+    case "query":
+      return { ...base, sql: String(cfg.sql ?? "") };
+    case "api":
+      return {
+        ...base,
+        api: {
+          method: (cfg.method as "GET" | "POST") ?? "GET",
+          url: String(cfg.url ?? ""),
+          headers: (cfg.headers as Record<string, string>) ?? {},
+          json_path: String(cfg.json_path ?? ""),
+          ...(cfg.body ? { body: String(cfg.body) } : {}),
+          ...(cfg.timeout_ms ? { timeout_ms: Number(cfg.timeout_ms) } : {}),
+        },
+      };
+  }
+}
+
+function editorFromVariable(v: AdminVariable): EditorState {
+  const cfg = (v.config ?? {}) as Record<string, unknown>;
+  const headers = (cfg.headers as Record<string, string> | undefined) ?? {};
+  return {
+    original: v.name,
+    name: v.name,
+    source: v.source,
+    field: v.field ?? "",
+    expr: v.expr ?? "",
+    value: String(cfg.value ?? ""),
+    sql: String(cfg.sql ?? ""),
+    api: {
+      method: (cfg.method as "GET" | "POST") ?? "GET",
+      url: String(cfg.url ?? ""),
+      headers: Object.entries(headers).map(([key, value]) => ({ key, value })),
+      json_path: String(cfg.json_path ?? ""),
+      body: String(cfg.body ?? ""),
+      timeout_ms: cfg.timeout_ms ? String(cfg.timeout_ms) : "",
+    },
+    fallback: v.fallback ?? "",
+    enabled: v.enabled,
+  };
+}
+
+const TOKEN_HINT = "Tokens: {{user_id}} {{email}} {{campaign_id}} {{organization_id}}";
 
 function Editor({
   state,
@@ -57,6 +173,8 @@ function Editor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const setApi = (patch: Partial<ApiState>) => onChange({ ...state, api: { ...state.api, ...patch } });
 
   const runValidation = async () => {
     setError("");
@@ -71,11 +189,26 @@ function Editor({
         setError(result.error ?? "Invalid definition");
         return false;
       }
-      setPreview(result.preview ?? null);
+      if (result.preview !== undefined) setPreview(result.preview);
       return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Validation failed");
       return false;
+    }
+  };
+
+  const runTest = async () => {
+    setTestResult(null);
+    setError("");
+    try {
+      const r = await testVariable(toPayload(state));
+      setTestResult(
+        r.ok
+          ? { ok: true, text: r.value && r.value.length > 0 ? r.value : "(empty — fallback used)" }
+          : { ok: false, text: r.error ?? "Test failed" }
+      );
+    } catch (reason) {
+      setTestResult({ ok: false, text: reason instanceof Error ? reason.message : "Test failed" });
     }
   };
 
@@ -107,7 +240,7 @@ function Editor({
             <input
               value={state.name}
               onChange={(event) => onChange({ ...state, name: event.target.value })}
-              placeholder="first_name"
+              placeholder="loyalty_tier"
               required
             />
           </label>
@@ -115,53 +248,177 @@ function Editor({
             Source
             <select
               value={state.source}
-              onChange={(event) =>
-                onChange({ ...state, source: event.target.value as "field" | "computed" })
-              }
+              onChange={(event) => onChange({ ...state, source: event.target.value as VariableSource })}
             >
-              <option value="field">field — copy a user lookup column</option>
-              <option value="computed">computed — concat expression</option>
+              {SOURCE_OPTIONS.map(([id, label]) => (
+                <option key={id} value={id}>
+                  {label}
+                </option>
+              ))}
             </select>
           </label>
-          {state.source === "field" ? (
-            <label>
-              Field
-              <input
-                value={state.field}
-                onChange={(event) => onChange({ ...state, field: event.target.value })}
-                placeholder="first_name"
-                required
-              />
-            </label>
-          ) : (
-            <label className="wide">
-              Expression
-              <input
-                value={state.expr}
-                onChange={(event) => onChange({ ...state, expr: event.target.value })}
-                onBlur={() => void runValidation()}
-                placeholder="'Hello ' + first_name + ' from ' + company_name"
-                required
-              />
-            </label>
-          )}
-          <label>
-            Fallback
-            <input
-              value={state.fallback}
-              onChange={(event) => onChange({ ...state, fallback: event.target.value })}
-              placeholder="there"
-            />
-          </label>
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={state.enabled}
-              onChange={(event) => onChange({ ...state, enabled: event.target.checked })}
-            />
-            Enabled
-          </label>
         </div>
+
+        {state.source === "field" && (
+          <label className="field-row">
+            Field
+            <input
+              value={state.field}
+              onChange={(event) => onChange({ ...state, field: event.target.value })}
+              placeholder="first_name"
+              required
+            />
+          </label>
+        )}
+        {state.source === "computed" && (
+          <label className="field-row">
+            Expression
+            <input
+              value={state.expr}
+              onChange={(event) => onChange({ ...state, expr: event.target.value })}
+              onBlur={() => void runValidation()}
+              placeholder="'Hello ' + first_name + ' from ' + company_name"
+              required
+            />
+          </label>
+        )}
+        {state.source === "constant" && (
+          <label className="field-row">
+            Constant value
+            <input
+              value={state.value}
+              onChange={(event) => onChange({ ...state, value: event.target.value })}
+              placeholder="Winter Sale 2026"
+            />
+          </label>
+        )}
+        {state.source === "query" && (
+          <label className="field-row">
+            SQL query <span className="field-hint">{TOKEN_HINT}</span>
+            <textarea
+              className="code-input"
+              rows={3}
+              value={state.sql}
+              onChange={(event) => onChange({ ...state, sql: event.target.value })}
+              placeholder="SELECT tier FROM loyalty WHERE user_id = {{user_id}}"
+              required
+            />
+          </label>
+        )}
+        {state.source === "api" && (
+          <div className="api-form">
+            <div className="api-row">
+              <label className="api-method">
+                Method
+                <select
+                  value={state.api.method}
+                  onChange={(event) => setApi({ method: event.target.value as "GET" | "POST" })}
+                >
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                </select>
+              </label>
+              <label className="api-url">
+                URL <span className="field-hint">tokens allowed, {"{{field.NAME}}"} too</span>
+                <input
+                  value={state.api.url}
+                  onChange={(event) => setApi({ url: event.target.value })}
+                  placeholder="https://crm.example.com/users/{{user_id}}"
+                  required
+                />
+              </label>
+            </div>
+            <div className="api-headers">
+              <div className="field-label-row">
+                <span>Headers</span>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setApi({ headers: [...state.api.headers, { key: "", value: "" }] })}
+                >
+                  + Add header
+                </button>
+              </div>
+              {state.api.headers.map((h, i) => (
+                <div className="header-row" key={i}>
+                  <input
+                    placeholder="Authorization"
+                    value={h.key}
+                    onChange={(event) => {
+                      const headers = [...state.api.headers];
+                      headers[i] = { ...h, key: event.target.value };
+                      setApi({ headers });
+                    }}
+                  />
+                  <input
+                    placeholder="Bearer …"
+                    value={h.value}
+                    onChange={(event) => {
+                      const headers = [...state.api.headers];
+                      headers[i] = { ...h, value: event.target.value };
+                      setApi({ headers });
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => setApi({ headers: state.api.headers.filter((_, j) => j !== i) })}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="api-row">
+              <label className="api-jsonpath">
+                JSON path
+                <input
+                  value={state.api.json_path}
+                  onChange={(event) => setApi({ json_path: event.target.value })}
+                  placeholder="data.tier"
+                />
+              </label>
+              <label className="api-timeout">
+                Timeout (ms)
+                <input
+                  value={state.api.timeout_ms}
+                  onChange={(event) => setApi({ timeout_ms: event.target.value.replace(/[^0-9]/g, "") })}
+                  placeholder="5000"
+                />
+              </label>
+            </div>
+            {state.api.method === "POST" && (
+              <label className="field-row">
+                Request body
+                <textarea
+                  className="code-input"
+                  rows={2}
+                  value={state.api.body}
+                  onChange={(event) => setApi({ body: event.target.value })}
+                  placeholder='{"user":"{{user_id}}"}'
+                />
+              </label>
+            )}
+          </div>
+        )}
+
+        <label className="field-row">
+          Fallback <span className="field-hint">used when the value is empty or resolution fails</span>
+          <input
+            value={state.fallback}
+            onChange={(event) => onChange({ ...state, fallback: event.target.value })}
+            placeholder="there"
+          />
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={state.enabled}
+            onChange={(event) => onChange({ ...state, enabled: event.target.checked })}
+          />
+          Enabled
+        </label>
+
         {error && (
           <div className="login-error">
             <AlertIcon />
@@ -173,10 +430,21 @@ function Editor({
             <CheckIcon /> Sample render: <code>{preview || "(empty)"}</code>
           </div>
         )}
+        {testResult && (
+          <div className={testResult.ok ? "variable-preview" : "login-error"}>
+            {testResult.ok ? <CheckIcon /> : <AlertIcon />} {testResult.ok ? "Test result: " : ""}
+            <code>{testResult.text}</code>
+          </div>
+        )}
         <div className="editor-actions">
           <button type="submit" disabled={busy}>
             {busy ? "Saving…" : state.original ? "Save changes" : "Create variable"}
           </button>
+          {isDynamic(state.source) && (
+            <button type="button" className="ghost" onClick={() => void runTest()} disabled={busy}>
+              Test
+            </button>
+          )}
           <button type="button" className="ghost" onClick={onCancel} disabled={busy}>
             Cancel
           </button>
@@ -184,6 +452,22 @@ function Editor({
       </form>
     </section>
   );
+}
+
+function definitionSummary(v: AdminVariable): string {
+  const cfg = (v.config ?? {}) as Record<string, unknown>;
+  switch (v.source) {
+    case "field":
+      return v.field ?? "";
+    case "computed":
+      return v.expr ?? "";
+    case "constant":
+      return String(cfg.value ?? "");
+    case "query":
+      return String(cfg.sql ?? "");
+    case "api":
+      return `${String(cfg.method ?? "GET")} ${String(cfg.url ?? "")}`;
+  }
 }
 
 export default function Variables({ refreshSignal = 0 }: { refreshSignal?: number }) {
@@ -206,27 +490,9 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
     void load();
   }, [load, refreshSignal]);
 
-  const edit = (variable: AdminVariable) =>
-    setEditor({
-      original: variable.name,
-      name: variable.name,
-      source: variable.source,
-      field: variable.field ?? "",
-      expr: variable.expr ?? "",
-      fallback: variable.fallback ?? "",
-      enabled: variable.enabled,
-    });
-
   const toggle = async (variable: AdminVariable) => {
     try {
-      await updateVariable(variable.name, {
-        name: variable.name,
-        source: variable.source,
-        ...(variable.source === "field" ? { field: variable.field ?? "" } : {}),
-        ...(variable.source === "computed" ? { expr: variable.expr ?? "" } : {}),
-        ...(variable.fallback !== null ? { fallback: variable.fallback } : {}),
-        enabled: !variable.enabled,
-      });
+      await updateVariable(variable.name, { ...variableToPayload(variable), enabled: !variable.enabled });
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to update variable");
@@ -249,8 +515,9 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
         <div>
           <h1>Dynamic variables</h1>
           <p>
-            Personalization placeholders live in the dispatcher database. Changes apply to the
-            next dispatch immediately — no redeploy, no restart.
+            Personalization placeholders live in the dispatcher database. Pull values from a lookup
+            field, an expression, a constant, a SQL query, or an API — changes apply to the next
+            dispatch with no restart.
           </p>
         </div>
         <div className="head-actions">
@@ -298,55 +565,56 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
               </tr>
             </thead>
             <tbody>
-              {variables.map((variable) => (
-                <tr key={variable.name} className={variable.enabled ? "" : "row-muted"}>
-                  <td className="mono">{`{{${variable.name}}}`}</td>
-                  <td>
-                    <Badge tone={variable.source === "computed" ? "amber" : "muted"}>
-                      {variable.source}
-                    </Badge>
-                  </td>
-                  <td
-                    className="mono definition-cell"
-                    title={
-                      (variable.source === "field" ? variable.field : variable.expr) +
-                      (variable.fallback ? `  (fallback: ${variable.fallback})` : "")
-                    }
-                  >
-                    {variable.source === "field" ? variable.field : variable.expr}
-                  </td>
-                  <td className="mono preview-cell" title={variable.preview}>{variable.preview || "—"}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className={`badge badge-${variable.enabled ? "green" : "muted"} status-toggle`}
-                      onClick={() => void toggle(variable)}
-                      title={variable.enabled ? "Click to disable" : "Click to enable"}
-                    >
-                      {variable.enabled ? "enabled" : "disabled"}
-                    </button>
-                  </td>
-                  <td className="actions-cell">
-                    <button type="button" className="ghost" onClick={() => edit(variable)}>
-                      Edit
-                    </button>
-                    {pendingDelete === variable.name ? (
-                      <>
-                        <button type="button" className="danger" onClick={() => void remove(variable.name)}>
-                          Confirm
-                        </button>
-                        <button type="button" className="ghost" onClick={() => setPendingDelete(null)}>
-                          Keep
-                        </button>
-                      </>
-                    ) : (
-                      <button type="button" className="ghost" onClick={() => setPendingDelete(variable.name)}>
-                        Delete
+              {variables.map((variable) => {
+                const summary = definitionSummary(variable);
+                return (
+                  <tr key={variable.name} className={variable.enabled ? "" : "row-muted"}>
+                    <td className="mono">{`{{${variable.name}}}`}</td>
+                    <td>
+                      <Badge tone={SOURCE_TONE[variable.source]}>{variable.source}</Badge>
+                    </td>
+                    <td className="mono definition-cell" title={summary}>
+                      {summary}
+                    </td>
+                    <td className="mono preview-cell" title={variable.preview}>
+                      {isDynamic(variable.source) ? (
+                        <span className="faint-hint">test to preview</span>
+                      ) : (
+                        variable.preview || "—"
+                      )}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className={`badge badge-${variable.enabled ? "green" : "muted"} status-toggle`}
+                        onClick={() => void toggle(variable)}
+                        title={variable.enabled ? "Click to disable" : "Click to enable"}
+                      >
+                        {variable.enabled ? "enabled" : "disabled"}
                       </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="actions-cell">
+                      <button type="button" className="ghost" onClick={() => setEditor(editorFromVariable(variable))}>
+                        Edit
+                      </button>
+                      {pendingDelete === variable.name ? (
+                        <>
+                          <button type="button" className="danger" onClick={() => void remove(variable.name)}>
+                            Confirm
+                          </button>
+                          <button type="button" className="ghost" onClick={() => setPendingDelete(null)}>
+                            Keep
+                          </button>
+                        </>
+                      ) : (
+                        <button type="button" className="ghost" onClick={() => setPendingDelete(variable.name)}>
+                          Delete
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </section>
