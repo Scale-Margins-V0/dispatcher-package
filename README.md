@@ -222,13 +222,38 @@ invite link, sets a name and password, and is signed straight into the console.
 
 The dashboard also includes runtime/configuration status, recent dispatches,
 failures (with the real error message and stack trace), analytics webhook
-attempts, a **Logs** viewer over the structured application logs, and a
-read-write **Variables** editor for personalization placeholders
-(create/edit/enable/delete; changes take effect on the next dispatch with no
-restart). Dispatch/webhook activity, failures, logs, and accounts are persisted
-in the [state database](#state-database) and survive restarts (subject to the
-retention windows below). Recipient identifiers and message content are still
-never stored — only opaque `user_id`s.
+attempts, a **Logs** viewer over the structured application logs (each entry
+expands inline to show its full message, stack, and context), and a read-write
+**Variables** editor (below). Dispatch/webhook activity, failures, logs, and
+accounts are persisted in the [state database](#state-database) and survive
+restarts (subject to the retention windows below). Recipient identifiers and
+message content are still never stored — only opaque `user_id`s.
+
+#### Dynamic variables
+
+Personalization placeholders (`{{name}}`) are created/edited/enabled/deleted in
+the **Variables** page and apply to the next dispatch with no restart. Each has a
+**source**:
+
+| Source | Resolves to | Notes |
+| --- | --- | --- |
+| **Field** | a column from the connected lookup DB | e.g. `first_name` |
+| **Concatenation** | a safe string expression | `'Hi ' + first_name + ' at ' + company_name` |
+| **Constant** | a fixed value | org-wide labels, campaign names |
+| **SQL query** | first row/column of a `SELECT` against the connected lookup DB | tokens `{{user_id}}`/`{{email}}`/`{{campaign_id}}`/`{{organization_id}}` are **bound parameters**, not string-interpolated (injection-safe); SELECT/WITH only, single statement, timed out |
+| **API fetch** | a value pulled from an HTTP endpoint via a JSON path | `url`/`headers`/`body` interpolate the same tokens plus `{{field.NAME}}`; timeout + response-size capped |
+
+**SQL** and **API** values resolve **per recipient** (so they can be
+personalized), cached within a campaign run so an identical query/URL executes
+once, concurrency-capped, and **fall back** (to the variable's fallback, with a
+warning in Logs) if resolution fails — a slow or broken source never wedges a
+campaign. The editor's **Test** button resolves a candidate definition live
+against a sample user so you can preview the value before saving.
+
+> Security: SQL/API sources are admin-defined and run with the dispatcher's
+> trust. SQL is SELECT-only and parameter-bound; API is http(s) only with
+> timeouts and size caps. **API header values (e.g. `Authorization`) are stored
+> in the state DB** and redacted in API responses — treat that DB accordingly.
 
 _(The previous single shared-credential login — `DISPATCHER_ADMIN_USER` /
 `DISPATCHER_ADMIN_SESSION_SECRET` — has been replaced by the account system above.)_
