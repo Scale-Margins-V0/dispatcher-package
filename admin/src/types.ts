@@ -219,3 +219,20 @@ export interface PendingInvitation {
   expiresAt?: string;
   accept_url: string;
 }
+
+export type LogLevelName = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
+
+export interface LogWebhookSettings {
+  enabled: boolean;
+  url: string;
+  min_level: LogLevelName;
+  has_secret: boolean;
+  secret: string;
+}
+
+export interface LogWebhookInput {
+  enabled: boolean;
+  url: string;
+  min_level: LogLevelName;
+  secret?: string;
+}
