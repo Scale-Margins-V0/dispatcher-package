@@ -11,6 +11,7 @@ import { getProvider } from "../providers/index.js";
 import type { EmailMessage } from "../providers/types.js";
 import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
+import { resolveDynamicValues } from "../variables/resolver.js";
 import { ensurePlaceholdersFresh } from "../variables/service.js";
 import { processWhatsAppDispatch } from "./whatsapp.js";
 import type { DispatchPayload } from "./types.js";
@@ -56,6 +57,10 @@ export async function processDispatch(
 
   const users = await lookupUsers(user_ids);
 
+  // Resolve async (query/api) variables once for the whole recipient set, before
+  // the sync personalize pass. Sync sources (field/computed/constant) skip this.
+  const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx);
+
   let imageMappings: ImageMapping[] = [];
   if (payload.images && payload.images.length > 0) {
     imageMappings = await processImages(payload.images, campaign_id);
@@ -90,11 +95,12 @@ export async function processDispatch(
       continue;
     }
 
+    const resolved = resolvedVars.get(user.user_id);
     const subject = content.subject
-      ? personalize(content.subject, user, personalizeCtx)
+      ? personalize(content.subject, user, personalizeCtx, resolved)
       : "No Subject";
     let html = content.html_body
-      ? personalize(content.html_body, user, personalizeCtx)
+      ? personalize(content.html_body, user, personalizeCtx, resolved)
       : "";
 
     if (imageMappings.length > 0) {
@@ -111,7 +117,7 @@ export async function processDispatch(
         subject,
         html,
         ...(content.text_body && {
-          text: personalize(content.text_body, user, personalizeCtx),
+          text: personalize(content.text_body, user, personalizeCtx, resolved),
         }),
         context: {
           campaign_id,

@@ -10,4 +10,13 @@ export interface UserRecord {
 
 export interface UserLookupAdapter {
   lookupUsers(userIds: string[]): Promise<Map<string, UserRecord>>;
+  /**
+   * Run a scalar SELECT for a `query` variable, binding {{token}} params.
+   * Returns the first row / first column, or null. Only the SQL backends
+   * implement this; others throw.
+   */
+  runScalarQuery?(
+    namedSql: string,
+    bindings: Record<string, string>
+  ): Promise<string | null>;
 }
