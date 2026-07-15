@@ -4,7 +4,22 @@
  * must stay column-compatible with them (same names, same JS-side types).
  */
 
-export type VariableSource = "field" | "computed";
+export type VariableSource = "field" | "computed" | "constant" | "query" | "api";
+
+/** source=constant */
+export type ConstantConfig = { value: string };
+/** source=query — SELECT with {{user_id}} etc. tokens (bound, not interpolated). */
+export type QueryConfig = { sql: string };
+/** source=api — HTTP fetch with token interpolation + JSON-path extraction. */
+export type ApiConfig = {
+  method: "GET" | "POST";
+  url: string;
+  headers?: Record<string, string>;
+  json_path: string;
+  body?: string;
+  timeout_ms?: number;
+};
+export type VariableConfig = ConstantConfig | QueryConfig | ApiConfig;
 
 export type VariableRow = {
   id: string;
@@ -13,6 +28,8 @@ export type VariableRow = {
   field: string | null;
   expr: string | null;
   fallback: string | null;
+  /** Type-specific config for constant/query/api (null for field/computed). */
+  config: Record<string, unknown> | null;
   enabled: boolean;
   created_at: Date;
   updated_at: Date;

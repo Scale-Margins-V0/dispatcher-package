@@ -182,47 +182,59 @@ export function validateComputedExpression(
   }
 }
 
-/** What a placeholder definition renders to for the sample record. */
+/** What a placeholder definition renders to for the sample record (sync sources only). */
 export function renderPlaceholderPreview(def: PlaceholderEntry): string {
   return resolvePlaceholder(def, SAMPLE_PREVIEW_USER, SAMPLE_PREVIEW_CTX);
 }
 
+/**
+ * Resolve one placeholder for a user. `resolvedValue` is the pre-computed value
+ * for async sources (query/api), produced by src/variables/resolver.ts before
+ * the (sync) personalize pass; sync sources ignore it.
+ */
 function resolvePlaceholder(
   def: PlaceholderEntry,
   user: UserRecord,
-  dispatchCtx?: PersonalizeDispatchContext
+  dispatchCtx?: PersonalizeDispatchContext,
+  resolvedValue?: string
 ): string {
-  if (def.source === "field") {
-    const raw = user.fields[def.field];
-    if (raw !== undefined && raw.length > 0) {
-      return raw;
+  switch (def.source) {
+    case "field": {
+      const raw = user.fields[def.field];
+      return raw !== undefined && raw.length > 0 ? raw : (def.fallback ?? "");
     }
-    return def.fallback ?? "";
-  }
-  try {
-    const v = evaluateComputedExpression(def.expr, user, dispatchCtx);
-    if (v.length === 0 && def.fallback !== undefined) {
-      return def.fallback;
+    case "computed": {
+      try {
+        const v = evaluateComputedExpression(def.expr, user, dispatchCtx);
+        return v.length === 0 && def.fallback !== undefined ? def.fallback : v;
+      } catch {
+        return def.fallback ?? "";
+      }
     }
-    return v;
-  } catch {
-    return def.fallback ?? "";
+    case "constant":
+      return def.value.length > 0 ? def.value : (def.fallback ?? def.value);
+    case "query":
+    case "api":
+      if (resolvedValue !== undefined && resolvedValue.length > 0) return resolvedValue;
+      return def.fallback ?? "";
   }
 }
 
 /**
  * Personalize content for a specific user.
- * Replaces all {{placeholder}} patterns with user data.
+ * Replaces all {{placeholder}} patterns with user data. `resolved` supplies the
+ * pre-computed values for async (query/api) placeholders, keyed by name.
  */
 export function personalize(
   content: string,
   user: UserRecord,
-  dispatchCtx?: PersonalizeDispatchContext
+  dispatchCtx?: PersonalizeDispatchContext,
+  resolved?: Record<string, string>
 ): string {
   let result = content;
   const registry = getPlaceholderRegistry();
   for (const [name, def] of Object.entries(registry)) {
-    const value = resolvePlaceholder(def, user, dispatchCtx);
+    const value = resolvePlaceholder(def, user, dispatchCtx, resolved?.[name]);
     result = result.replaceAll(
       new RegExp(`\\{\\{${escapeReg(name)}\\}\\}`, "g"),
       value

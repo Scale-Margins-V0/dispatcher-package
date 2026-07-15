@@ -24,6 +24,15 @@ const backendEnum = z.enum(["mysql", "postgres", "sqlite", "http", "mock"]);
 
 const idTypeEnum = z.enum(["string", "int", "bigint", "uuid"]);
 
+const apiConfigSchema = z.object({
+  method: z.enum(["GET", "POST"]).default("GET"),
+  url: z.string(),
+  headers: z.record(z.string(), z.string()).optional(),
+  json_path: z.string(),
+  body: z.string().optional(),
+  timeout_ms: z.number().int().positive().optional(),
+});
+
 const placeholderEntrySchema = z.discriminatedUnion("source", [
   z.object({
     source: z.literal("field"),
@@ -33,6 +42,21 @@ const placeholderEntrySchema = z.discriminatedUnion("source", [
   z.object({
     source: z.literal("computed"),
     expr: z.string(),
+    fallback: z.string().optional(),
+  }),
+  z.object({
+    source: z.literal("constant"),
+    value: z.string(),
+    fallback: z.string().optional(),
+  }),
+  z.object({
+    source: z.literal("query"),
+    sql: z.string(),
+    fallback: z.string().optional(),
+  }),
+  z.object({
+    source: z.literal("api"),
+    api: apiConfigSchema,
     fallback: z.string().optional(),
   }),
 ]);
