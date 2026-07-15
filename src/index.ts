@@ -37,6 +37,7 @@ import { fileURLToPath } from "node:url";
 import { initDispatcherDb } from "./db/bootstrap.js";
 import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
 import { registerAdminRoutes } from "./admin/routes.js";
+import { registerLogsApiRoutes } from "./logs-api.js";
 import { recordDispatchActivity } from "./admin/activity.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
@@ -140,6 +141,7 @@ const PORT = parseInt(process.env.PORT || "3100", 10);
 const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
 
 registerAdminRoutes(app);
+registerLogsApiRoutes(app);
 
 if (FROM_EMAIL === "noreply@example.com" && process.env.VITEST !== "true") {
   console.warn(
