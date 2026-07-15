@@ -9,9 +9,23 @@ export type NewVariable = {
   field?: string | null;
   expr?: string | null;
   fallback?: string | null;
+  config?: Record<string, unknown> | null;
   enabled?: boolean;
   updated_by?: string | null;
 };
+
+/** JSON columns come back as parsed objects (pg/mysql) or strings (some sqlite paths). */
+function parseConfig(raw: unknown): Record<string, unknown> | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  return raw as Record<string, unknown>;
+}
 
 function toRow(raw: Record<string, unknown>): VariableRow {
   return {
@@ -21,6 +35,7 @@ function toRow(raw: Record<string, unknown>): VariableRow {
     field: (raw.field as string | null) ?? null,
     expr: (raw.expr as string | null) ?? null,
     fallback: (raw.fallback as string | null) ?? null,
+    config: parseConfig(raw.config),
     enabled: Boolean(raw.enabled),
     created_at: raw.created_at as Date,
     updated_at: raw.updated_at as Date,
@@ -59,6 +74,7 @@ export async function createVariable(input: NewVariable): Promise<VariableRow> {
     field: input.field ?? null,
     expr: input.expr ?? null,
     fallback: input.fallback ?? null,
+    config: input.config ?? null,
     enabled: input.enabled ?? true,
     created_at: now,
     updated_at: now,
@@ -82,6 +98,7 @@ export async function updateVariable(
   if (patch.field !== undefined) set.field = patch.field;
   if (patch.expr !== undefined) set.expr = patch.expr;
   if (patch.fallback !== undefined) set.fallback = patch.fallback;
+  if (patch.config !== undefined) set.config = patch.config;
   if (patch.enabled !== undefined) set.enabled = patch.enabled;
   if (patch.updated_by !== undefined) set.updated_by = patch.updated_by;
   await queryDb(dbx).update(table).set(set).where(eq(table.name, name));

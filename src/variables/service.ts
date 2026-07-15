@@ -7,6 +7,7 @@
 
 import { isDbInitialized } from "../db/client.js";
 import { listVariables } from "../db/repos/variables.js";
+import { rowToPlaceholderEntry } from "./mapping.js";
 import type { PlaceholderEntry } from "../user-lookup/config.js";
 
 const TTL_MS = 30_000;
@@ -25,19 +26,7 @@ export async function refreshPlaceholders(): Promise<void> {
   const next: Record<string, PlaceholderEntry> = {};
   for (const row of rows) {
     if (!row.enabled) continue;
-    if (row.source === "field") {
-      next[row.name] = {
-        source: "field",
-        field: row.field ?? "",
-        ...(row.fallback !== null ? { fallback: row.fallback } : {}),
-      };
-    } else {
-      next[row.name] = {
-        source: "computed",
-        expr: row.expr ?? "",
-        ...(row.fallback !== null ? { fallback: row.fallback } : {}),
-      };
-    }
+    next[row.name] = rowToPlaceholderEntry(row);
   }
   snapshot = next;
   loadedAt = Date.now();
