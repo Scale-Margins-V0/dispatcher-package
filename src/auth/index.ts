@@ -34,6 +34,27 @@ function useSecureCookies(): boolean {
   return authBaseURL().startsWith("https://");
 }
 
+/**
+ * Origins Better Auth will accept requests from. The API's own origin always
+ * counts; `DISPATCHER_TRUSTED_ORIGINS` (comma-separated) adds more when the
+ * console is served from another host. In non-production we also trust the Vite
+ * dev server (`pnpm dev:admin` serves the SPA on :5173 and proxies to the API),
+ * which would otherwise be rejected as an invalid origin.
+ */
+export function authTrustedOrigins(): string[] {
+  const origins = new Set<string>([authBaseURL()]);
+  for (const entry of (process.env.DISPATCHER_TRUSTED_ORIGINS ?? "").split(",")) {
+    const trimmed = entry.trim().replace(/\/+$/, "");
+    if (trimmed) origins.add(trimmed);
+  }
+  if (process.env.NODE_ENV !== "production") {
+    const devPort = process.env.ADMIN_DEV_PORT || "5173";
+    origins.add(`http://localhost:${devPort}`);
+    origins.add(`http://127.0.0.1:${devPort}`);
+  }
+  return [...origins];
+}
+
 export function buildAuth(dbx: DispatcherDb) {
   const provider = dbx.dialect === "postgres" ? "pg" : dbx.dialect;
   // Runtime value is the real dialect tables; typed loosely so the adapter
@@ -47,7 +68,7 @@ export function buildAuth(dbx: DispatcherDb) {
     secret: resolveAuthSecret(),
     baseURL: authBaseURL(),
     basePath: "/admin/api/auth",
-    trustedOrigins: [authBaseURL()],
+    trustedOrigins: authTrustedOrigins(),
     database: drizzleAdapter(dbx.db, {
       provider,
       schema: {
