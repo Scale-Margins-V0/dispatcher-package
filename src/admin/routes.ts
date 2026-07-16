@@ -9,6 +9,7 @@ import { requireSession, sessionProbe } from "../auth/middleware.js";
 import { getBuildInfo } from "../ops/build-info.js";
 import { buildDiagnosticsReport } from "../ops/diagnostics.js";
 import { getAdminActivity } from "./activity.js";
+import { registerCampaignRoutes } from "./api/campaigns.js";
 import { registerHistoryRoutes } from "./api/history.js";
 import { registerLogRoutes } from "./api/logs.js";
 import { registerMemberRoutes } from "./api/members.js";
@@ -36,6 +37,7 @@ export const registerAdminRoutes = (app: Express): void => {
   registerVariableRoutes(app);
   registerLogRoutes(app);
   registerHistoryRoutes(app);
+  registerCampaignRoutes(app);
   registerMemberRoutes(app);
   registerObservabilityRoutes(app);
 

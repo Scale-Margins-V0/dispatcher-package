@@ -153,6 +153,19 @@ export async function listDispatchRuns(options: {
   };
 }
 
+/** True when the campaign has an in-flight (accepted) run since `since` — drives GUI polling. */
+export async function hasActiveRun(campaign_id: string, since: Date): Promise<boolean> {
+  const dbx = getDb();
+  const runs = tableFor(dbx, "dispatchRuns");
+  const [row] = await queryDb(dbx)
+    .select({ n: sql`count(*)` })
+    .from(runs)
+    .where(
+      and(eq(runs.campaign_id, campaign_id), eq(runs.status, "accepted"), gte(runs.occurred_at, since))
+    );
+  return num(row?.n) > 0;
+}
+
 /** Send-time failures for one recipient of a campaign (feeds the per-user timeline). */
 export async function listRecipientFailuresForUser(
   campaign_id: string,
