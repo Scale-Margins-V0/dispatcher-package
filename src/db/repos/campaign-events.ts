@@ -456,6 +456,44 @@ export async function listCampaignSummaries(options: {
   };
 }
 
+/** Aggregates for exactly one campaign (detail header); null when it has no runs. */
+export async function getCampaignRunSummary(
+  campaign_id: string
+): Promise<CampaignSummaryRow | null> {
+  const dbx = getDb();
+  const runs = tableFor(dbx, "dispatchRuns");
+  const raw: Record<string, unknown>[] = await queryDb(dbx)
+    .select({
+      campaign_id: runs.campaign_id,
+      organization_id: sql`max(${runs.organization_id})`,
+      runs: sql`count(*)`,
+      accepted_runs: sql`sum(case when ${runs.status} = 'accepted' then 1 else 0 end)`,
+      failed_runs: sql`sum(case when ${runs.status} = 'failed' then 1 else 0 end)`,
+      recipients: sql`coalesce(sum(${runs.recipient_count}), 0)`,
+      sent: sql`coalesce(sum(${runs.sent_count}), 0)`,
+      failed: sql`coalesce(sum(${runs.failed_count}), 0)`,
+      first_activity: sql`min(${runs.occurred_at})`.mapWith(runs.occurred_at),
+      last_activity: sql`max(${runs.occurred_at})`.mapWith(runs.occurred_at),
+    })
+    .from(runs)
+    .where(eq(runs.campaign_id, campaign_id))
+    .groupBy(runs.campaign_id);
+  const row = raw[0];
+  if (!row) return null;
+  return {
+    campaign_id: String(row.campaign_id),
+    organization_id: row.organization_id === null ? null : String(row.organization_id),
+    runs: num(row.runs),
+    accepted_runs: num(row.accepted_runs),
+    failed_runs: num(row.failed_runs),
+    recipients: num(row.recipients),
+    sent: num(row.sent),
+    failed: num(row.failed),
+    first_activity: row.first_activity as Date,
+    last_activity: row.last_activity as Date,
+  };
+}
+
 /** Distinct channel/provider pairs per campaign for a page of ids. */
 export async function listCampaignChannels(
   campaignIds: string[]

@@ -1,4 +1,4 @@
-import { desc, eq, gte } from "drizzle-orm";
+import { desc, eq, gte, inArray } from "drizzle-orm";
 import { getDb } from "../client.js";
 import { queryDb, tableFor, upsert } from "../dialect-helpers.js";
 import type { CampaignCallbackRow } from "../schema/index.js";
@@ -38,6 +38,18 @@ export async function getCampaignCallbackRow(
     .from(table)
     .where(eq(table.campaign_id, campaignId));
   return (rows[0] as unknown as CampaignCallbackRow) ?? null;
+}
+
+/** Which of these campaigns have a registered callback (hub list column). */
+export async function listCampaignCallbackIds(campaignIds: string[]): Promise<Set<string>> {
+  if (campaignIds.length === 0) return new Set();
+  const dbx = getDb();
+  const table = tableFor(dbx, "campaignCallbacks");
+  const rows: Array<{ campaign_id: string }> = await queryDb(dbx)
+    .select({ campaign_id: table.campaign_id })
+    .from(table)
+    .where(inArray(table.campaign_id, campaignIds));
+  return new Set(rows.map((row) => row.campaign_id));
 }
 
 export async function touchCampaignCallback(campaignId: string): Promise<void> {
