@@ -8,6 +8,13 @@ import {
   updateVariable,
   validateVariable,
 } from "../api";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { AlertIcon, CheckIcon, SlidersIcon } from "../icons";
 import type {
   AdminVariable,
@@ -287,14 +294,15 @@ function ApiBuilder({
     <div className="api-client">
       {/* Method + URL + Send — the request bar */}
       <div className="req-bar">
-        <select
-          className="req-method"
-          value={api.method}
-          onChange={(e) => onChange({ method: e.target.value as "GET" | "POST" })}
-        >
-          <option value="GET">GET</option>
-          <option value="POST">POST</option>
-        </select>
+        <Select value={api.method} onValueChange={(v) => onChange({ method: v as "GET" | "POST" })}>
+          <SelectTrigger className="req-method" aria-label="HTTP method">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="GET">GET</SelectItem>
+            <SelectItem value="POST">POST</SelectItem>
+          </SelectContent>
+        </Select>
         <input
           className="req-url"
           value={api.url}
@@ -509,16 +517,21 @@ function Editor({
           </label>
           <label>
             Source
-            <select
+            <Select
               value={state.source}
-              onChange={(event) => onChange({ ...state, source: event.target.value as VariableSource })}
+              onValueChange={(value) => onChange({ ...state, source: value as VariableSource })}
             >
-              {SOURCE_OPTIONS.map(([id, label]) => (
-                <option key={id} value={id}>
-                  {label}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full" aria-label="Variable source">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SOURCE_OPTIONS.map(([id, label]) => (
+                  <SelectItem key={id} value={id}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </label>
         </div>
 

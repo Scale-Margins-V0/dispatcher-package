@@ -16,7 +16,15 @@ import {
   updateMemberRole,
   updateOrganization,
 } from "../api";
-import { AlertIcon, CheckIcon, CopyIcon, ShieldIcon, UsersIcon } from "../icons";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { ActivityIcon, AlertIcon, CheckIcon, CopyIcon, ShieldIcon, UsersIcon } from "../icons";
 import type {
   LogLevelName,
   LogWebhookSettings,
@@ -34,6 +42,16 @@ const TABS: Array<[Tab, string]> = [
   ["organization", "Organization"],
   ["observability", "Observability"],
 ];
+const TAB_COPY: Record<Tab, { title: string; description: string }> = {
+  members: { title: "Members", description: "Manage who can access this dispatcher and what they can change." },
+  invitations: { title: "Invitations", description: "Invite teammates and review pending access requests." },
+  account: { title: "Account", description: "Update your personal profile and sign-in credentials." },
+  organization: { title: "Organization", description: "Manage the organization attached to this dispatcher." },
+  observability: {
+    title: "Observability settings",
+    description: "Route operational logs to your stack and control programmatic access to the logs API.",
+  },
+};
 const ROLES = ["owner", "admin", "member"];
 const LOG_LEVELS: LogLevelName[] = ["trace", "debug", "info", "warn", "error", "fatal"];
 
@@ -121,17 +139,22 @@ function Members({ me }: { me: SessionUser | null }) {
                   </td>
                   <td className="mono">{m.user.email}</td>
                   <td>
-                    <select
+                    <Select
                       value={m.role}
                       disabled={m.role === "owner"}
-                      onChange={(e) => void changeRole(m.id, e.target.value)}
+                      onValueChange={(value) => void changeRole(m.id, value)}
                     >
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
-                    </select>
+                      <SelectTrigger className="w-[130px]" aria-label="Member role">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ROLES.map((r) => (
+                          <SelectItem key={r} value={r}>
+                            {r}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </td>
                   <td className="actions-cell">
                     {m.role !== "owner" && !isMe ? (
@@ -241,13 +264,18 @@ function Invitations() {
             onChange={(e) => setEmail(e.target.value)}
             required
           />
-          <select value={role} onChange={(e) => setRole(e.target.value)}>
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
+          <Select value={role} onValueChange={setRole}>
+            <SelectTrigger className="w-[130px]" aria-label="Invite role">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ROLES.map((r) => (
+                <SelectItem key={r} value={r}>
+                  {r}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <button type="submit" disabled={busy}>
             {busy ? "Inviting…" : "Send invite"}
           </button>
@@ -445,18 +473,23 @@ function Organization({ canEdit }: { canEdit: boolean }) {
 
 function Observability() {
   const [wh, setWh] = useState<LogWebhookSettings | null>(null);
+  const [savedWh, setSavedWh] = useState<LogWebhookSettings | null>(null);
   const [token, setToken] = useState<{ configured: boolean; updated_at: string | null } | null>(null);
   const [newToken, setNewToken] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"token" | "command" | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [rotating, setRotating] = useState(false);
 
   const load = useCallback(async () => {
     setError("");
     try {
       const [w, t] = await Promise.all([fetchLogWebhook(), fetchLogsTokenStatus()]);
       setWh(w.webhook);
+      setSavedWh(w.webhook);
       setToken(t);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to load settings");
@@ -474,14 +507,27 @@ function Observability() {
     ...(w.secret && w.secret !== "••••••••" ? { secret: w.secret } : {}),
   });
 
+  const webhookChanged = Boolean(wh && savedWh && JSON.stringify(wh) !== JSON.stringify(savedWh));
+  const endpointValid = Boolean(wh?.url.trim() && (() => {
+    try {
+      const url = new URL(wh?.url.trim() ?? "");
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      return false;
+    }
+  })());
+  const endpointError = Boolean(wh?.enabled && wh.url.trim() && !endpointValid);
+
   const save = async (event: FormEvent) => {
     event.preventDefault();
     if (!wh) return;
     setSaved(false);
     setError("");
+    setSaving(true);
     try {
       const res = await saveLogWebhook(input(wh));
       setWh(res.webhook);
+      setSavedWh(res.webhook);
       setSaved(true);
       toast.success("Log webhook saved", {
         description: res.webhook.enabled
@@ -492,11 +538,14 @@ function Observability() {
       const m = reason instanceof Error ? reason.message : undefined;
       setError(m ?? "Unable to save");
       toast.error("Could not save the webhook", { description: m });
+    } finally {
+      setSaving(false);
     }
   };
   const sendTest = async () => {
     if (!wh) return;
     setTest(null);
+    setTesting(true);
     try {
       const r = await testLogWebhook(input(wh));
       setTest(r.ok ? { ok: true, text: `Delivered (HTTP ${r.status ?? 200})` } : { ok: false, text: r.error ?? "Failed" });
@@ -506,9 +555,12 @@ function Observability() {
       const m = reason instanceof Error ? reason.message : "Failed";
       setTest({ ok: false, text: m });
       toast.error("Test delivery failed", { description: m });
+    } finally {
+      setTesting(false);
     }
   };
   const rotate = async () => {
+    setRotating(true);
     try {
       const r = await generateLogsToken();
       setNewToken(r.token);
@@ -520,13 +572,15 @@ function Observability() {
       const m = reason instanceof Error ? reason.message : undefined;
       setError(m ?? "Unable to generate token");
       toast.error("Could not generate token", { description: m });
+    } finally {
+      setRotating(false);
     }
   };
-  const copy = async (text: string) => {
+  const copy = async (text: string, target: "token" | "command") => {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      setCopied(target);
+      setTimeout(() => setCopied(null), 1500);
     } catch {
       /* clipboard blocked */
     }
@@ -536,36 +590,93 @@ function Observability() {
     return error ? <ErrorNote message={error} /> : <div className="loading-state"><span className="loader" />Loading…</div>;
   }
 
+  const curlCommand = newToken
+    ? `curl -H "Authorization: Bearer ${newToken}" \\\n+  "${window.location.origin}/logs?since=1h&min_level=warn&limit=50"`
+    : "";
+
   return (
-    <>
+    <div className="observability-layout">
       {error && <ErrorNote message={error} />}
-      <section className="panel account-panel">
-        <div className="panel-title"><AlertIcon /> Log webhook</div>
-        <p className="field-hint" style={{ margin: "4px 0 0" }}>
-          POST each log at or above the chosen level to your endpoint (JSON body, optionally HMAC-signed).
-        </p>
-        <form className="stacked-form" onSubmit={(e) => void save(e)}>
-          <label className="check-label">
-            <input type="checkbox" checked={wh.enabled} onChange={(e) => setWh({ ...wh, enabled: e.target.checked })} />
-            Enabled
+      <section className="panel observability-panel webhook-panel">
+        <div className="observability-panel-head">
+          <div className="settings-panel-copy">
+            <div className="panel-title"><ActivityIcon /> Log webhook</div>
+            <p className="panel-description">
+              Forward logs at or above the selected level as HMAC-signable JSON.
+            </p>
+          </div>
+          <label className="webhook-toggle" htmlFor="log-webhook-enabled">
+            <span>{wh.enabled ? "On" : "Off"}</span>
+            <Switch
+              id="log-webhook-enabled"
+              checked={wh.enabled}
+              onCheckedChange={(enabled) => {
+                setWh({ ...wh, enabled });
+                setSaved(false);
+                setTest(null);
+              }}
+              aria-label="Enable log webhook"
+            />
           </label>
+        </div>
+        <form className="stacked-form" onSubmit={(e) => void save(e)}>
           <label>
             Endpoint URL
-            <input value={wh.url} onChange={(e) => setWh({ ...wh, url: e.target.value })} placeholder="https://logs.example.com/ingest" />
+            <input
+              value={wh.url}
+              onChange={(e) => {
+                setWh({ ...wh, url: e.target.value });
+                setSaved(false);
+                setTest(null);
+              }}
+              placeholder="https://logs.example.com/ingest"
+              inputMode="url"
+              aria-invalid={endpointError}
+              aria-describedby="endpoint-help"
+            />
+            <span id="endpoint-help" className={endpointError ? "field-message error" : "field-message"}>
+              {endpointError ? "Enter a complete HTTP or HTTPS endpoint." : "The dispatcher sends an HTTP POST request to this URL."}
+            </span>
           </label>
           <label>
             Minimum level
-            <select value={wh.min_level} onChange={(e) => setWh({ ...wh, min_level: e.target.value as LogLevelName })}>
-              {LOG_LEVELS.map((l) => (
-                <option key={l} value={l}>
-                  {l}{l === "warn" ? " (default)" : ""}
-                </option>
-              ))}
-            </select>
+            <Select
+              value={wh.min_level}
+              onValueChange={(value) => {
+                setWh({ ...wh, min_level: value as LogLevelName });
+                setSaved(false);
+                setTest(null);
+              }}
+            >
+              <SelectTrigger aria-label="Minimum log level">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LOG_LEVELS.map((l) => (
+                  <SelectItem key={l} value={l}>
+                    {l}
+                    {l === "warn" ? " (default)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </label>
           <label>
-            Signing secret <span className="field-hint">optional — adds X-Dispatcher-Log-Signature</span>
-            <input value={wh.secret} onChange={(e) => setWh({ ...wh, secret: e.target.value })} placeholder="(none)" />
+            Signing secret <span className="optional-label">Optional</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={wh.secret}
+              onChange={(e) => {
+                setWh({ ...wh, secret: e.target.value });
+                setSaved(false);
+                setTest(null);
+              }}
+              placeholder="Enter a secret"
+            />
+            <span className="field-message">
+              Adds an <code>X-Dispatcher-Log-Signature</code> header to every request.
+            </span>
           </label>
           {saved && <div className="variable-preview"><CheckIcon /> Saved.</div>}
           {test && (
@@ -574,36 +685,88 @@ function Observability() {
             </div>
           )}
           <div className="editor-actions">
-            <button type="submit">Save</button>
-            <button type="button" className="ghost" onClick={() => void sendTest()}>Send test</button>
+            <button
+              type="submit"
+              disabled={!webhookChanged || saving || (wh.enabled && !endpointValid)}
+            >
+              {saving ? "Saving…" : "Save changes"}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={!endpointValid || testing}
+              aria-describedby={!endpointValid ? "send-test-help" : undefined}
+              onClick={() => void sendTest()}
+            >
+              {testing ? "Sending…" : "Send test"}
+            </button>
           </div>
+          {!endpointValid && (
+            <p id="send-test-help" className="action-help">Add a valid endpoint URL to send a test event.</p>
+          )}
         </form>
       </section>
 
-      <section className="panel account-panel">
-        <div className="panel-title"><ShieldIcon /> Logs API token</div>
-        <p className="field-hint" style={{ margin: "4px 0 0" }}>
-          Bearer token for <code>GET /logs</code>. {token.configured ? "A token is configured." : "No token yet."}
-        </p>
+      <section className="panel observability-panel token-panel">
+        <div className="observability-panel-head token-heading">
+          <div className="settings-panel-copy">
+            <div className="panel-title"><ShieldIcon /> Logs API token</div>
+            <p className="panel-description">Authenticate requests to <code>GET /logs</code>.</p>
+          </div>
+          <span className={`token-status ${token.configured ? "configured" : "empty"}`}>
+            <span className="dot" />{token.configured ? "Configured" : "Not configured"}
+          </span>
+        </div>
         {newToken && (
-          <div className="invite-result">
-            <CheckIcon /> New token (shown once):
-            <code className="invite-link">{newToken}</code>
-            <button type="button" className="ghost" onClick={() => void copy(newToken)}>
-              <CopyIcon /> {copied ? "Copied" : "Copy"}
-            </button>
+          <div className="token-reveal" role="status">
+            <div className="token-reveal-head">
+              <span><CheckIcon /> New token</span>
+              <strong>Shown once</strong>
+            </div>
+            <p>Copy this token now. You will not be able to retrieve it again.</p>
+            <div className="copy-field">
+              <code>{newToken}</code>
+              <button type="button" className="ghost" onClick={() => void copy(newToken, "token")}>
+                <CopyIcon /> {copied === "token" ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <div className="code-block-wrap">
+              <pre className="stack-trace">{curlCommand}</pre>
+              <button type="button" className="ghost code-copy" onClick={() => void copy(curlCommand, "command")}>
+                <CopyIcon /> {copied === "command" ? "Copied" : "Copy command"}
+              </button>
+            </div>
           </div>
         )}
-        <pre className="stack-trace" style={{ marginTop: 12 }}>
-          curl -H "Authorization: Bearer &lt;token&gt;" \{"\n"}  "{window.location.origin}/logs?since=1h&amp;min_level=warn&amp;limit=50"
-        </pre>
-        <div className="editor-actions" style={{ marginTop: 12 }}>
-          <button type="button" onClick={() => void rotate()}>
-            {token.configured ? "Rotate token" : "Generate token"}
+        {!newToken && (
+          <div className="token-empty-state">
+            <ShieldIcon />
+            <strong>{token.configured ? "A token is active" : "No API token yet"}</strong>
+            <p>
+              {token.configured
+                ? "For security, the existing token cannot be displayed. Rotate it only if you can update every client using it."
+                : "Generate a bearer token when an external tool needs access to dispatcher logs."}
+            </p>
+            {token.configured && token.updated_at && (
+              <span>Last rotated {new Date(token.updated_at).toLocaleString()}</span>
+            )}
+          </div>
+        )}
+        <div className="editor-actions token-actions">
+          <button
+            type="button"
+            className={token.configured ? "ghost" : undefined}
+            disabled={rotating}
+            onClick={() => void rotate()}
+          >
+            {rotating ? "Generating…" : token.configured ? "Rotate token" : "Generate token"}
           </button>
+          {token.configured && !newToken && (
+            <span className="action-help">Rotation immediately invalidates the current token.</span>
+          )}
         </div>
       </section>
-    </>
+    </div>
   );
 }
 
@@ -621,13 +784,14 @@ export default function Settings({
     return () => window.removeEventListener("hashchange", handler);
   }, []);
   const canManageOrg = user?.role === "admin" || user?.role === "owner";
+  const pageCopy = TAB_COPY[tab];
 
   return (
     <>
       <header className="page-head">
         <div>
-          <h1>Settings</h1>
-          <p>Manage members, invitations, your account, and the organization.</p>
+          <h1>{pageCopy.title}</h1>
+          <p>{pageCopy.description}</p>
         </div>
       </header>
       <div className="subtabs">

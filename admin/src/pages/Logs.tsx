@@ -1,10 +1,19 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { fetchLogs } from "../api";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { AlertIcon, ChevronIcon, ClockIcon } from "../icons";
 import type { LogEntry } from "../types";
 
-const LEVELS = ["", "debug", "info", "warn", "error", "fatal"] as const;
+/** Radix Select reserves "" — use an explicit sentinel for "no level filter". */
+const ALL_LEVELS = "all";
+const LEVELS = ["debug", "info", "warn", "error", "fatal"] as const;
 
 const levelTone = (level: LogEntry["level"]) =>
   level === "error" || level === "fatal" ? "red" : level === "warn" ? "amber" : "muted";
@@ -61,16 +70,24 @@ export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) 
         </div>
       </header>
       <section className="panel log-filters">
-        <select
-          value={filters.level}
-          onChange={(event) => setFilters({ ...filters, level: event.target.value })}
+        <Select
+          value={filters.level || ALL_LEVELS}
+          onValueChange={(value) =>
+            setFilters({ ...filters, level: value === ALL_LEVELS ? "" : value })
+          }
         >
-          {LEVELS.map((level) => (
-            <option key={level} value={level}>
-              {level === "" ? "All levels" : level}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger className="w-[150px]" aria-label="Filter by level">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_LEVELS}>All levels</SelectItem>
+            {LEVELS.map((level) => (
+              <SelectItem key={level} value={level}>
+                {level}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <input
           placeholder="Campaign id"
           value={filters.campaign_id}

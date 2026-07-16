@@ -51,6 +51,18 @@
   --radius-xl: 16px;
 }
 
+/*
+ * Tailwind v4's `border` utility only sets border-width; border-color falls back
+ * to currentColor. shadcn's components rely on this base rule to pick up the
+ * theme border instead. Kept in @layer base so the app's own (unlayered) rules
+ * still win, and any explicit border-color beats a `*` selector anyway.
+ */
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+}
+
 :root {
   color-scheme: light dark;
   --bg: light-dark(#ffffff, #212121);
@@ -176,7 +188,7 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .footer-action span { text-transform: capitalize; }
 
 .main { min-width: 0; }
-.main-inner { max-width: 980px; margin: 0 auto; padding: 24px 36px 56px; }
+.main-inner { max-width: 1180px; margin: 0 auto; padding: 24px 36px 56px; }
 .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 34px; margin-bottom: 20px; }
 .environment { display: flex; align-items: center; gap: 8px; color: var(--muted); font: 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
 .refresh-button {
@@ -348,7 +360,8 @@ td { overflow-wrap: anywhere; }
 
 /* --- Variables editor + Logs viewer (stateful dispatcher) --- */
 .head-actions { display: flex; gap: 10px; align-items: center; }
-.head-actions button, .editor-actions button { padding: 8px 14px; border: 0; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-ink); font-weight: 600; cursor: pointer; white-space: nowrap; }
+.head-actions button, .editor-actions button { min-height: 38px; padding: 8px 14px; border: 0; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-ink); font-weight: 600; cursor: pointer; white-space: nowrap; }
+.head-actions button:disabled, .editor-actions button:disabled { opacity: .42; cursor: not-allowed; }
 button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); font-weight: 500; padding: 5px 10px; border-radius: var(--radius-xs); font-size: 12px; cursor: pointer; white-space: nowrap; }
 button.ghost:hover { border-color: var(--accent-ring); color: var(--text); background: var(--hover); }
 button.danger { background: transparent; color: var(--red); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); padding: 5px 10px; border-radius: var(--radius-xs); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
@@ -401,10 +414,10 @@ td.actions-cell { text-align: right; white-space: nowrap; }
 .stack-trace { font: 12px/1.6 var(--mono); background: light-dark(#f7f7f7, #141414); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
 
 /* --- Settings: sub-tabs, invitations, account --- */
-.subtabs { display: flex; flex-direction: row; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
-.subtab { padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 13.5px; font-weight: 500; cursor: pointer; margin-bottom: -1px; }
-.subtab:hover { color: var(--text); }
-.subtab.active { color: var(--text); font-weight: 650; border-bottom-color: var(--accent); }
+.subtabs { width: fit-content; max-width: 100%; display: flex; flex-direction: row; gap: 3px; margin-bottom: 24px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised); overflow-x: auto; }
+.subtab { min-height: 34px; padding: 7px 13px; border: 1px solid transparent; border-radius: var(--radius-xs); background: transparent; color: var(--muted); font-size: 13px; font-weight: 550; cursor: pointer; white-space: nowrap; }
+.subtab:hover { color: var(--text); background: var(--hover); }
+.subtab.active { color: var(--text); background: var(--surface); border-color: var(--border); box-shadow: 0 1px 2px rgb(0 0 0 / 8%); font-weight: 650; }
 .you-tag { color: var(--muted); font-size: 12px; }
 .muted-dash { color: var(--faint); }
 .invite-form { margin-bottom: 18px; display: flex; flex-direction: column; gap: 12px; }
@@ -422,6 +435,59 @@ button.ghost svg { width: 13px; vertical-align: -2px; margin-right: 3px; }
 .stacked-form input { padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); outline: none; font-size: 13px; }
 .stacked-form button[type="submit"] { align-self: flex-start; }
 .account-panel .compact-list dt { color: var(--muted); font-size: 12px; }
+
+/* --- Settings: observability --- */
+.observability-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .85fr); gap: 16px; align-items: start; }
+.observability-layout > .error-state { grid-column: 1 / -1; min-height: auto; padding: 18px; }
+.observability-panel { min-width: 0; padding: 22px; }
+.observability-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--border-soft); }
+.settings-panel-copy { min-width: 0; }
+.observability-panel .panel-title { font-size: 14px; }
+.observability-panel .panel-title svg { color: var(--text); }
+.observability-panel .panel-description { max-width: 54ch; margin: 5px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.observability-panel .panel-description code { color: var(--text); }
+.webhook-toggle { display: inline-flex; align-items: center; gap: 9px; padding: 7px 9px 7px 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--raised); color: var(--muted); font-size: 11.5px; font-weight: 650; cursor: pointer; }
+.webhook-toggle:has([data-state="checked"]) { color: var(--green); background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 28%, var(--border)); }
+.observability-panel .stacked-form { gap: 16px; margin-top: 18px; }
+.observability-panel .stacked-form label { position: relative; gap: 7px; color: var(--text); font-size: 12.5px; }
+.observability-panel .stacked-form input { min-height: 42px; padding: 10px 12px; background: color-mix(in srgb, var(--bg) 72%, var(--surface)); }
+.observability-panel .stacked-form input::placeholder { color: var(--faint); opacity: 1; }
+.observability-panel .stacked-form input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--red) 65%, var(--border)); box-shadow: 0 0 0 3px var(--red-soft); }
+.observability-panel [data-slot="select-trigger"] { min-height: 42px; background: color-mix(in srgb, var(--bg) 72%, var(--surface)); }
+.optional-label { position: absolute; right: 0; top: 1px; color: var(--muted); font-size: 10.5px; font-weight: 500; }
+.field-message, .action-help { margin: 0; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.45; }
+.field-message.error { color: var(--red); }
+.field-message code { color: var(--text); font-size: 10.5px; }
+.observability-panel .editor-actions { align-items: center; flex-wrap: wrap; padding-top: 2px; }
+.observability-panel .editor-actions button.ghost:disabled { border-color: var(--border-soft); background: transparent; color: var(--faint); }
+
+.token-heading { padding-bottom: 16px; }
+.token-status { display: inline-flex; align-items: center; gap: 7px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--raised); color: var(--muted); font: 600 10px var(--mono); white-space: nowrap; }
+.token-status .dot { width: 6px; height: 6px; background: var(--faint); }
+.token-status.configured { color: var(--green); background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 26%, var(--border)); }
+.token-status.configured .dot { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+.token-empty-state { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 28px 20px 20px; text-align: center; }
+.token-empty-state > svg { width: 26px; height: 26px; margin-bottom: 12px; padding: 5px; border-radius: 8px; background: var(--raised); color: var(--muted); }
+.token-empty-state strong { font-size: 13px; }
+.token-empty-state p { max-width: 36ch; margin: 6px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.55; }
+.token-empty-state span { margin-top: 10px; color: var(--faint); font: 10px var(--mono); }
+.token-actions { min-height: 38px; padding-top: 14px !important; border-top: 1px solid var(--border-soft); }
+.token-actions .action-help { flex: 1; min-width: 180px; }
+.token-reveal { display: flex; flex-direction: column; gap: 10px; padding: 16px 0 18px; }
+.token-reveal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.token-reveal-head span { display: inline-flex; align-items: center; gap: 7px; color: var(--green); font-size: 12.5px; font-weight: 650; }
+.token-reveal-head svg { width: 15px; }
+.token-reveal-head strong { padding: 3px 7px; border-radius: 999px; background: var(--amber-soft); color: var(--amber); font: 650 9.5px var(--mono); text-transform: uppercase; letter-spacing: .04em; }
+.token-reveal > p { margin: 0; color: var(--muted); font-size: 11.5px; }
+.copy-field { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 11px; border: 1px solid color-mix(in srgb, var(--green) 26%, var(--border)); border-radius: var(--radius-sm); background: var(--green-soft); }
+.copy-field code { flex: 1; min-width: 0; overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.code-block-wrap { position: relative; }
+.code-block-wrap .stack-trace { min-height: 92px; padding: 13px 13px 42px; color: var(--muted); font-size: 10.5px; }
+.code-copy { position: absolute; right: 8px; bottom: 8px; background: var(--surface) !important; }
+
+@media (max-width: 980px) {
+  .observability-layout { grid-template-columns: 1fr; }
+}
 
 /* --- Configuration: channel tabs + provider accordion --- */
 .providers-block { margin-bottom: 8px; }
@@ -462,7 +528,9 @@ button.ghost svg { width: 13px; vertical-align: -2px; margin-right: 3px; }
 /* --- API variable: REST-client style request builder --- */
 .api-client { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 14px; background: light-dark(#fbfbfb, #1c1c1c); }
 .req-bar { display: flex; gap: 0; align-items: stretch; }
-.req-method { flex: none; width: 92px; padding: 9px 10px; border: 1px solid var(--border); border-right: 0; border-radius: var(--radius-sm) 0 0 var(--radius-sm); background: var(--raised); color: var(--text); font: 600 12.5px var(--mono); outline: none; cursor: pointer; }
+/* shadcn SelectTrigger, kept flush against the URL field in the request bar. */
+.req-method { flex: none; width: 96px; height: auto; padding: 9px 10px; border: 1px solid var(--border); border-right: 0; border-radius: var(--radius-sm) 0 0 var(--radius-sm); background: var(--raised); color: var(--text); font: 600 12.5px var(--mono); cursor: pointer; }
+.req-method:focus-visible { outline: none; box-shadow: none; }
 .req-url { flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--border); border-radius: 0; background: var(--bg); color: var(--text); font: 13px var(--mono); outline: none; }
 .req-url:focus { border-color: var(--faint); }
 .req-send { flex: none; padding: 9px 20px; border: 0; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--accent); color: var(--accent-ink); font-weight: 650; font-size: 13px; cursor: pointer; }
