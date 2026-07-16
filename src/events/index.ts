@@ -29,6 +29,7 @@ import { forwardGupshupReceipts } from "./gupshup/receipt-forwarder.js";
 import { isDbInitialized } from "../db/client.js";
 import { deliverDueBatch, enqueueEvents } from "./outbox.js";
 import { componentLogger } from "../logging/logger.js";
+import { persistCampaignEvents } from "./persist.js";
 import { logPreferenceSideEffectSimulation } from "./preference-side-effect-log.js";
 import { resolveAnalyticsCallbackUrl } from "./resolve-analytics-callback-url.js";
 import { scrubPii } from "./scrubber.js";
@@ -157,6 +158,9 @@ export function shutdownEventPipeline(): void {
 export async function emitEvent(envelope: EventEnvelope): Promise<void> {
   const cfg = getRuntimeConfig();
   ensureIdempotency(envelope.event);
+  // Console store first: dispatch-side events are recorded even when the
+  // callback URL is empty and forwarding later fails validation.
+  await persistCampaignEvents([envelope.event]);
   if (isEventDebug()) {
     const ev = envelope.event;
     log.info(
@@ -255,12 +259,13 @@ export function createInboundWebhookHandler(
       return;
     }
     const envelopes: EventEnvelope[] = [];
+    const standardized: StandardizedEvent[] = [];
     const gupshupReceipts: GupshupReceipt[] = [];
     const cfg = getRuntimeConfig();
     let sendgridUncorrelated = 0;
     let sendgridUncorrelatedSample: unknown = null;
     let skippedInboundWire = 0;
-    let droppedNoCallbackUrl = 0;
+    let persistedNotForwarded = 0;
     let droppedUnsupported = 0;
     let droppedOtherNoCorrelation = 0;
     let droppedUnsignedReceipts = 0;
@@ -308,20 +313,10 @@ export function createInboundWebhookHandler(
         }
         continue;
       }
-      const url = resolveAnalyticsCallbackUrl({
-        campaignId: c.campaign_id,
-        correlationCallbackUrl: c.analytics_callback_url,
-      });
-      if (!url) {
-        droppedNoCallbackUrl++;
-        log.warn(
-          `[Events][${adapter.name}] Dropping event — no analytics_callback_url, no campaign registry entry, and no valid SCALEMARGIN_ANALYTICS_CALLBACK_URL for ${c.campaign_id}`
-        );
-        continue;
-      }
-      const fullC = { ...c, analytics_callback_url: url };
+      // Standardize + persist BEFORE the callback-URL gate: the console
+      // records every correlated event; only *forwarding* needs a URL.
       const stripped = adapter.stripPii(item);
-      const std = adapter.toStandardEvent(stripped, fullC);
+      const std = adapter.toStandardEvent(stripped, c);
       if (!std) {
         droppedUnsupported++;
         if (adapter.name === "gupshup") {
@@ -342,7 +337,24 @@ export function createInboundWebhookHandler(
         std.metadata = scrubPii(std.metadata) as StandardizedEvent["metadata"];
       }
       logPreferenceSideEffectSimulation(std);
+      standardized.push(std);
+      const url = resolveAnalyticsCallbackUrl({
+        campaignId: c.campaign_id,
+        correlationCallbackUrl: c.analytics_callback_url,
+      });
+      if (!url) {
+        persistedNotForwarded++;
+        log.warn(
+          `[Events][${adapter.name}] Not forwarding event — no analytics_callback_url, no campaign registry entry, and no valid SCALEMARGIN_ANALYTICS_CALLBACK_URL for ${c.campaign_id}; recorded in the console only`
+        );
+        continue;
+      }
+      std.analytics_callback_url = url;
       envelopes.push({ callbackUrl: url, event: std });
+    }
+
+    if (standardized.length > 0) {
+      await persistCampaignEvents(standardized);
     }
 
     const sampleWireEvent =
@@ -353,15 +365,16 @@ export function createInboundWebhookHandler(
         ? String((sendgridUncorrelatedSample as { event?: unknown }).event ?? "")
         : "";
     log.info(
-      `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} forwarded=${envelopes.length} receipts=${gupshupReceipts.length} dropped_sg_no_correlation=${sendgridUncorrelated} dropped_no_callback_url=${droppedNoCallbackUrl} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation} dropped_unsigned_receipts=${droppedUnsignedReceipts}`
+      `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} persisted=${standardized.length} forwarded=${envelopes.length} receipts=${gupshupReceipts.length} dropped_sg_no_correlation=${sendgridUncorrelated} persisted_not_forwarded=${persistedNotForwarded} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation} dropped_unsigned_receipts=${droppedUnsignedReceipts}`
     );
     telemetry.capture("dispatcher_provider_webhook_received", {
       provider: adapter.name,
       raw_count: items.length,
+      persisted_count: standardized.length,
       forwarded_count: envelopes.length,
       receipt_count: gupshupReceipts.length,
       filtered_wire_count: skippedInboundWire,
-      dropped_no_callback_url_count: droppedNoCallbackUrl,
+      persisted_not_forwarded_count: persistedNotForwarded,
       dropped_unsupported_count: droppedUnsupported,
       dropped_no_correlation_count:
         sendgridUncorrelated + droppedOtherNoCorrelation,

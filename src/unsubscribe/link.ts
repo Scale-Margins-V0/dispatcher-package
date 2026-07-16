@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { RequestHandler } from "express";
 import { buildPayloadForGroup, postAnalyticsWithRetry } from "../events/forwarder.js";
+import { persistCampaignEvents } from "../events/persist.js";
 import { logPreferenceSideEffectSimulation } from "../events/preference-side-effect-log.js";
 import { scrubPii } from "../events/scrubber.js";
 import type { StandardizedEvent } from "../events/common/types.js";
@@ -58,11 +59,13 @@ export function createUnsubscribeLinkGetHandler(): RequestHandler {
       .digest("hex")
       .slice(0, 40);
 
-    if (canProxy && analyticsUrl) {
+    // Built (and persisted for the console) whenever the link carries
+    // correlation; forwarding additionally needs the analytics URL + secret.
+    if (campaign_id && organization_id) {
       const std: StandardizedEvent = {
-        campaign_id: campaign_id!,
+        campaign_id,
         user_id: uid,
-        organization_id: organization_id!,
+        organization_id,
         channel: "email",
         event: "unsubscribed",
         provider: "link_click",
@@ -71,14 +74,17 @@ export function createUnsubscribeLinkGetHandler(): RequestHandler {
         metadata: scrubPii({ source: "unsubscribe_link_click" }) as StandardizedEvent["metadata"],
       };
       logPreferenceSideEffectSimulation(std);
-      const payload = buildPayloadForGroup({
-        campaign_id: std.campaign_id,
-        organization_id: std.organization_id,
-        events: [std],
-      });
-      const r = await postAnalyticsWithRetry(analyticsUrl, payload, secret);
-      if (!r.success) {
-        logUnlessVitest(`[UnsubscribeLink] Analytics POST failed: ${r.error ?? "unknown"}`);
+      await persistCampaignEvents([std]);
+      if (canProxy && analyticsUrl) {
+        const payload = buildPayloadForGroup({
+          campaign_id: std.campaign_id,
+          organization_id: std.organization_id,
+          events: [std],
+        });
+        const r = await postAnalyticsWithRetry(analyticsUrl, payload, secret);
+        if (!r.success) {
+          logUnlessVitest(`[UnsubscribeLink] Analytics POST failed: ${r.error ?? "unknown"}`);
+        }
       }
     }
 

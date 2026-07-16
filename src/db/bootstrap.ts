@@ -8,6 +8,7 @@ import { seedDefaultAdmin } from "../auth/seed.js";
 import { refreshLogWebhookConfig } from "../logging/webhook-config.js";
 import { warmCampaignCallbackCache } from "../events/campaign-callback-registry.js";
 import { importYamlPlaceholdersOnce } from "../variables/import-yaml.js";
+import { backfillCampaignEventsOnce } from "./campaign-events-backfill.js";
 import { createDispatcherDb, isDbInitialized, getDb, setDbSingleton, type DispatcherDb } from "./client.js";
 import { runDispatcherMigrations } from "./migrate.js";
 import { startRetentionJob } from "./retention.js";
@@ -20,6 +21,7 @@ export async function initDispatcherDb(): Promise<DispatcherDb> {
   initAuth();
   await seedDefaultAdmin();
   await importYamlPlaceholdersOnce();
+  await backfillCampaignEventsOnce();
   await warmCampaignCallbackCache();
   await refreshLogWebhookConfig();
   startRetentionJob();

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { RequestHandler } from "express";
 import { buildPayloadForGroup, postAnalyticsWithRetry } from "../events/forwarder.js";
+import { persistCampaignEvents } from "../events/persist.js";
 import { logPreferenceSideEffectSimulation } from "../events/preference-side-effect-log.js";
 import { scrubPii } from "../events/scrubber.js";
 import type { StandardizedEvent } from "../events/common/types.js";
@@ -239,7 +240,9 @@ export function createPreferencesPostHandler(): RequestHandler {
     }
 
     let forwarded = false;
-    if (canProxy && analyticsUrl && campaignId && organizationId) {
+    // Events exist whenever the form carries correlation; forwarding
+    // additionally needs the analytics URL + secret (canProxy).
+    if (campaignId && organizationId) {
       const occurredAt = new Date().toISOString();
       // "Unsubscribe from all" is always an explicit campaignType="all" scope —
       // never left for the backend to infer from the campaign's own type.
@@ -265,16 +268,19 @@ export function createPreferencesPostHandler(): RequestHandler {
       for (const event of events) {
         logPreferenceSideEffectSimulation(event);
       }
-      const payload = buildPayloadForGroup({
-        campaign_id: campaignId,
-        organization_id: organizationId,
-        events,
-      });
-      const r = await postAnalyticsWithRetry(analyticsUrl, payload, secret);
-      if (!r.success) {
-        logUnlessVitest(`[PreferencesLink] Analytics POST failed: ${r.error ?? "unknown"}`);
+      await persistCampaignEvents(events);
+      if (canProxy && analyticsUrl) {
+        const payload = buildPayloadForGroup({
+          campaign_id: campaignId,
+          organization_id: organizationId,
+          events,
+        });
+        const r = await postAnalyticsWithRetry(analyticsUrl, payload, secret);
+        if (!r.success) {
+          logUnlessVitest(`[PreferencesLink] Analytics POST failed: ${r.error ?? "unknown"}`);
+        }
+        forwarded = true;
       }
-      forwarded = true;
     }
 
     if (redirect) {
