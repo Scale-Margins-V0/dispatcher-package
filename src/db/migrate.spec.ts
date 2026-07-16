@@ -28,6 +28,7 @@ describe("runDispatcherMigrations (sqlite)", () => {
       "dispatch_recipient_failures",
       "webhook_activity",
       "campaign_callbacks",
+      "campaign_events",
       "event_outbox",
       "app_logs",
       "dev_sent_campaigns",

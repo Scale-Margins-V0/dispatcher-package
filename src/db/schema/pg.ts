@@ -12,6 +12,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
 } from "drizzle-orm/pg-core";
 
@@ -123,6 +124,30 @@ export const eventOutbox = pgTable(
   (t) => [
     index("event_outbox_due_idx").on(t.status, t.next_attempt_at),
     index("event_outbox_idempotency_idx").on(t.idempotency_key),
+  ]
+);
+
+export const campaignEvents = pgTable(
+  "campaign_events",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    campaign_id: id191("campaign_id").notNull(),
+    organization_id: id191("organization_id").notNull(),
+    user_id: id191("user_id").notNull(),
+    channel: varchar("channel", { length: 16 }).notNull(),
+    event: varchar("event", { length: 24 }).notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    provider_message_id: id191("provider_message_id"),
+    occurred_at: ts("occurred_at").notNull(),
+    received_at: ts("received_at").notNull(),
+    metadata: jsonb("metadata"),
+    dedupe_key: varchar("dedupe_key", { length: 64 }).notNull(),
+  },
+  (t) => [
+    index("campaign_events_campaign_occurred_idx").on(t.campaign_id, t.occurred_at),
+    index("campaign_events_campaign_user_idx").on(t.campaign_id, t.user_id),
+    index("campaign_events_occurred_at_idx").on(t.occurred_at),
+    uniqueIndex("campaign_events_dedupe_uq").on(t.dedupe_key),
   ]
 );
 

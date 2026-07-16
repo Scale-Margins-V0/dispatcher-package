@@ -4,7 +4,7 @@
  * run `pnpm db:generate` to regenerate all three migration folders.
  */
 
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 const ts = (name: string) => integer(name, { mode: "timestamp_ms" });
 const bool = (name: string) => integer(name, { mode: "boolean" });
@@ -115,6 +115,30 @@ export const eventOutbox = sqliteTable(
   (t) => [
     index("event_outbox_due_idx").on(t.status, t.next_attempt_at),
     index("event_outbox_idempotency_idx").on(t.idempotency_key),
+  ]
+);
+
+export const campaignEvents = sqliteTable(
+  "campaign_events",
+  {
+    id: text("id").primaryKey(),
+    campaign_id: text("campaign_id").notNull(),
+    organization_id: text("organization_id").notNull(),
+    user_id: text("user_id").notNull(),
+    channel: text("channel").notNull(),
+    event: text("event").notNull(),
+    provider: text("provider").notNull(),
+    provider_message_id: text("provider_message_id"),
+    occurred_at: ts("occurred_at").notNull(),
+    received_at: ts("received_at").notNull(),
+    metadata: json("metadata"),
+    dedupe_key: text("dedupe_key").notNull(),
+  },
+  (t) => [
+    index("campaign_events_campaign_occurred_idx").on(t.campaign_id, t.occurred_at),
+    index("campaign_events_campaign_user_idx").on(t.campaign_id, t.user_id),
+    index("campaign_events_occurred_at_idx").on(t.occurred_at),
+    uniqueIndex("campaign_events_dedupe_uq").on(t.dedupe_key),
   ]
 );
 

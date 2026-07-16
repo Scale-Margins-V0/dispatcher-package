@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, lte, or, sql } from "drizzle-orm";
 import { getDb } from "../client.js";
 import { queryDb, tableFor } from "../dialect-helpers.js";
 import type { OutboxRow } from "../schema/index.js";
@@ -101,6 +101,56 @@ export async function countOutboxByStatus(): Promise<Record<string, number>> {
   const rows: Array<{ status: string; n: unknown }> = await queryDb(dbx)
     .select({ status: table.status, n: sql`count(*)` })
     .from(table)
+    .groupBy(table.status);
+  return Object.fromEntries(rows.map((row) => [row.status, Number(row.n ?? 0)]));
+}
+
+export type OutboxPage = { rows: OutboxRow[]; next_cursor: { ts: Date; id: string } | null };
+
+/** Forwarding attempts for one campaign, newest first (campaign Forwarding tab). */
+export async function listOutboxByCampaign(options: {
+  campaign_id: string;
+  status?: string;
+  cursor?: { ts: Date; id: string };
+  limit: number;
+}): Promise<OutboxPage> {
+  const dbx = getDb();
+  const table = tableFor(dbx, "eventOutbox");
+  const conditions: unknown[] = [eq(table.campaign_id, options.campaign_id)];
+  if (options.status) conditions.push(eq(table.status, options.status));
+  if (options.cursor) {
+    conditions.push(
+      or(
+        lt(table.created_at, options.cursor.ts),
+        and(eq(table.created_at, options.cursor.ts), lt(table.id, options.cursor.id))
+      )
+    );
+  }
+  const raw: Record<string, unknown>[] = await queryDb(dbx)
+    .select()
+    .from(table)
+    .where(and(...(conditions as never[])))
+    .orderBy(desc(table.created_at), desc(table.id))
+    .limit(options.limit + 1);
+  const rows = raw as unknown as OutboxRow[];
+  const hasMore = rows.length > options.limit;
+  const page = hasMore ? rows.slice(0, options.limit) : rows;
+  const last = page[page.length - 1];
+  return {
+    rows: page,
+    next_cursor: hasMore && last ? { ts: last.created_at, id: last.id } : null,
+  };
+}
+
+export async function countOutboxByStatusForCampaign(
+  campaign_id: string
+): Promise<Record<string, number>> {
+  const dbx = getDb();
+  const table = tableFor(dbx, "eventOutbox");
+  const rows: Array<{ status: string; n: unknown }> = await queryDb(dbx)
+    .select({ status: table.status, n: sql`count(*)` })
+    .from(table)
+    .where(eq(table.campaign_id, campaign_id))
     .groupBy(table.status);
   return Object.fromEntries(rows.map((row) => [row.status, Number(row.n ?? 0)]));
 }

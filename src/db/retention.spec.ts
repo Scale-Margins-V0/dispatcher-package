@@ -19,6 +19,8 @@ afterEach(() => {
   destroyTestDb(dbx);
   delete process.env.DISPATCHER_LOG_RETENTION_DAYS;
   delete process.env.DISPATCHER_LOG_MAX_ROWS;
+  delete process.env.DISPATCHER_CAMPAIGN_EVENTS_RETENTION_DAYS;
+  delete process.env.DISPATCHER_CAMPAIGN_EVENTS_MAX_ROWS;
 });
 
 const logRow = (ts: Date, id: string) => ({
@@ -50,6 +52,36 @@ describe("runRetentionSweep", () => {
     await runRetentionSweep(now);
     const page = await queryLogs({ limit: 10 });
     expect(page.logs.map((l) => l.id)).toEqual(["row-0", "row-1", "row-2"]);
+  });
+
+  it("deletes campaign_events past the window and enforces the row cap", async () => {
+    const { insertCampaignEvents, listCampaignEvents } = await import(
+      "./repos/campaign-events.js"
+    );
+    process.env.DISPATCHER_CAMPAIGN_EVENTS_MAX_ROWS = "2";
+    const mkEvent = (id: string, occurred: Date) => ({
+      id,
+      campaign_id: "c1",
+      organization_id: "o1",
+      user_id: `u-${id}`,
+      channel: "email",
+      event: "dispatched",
+      provider: "ses",
+      provider_message_id: null,
+      occurred_at: occurred,
+      received_at: occurred,
+      metadata: null,
+      dedupe_key: id,
+    });
+    await insertCampaignEvents([
+      mkEvent("ancient", daysAgo(100)), // beyond 90d window
+      mkEvent("old", daysAgo(5)),
+      mkEvent("mid", daysAgo(2)),
+      mkEvent("fresh", daysAgo(1)),
+    ]);
+    await runRetentionSweep(now);
+    const page = await listCampaignEvents({ campaign_id: "c1", limit: 10 });
+    expect(page.events.map((e) => e.id)).toEqual(["fresh", "mid"]);
   });
 
   it("prunes delivered/failed outbox rows and stale callbacks by their windows", async () => {
