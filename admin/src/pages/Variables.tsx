@@ -15,6 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { AlertIcon, CheckIcon, SlidersIcon } from "../icons";
 import type {
   AdminVariable,
@@ -599,13 +601,14 @@ function Editor({
             placeholder="there"
           />
         </label>
-        <label className="check-label">
-          <input
-            type="checkbox"
+        <label className="webhook-toggle" htmlFor="variable-enabled">
+          <span>{state.enabled ? "Enabled" : "Disabled"}</span>
+          <Switch
+            id="variable-enabled"
             checked={state.enabled}
-            onChange={(event) => onChange({ ...state, enabled: event.target.checked })}
+            onCheckedChange={(enabled) => onChange({ ...state, enabled })}
+            aria-label="Enable variable"
           />
-          Enabled
         </label>
 
         {error && (
@@ -670,7 +673,6 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
   const [variables, setVariables] = useState<AdminVariable[] | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [error, setError] = useState("");
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError("");
@@ -703,7 +705,6 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
   const remove = async (name: string) => {
     try {
       await deleteVariable(name);
-      setPendingDelete(null);
       toast.success(`Variable {{${name}}} deleted`);
       await load();
     } catch (reason) {
@@ -801,20 +802,22 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
                       <button type="button" className="ghost" onClick={() => setEditor(editorFromVariable(variable))}>
                         Edit
                       </button>
-                      {pendingDelete === variable.name ? (
-                        <>
-                          <button type="button" className="danger" onClick={() => void remove(variable.name)}>
-                            Confirm
+                      <ConfirmDialog
+                        trigger={
+                          <button type="button" className="ghost">
+                            Delete
                           </button>
-                          <button type="button" className="ghost" onClick={() => setPendingDelete(null)}>
-                            Keep
-                          </button>
-                        </>
-                      ) : (
-                        <button type="button" className="ghost" onClick={() => setPendingDelete(variable.name)}>
-                          Delete
-                        </button>
-                      )}
+                        }
+                        title={`Delete ${variable.name}?`}
+                        description={
+                          <>
+                            Campaigns still referencing <code>{`{{${variable.name}}}`}</code> will fall
+                            back to their literal placeholder text. This cannot be undone.
+                          </>
+                        }
+                        confirmLabel="Delete variable"
+                        onConfirm={() => remove(variable.name)}
+                      />
                     </td>
                   </tr>
                 );

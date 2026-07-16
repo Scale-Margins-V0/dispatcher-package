@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { ActivityIcon, AlertIcon, CheckIcon, CopyIcon, ShieldIcon, UsersIcon } from "../icons";
 import type {
   LogLevelName,
@@ -77,7 +78,6 @@ function ErrorNote({ message }: { message: string }) {
 function Members({ me }: { me: SessionUser | null }) {
   const [members, setMembers] = useState<OrgMember[]>([]);
   const [error, setError] = useState("");
-  const [pendingRemove, setPendingRemove] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError("");
@@ -105,7 +105,6 @@ function Members({ me }: { me: SessionUser | null }) {
   const remove = async (email: string) => {
     try {
       await removeMember(email);
-      setPendingRemove(null);
       toast.success(`${email} removed from the organization`);
       await load();
     } catch (reason) {
@@ -158,20 +157,22 @@ function Members({ me }: { me: SessionUser | null }) {
                   </td>
                   <td className="actions-cell">
                     {m.role !== "owner" && !isMe ? (
-                      pendingRemove === m.user.email ? (
-                        <>
-                          <button type="button" className="danger" onClick={() => void remove(m.user.email)}>
-                            Confirm
+                      <ConfirmDialog
+                        trigger={
+                          <button type="button" className="ghost">
+                            Remove
                           </button>
-                          <button type="button" className="ghost" onClick={() => setPendingRemove(null)}>
-                            Keep
-                          </button>
-                        </>
-                      ) : (
-                        <button type="button" className="ghost" onClick={() => setPendingRemove(m.user.email)}>
-                          Remove
-                        </button>
-                      )
+                        }
+                        title={`Remove ${m.user.name}?`}
+                        description={
+                          <>
+                            <strong>{m.user.email}</strong> will immediately lose access to this
+                            dispatcher. You can invite them again later.
+                          </>
+                        }
+                        confirmLabel="Remove member"
+                        onConfirm={() => remove(m.user.email)}
+                      />
                     ) : (
                       <span className="muted-dash">—</span>
                     )}
@@ -314,9 +315,22 @@ function Invitations() {
                     </button>
                   </td>
                   <td className="actions-cell">
-                    <button type="button" className="ghost" onClick={() => void cancel(i.id)}>
-                      Cancel
-                    </button>
+                    <ConfirmDialog
+                      trigger={
+                        <button type="button" className="ghost">
+                          Cancel
+                        </button>
+                      }
+                      title="Cancel this invitation?"
+                      description={
+                        <>
+                          The link sent to <strong>{i.email}</strong> will stop working. You can send
+                          a fresh invitation at any time.
+                        </>
+                      }
+                      confirmLabel="Cancel invitation"
+                      onConfirm={() => cancel(i.id)}
+                    />
                   </td>
                 </tr>
               ))}
