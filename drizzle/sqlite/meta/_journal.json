@@ -36,6 +36,20 @@
       "when": 1784186895754,
       "tag": "0004_lean_frog_thor",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1784190811853,
+      "tag": "0005_optimal_zombie",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784193932158,
+      "tag": "0006_ambiguous_the_phantom",
+      "breakpoints": true
     }
   ]
 }

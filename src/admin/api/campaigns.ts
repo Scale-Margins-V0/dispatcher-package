@@ -26,6 +26,7 @@ import {
   listCampaignChannels,
   listCampaignEvents,
   listCampaignSummaries,
+  listProgramSteps,
   listRecipientRollup,
   listUserTimeline,
   type CampaignFunnel,
@@ -33,8 +34,8 @@ import {
   type RecipientStatus,
 } from "../../db/repos/campaign-events.js";
 import {
-  countOutboxByStatusForCampaign,
-  listOutboxByCampaign,
+  countOutboxByStatusForProgram,
+  listOutboxByProgram,
 } from "../../db/repos/outbox.js";
 import type { CampaignEventRow, OutboxRow, RecipientFailureRow } from "../../db/schema/index.js";
 import { redactDestination } from "../activity.js";
@@ -131,19 +132,20 @@ function serializeOutboxEntry(row: OutboxRow) {
 
 function serializeSummary(
   row: CampaignSummaryRow,
-  channels: Array<{ campaign_id: string; channel: string; provider: string }>,
+  channels: Array<{ program_id: string; channel: string; provider: string }>,
   funnels: Map<string, CampaignFunnel>,
   callbackIds: Set<string>
 ) {
-  const pairs = channels.filter((pair) => pair.campaign_id === row.campaign_id);
+  const pairs = channels.filter((pair) => pair.program_id === row.program_id);
   return {
     ...row,
     first_activity: row.first_activity.toISOString(),
     last_activity: row.last_activity.toISOString(),
+    /** A drip's steps each pick their own channel, so a program can be multi-channel. */
     channels: [...new Set(pairs.map((pair) => pair.channel))],
     providers: [...new Set(pairs.map((pair) => pair.provider))],
-    has_callback: callbackIds.has(row.campaign_id),
-    events: funnels.get(row.campaign_id) ?? null,
+    has_callback: callbackIds.has(row.program_id),
+    events: funnels.get(row.program_id) ?? null,
   };
 }
 
@@ -162,11 +164,11 @@ export const registerCampaignRoutes = (app: Express): void => {
         cursor: cursor
           ? (() => {
               const c = parseCursor(cursor);
-              return { ts: c.ts, campaign_id: c.rest };
+              return { ts: c.ts, program_id: c.rest };
             })()
           : undefined,
       });
-      const ids = page.campaigns.map((campaign) => campaign.campaign_id);
+      const ids = page.campaigns.map((campaign) => campaign.program_id);
       const [channels, funnels, callbackIds] = await Promise.all([
         listCampaignChannels(ids),
         getCampaignEventAggregates(ids),
@@ -178,7 +180,7 @@ export const registerCampaignRoutes = (app: Express): void => {
           serializeSummary(row, channels, funnels as never, callbackIds)
         ),
         next_cursor: page.next_cursor
-          ? cursorOf(page.next_cursor.ts, page.next_cursor.campaign_id)
+          ? cursorOf(page.next_cursor.ts, page.next_cursor.program_id)
           : null,
       });
     })
@@ -188,11 +190,12 @@ export const registerCampaignRoutes = (app: Express): void => {
     "/admin/api/campaigns/:id",
     asyncHandler(async (req: Request, res: Response) => {
       const id = String(req.params.id);
-      const [summary, funnel, callback, outbox] = await Promise.all([
+      const [summary, funnel, callback, outbox, steps] = await Promise.all([
         getCampaignRunSummary(id),
         getCampaignFunnel(id),
         getCampaignCallbackRow(id),
-        countOutboxByStatusForCampaign(id),
+        countOutboxByStatusForProgram(id),
+        listProgramSteps(id),
       ]);
       if (!summary && funnel.unique_recipients === 0 && !callback) {
         res.status(404).json({ error: "Campaign not found" });
@@ -204,7 +207,14 @@ export const registerCampaignRoutes = (app: Express): void => {
         : false;
       res.json({
         campaign: {
-          campaign_id: id,
+          program_id: id,
+          program_kind: summary?.program_kind ?? (id.startsWith("drip_") ? "drip" : "campaign"),
+          steps: steps.map((step) => ({
+            ...step,
+            first_activity: step.first_activity.toISOString(),
+            last_activity: step.last_activity.toISOString(),
+          })),
+          sends: summary?.sends ?? 0,
           organization_id: summary?.organization_id ?? callback?.organization_id ?? null,
           channels: [...new Set(pairs.map((pair) => pair.channel))],
           providers: [...new Set(pairs.map((pair) => pair.provider))],
@@ -243,7 +253,7 @@ export const registerCampaignRoutes = (app: Express): void => {
       const { cursor, status, ...rest } = parsed.data;
       const [page, statusCounts] = await Promise.all([
         listRecipientRollup({
-          campaign_id: id,
+          program_id: id,
           status: status as RecipientStatus | undefined,
           ...rest,
           cursor: cursor
@@ -303,7 +313,7 @@ export const registerCampaignRoutes = (app: Express): void => {
       }
       if (failures.length > 0) flags.failed = true;
       res.json({
-        campaign_id: id,
+        program_id: id,
         user_id: userId,
         status: deriveRecipientStatus(flags),
         events: events.map(serializeEvent),
@@ -322,7 +332,7 @@ export const registerCampaignRoutes = (app: Express): void => {
       }
       const { cursor, ...rest } = parsed.data;
       const page = await listCampaignEvents({
-        campaign_id: String(req.params.id),
+        program_id: String(req.params.id),
         ...rest,
         cursor: cursor
           ? (() => {
@@ -351,7 +361,7 @@ export const registerCampaignRoutes = (app: Express): void => {
       }
       const { cursor, limit } = parsed.data;
       const page = await listDispatchRuns({
-        campaign_id: String(req.params.id),
+        program_id: String(req.params.id),
         limit,
         cursor: cursor
           ? (() => {
@@ -381,8 +391,8 @@ export const registerCampaignRoutes = (app: Express): void => {
       const id = String(req.params.id);
       const { cursor, ...rest } = parsed.data;
       const [page, statusCounts] = await Promise.all([
-        listOutboxByCampaign({
-          campaign_id: id,
+        listOutboxByProgram({
+          program_id: id,
           ...rest,
           cursor: cursor
             ? (() => {
@@ -391,7 +401,7 @@ export const registerCampaignRoutes = (app: Express): void => {
               })()
             : undefined,
         }),
-        countOutboxByStatusForCampaign(id),
+        countOutboxByStatusForProgram(id),
       ]);
       res.json({
         generated_at: new Date().toISOString(),

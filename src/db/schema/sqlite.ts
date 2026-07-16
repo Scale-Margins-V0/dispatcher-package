@@ -29,6 +29,10 @@ export const dispatchRuns = sqliteTable(
   {
     id: text("id").primaryKey(),
     campaign_id: text("campaign_id").notNull(),
+    /** Grouping key: drip_sequence_id for drip steps, else campaign_id. */
+    program_id: text("program_id").notNull().default(""),
+    program_kind: text("program_kind").notNull().default("campaign"),
+    step_id: text("step_id"),
     organization_id: text("organization_id"),
     channel: text("channel").notNull(),
     provider: text("provider").notNull(),
@@ -46,6 +50,7 @@ export const dispatchRuns = sqliteTable(
   (t) => [
     index("dispatch_runs_occurred_at_idx").on(t.occurred_at),
     index("dispatch_runs_campaign_id_idx").on(t.campaign_id),
+    index("dispatch_runs_program_idx").on(t.program_id, t.occurred_at),
   ]
 );
 
@@ -118,11 +123,40 @@ export const eventOutbox = sqliteTable(
   ]
 );
 
+/**
+ * Wire campaign_id → program mapping, written on every dispatch.
+ *
+ * ScaleMargin sends drip steps with campaign_id = `drip_{enrollmentId}_{stepId}`,
+ * which is unique per (sequence × lead × step) — so the wire id identifies a
+ * single SEND, not a campaign. The real grouping key (drip_sequence_id) only
+ * arrives in the dispatch metadata; inbound provider webhooks carry just the
+ * wire id. This table lets those inbound events resolve their program.
+ */
+export const dispatchPrograms = sqliteTable(
+  "dispatch_programs",
+  {
+    campaign_id: text("campaign_id").primaryKey(),
+    program_id: text("program_id").notNull(),
+    program_kind: text("program_kind").notNull().default("campaign"),
+    step_id: text("step_id"),
+    organization_id: text("organization_id").notNull(),
+    created_at: ts("created_at").notNull(),
+    last_seen_at: ts("last_seen_at").notNull(),
+  },
+  (t) => [index("dispatch_programs_program_idx").on(t.program_id)]
+);
+
 export const campaignEvents = sqliteTable(
   "campaign_events",
   {
     id: text("id").primaryKey(),
+    /** The wire id — one SEND (for drips: one recipient × one step). */
     campaign_id: text("campaign_id").notNull(),
+    /** The grouping key a human calls "the campaign": drip_sequence_id, else campaign_id. */
+    program_id: text("program_id").notNull().default(""),
+    program_kind: text("program_kind").notNull().default("campaign"),
+    /** Drip step this send belongs to; null for one-shot campaigns. */
+    step_id: text("step_id"),
     organization_id: text("organization_id").notNull(),
     user_id: text("user_id").notNull(),
     channel: text("channel").notNull(),
@@ -136,7 +170,8 @@ export const campaignEvents = sqliteTable(
   },
   (t) => [
     index("campaign_events_campaign_occurred_idx").on(t.campaign_id, t.occurred_at),
-    index("campaign_events_campaign_user_idx").on(t.campaign_id, t.user_id),
+    index("campaign_events_program_occurred_idx").on(t.program_id, t.occurred_at),
+    index("campaign_events_program_user_idx").on(t.program_id, t.user_id),
     index("campaign_events_occurred_at_idx").on(t.occurred_at),
     uniqueIndex("campaign_events_dedupe_uq").on(t.dedupe_key),
   ]
@@ -172,6 +207,22 @@ export const dispatcherMeta = sqliteTable("dispatcher_meta", {
   value: text("value").notNull(),
   updated_at: ts("updated_at").notNull(),
 });
+
+export const apiKeys = sqliteTable(
+  "api_keys",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull().unique(),
+    key_hash: text("key_hash").notNull().unique(),
+    key_ciphertext: text("key_ciphertext").notNull(),
+    key_prefix: text("key_prefix").notNull(),
+    created_at: ts("created_at").notNull(),
+    updated_at: ts("updated_at").notNull(),
+    last_used_at: ts("last_used_at"),
+    revoked_at: ts("revoked_at"),
+  },
+  (t) => [index("api_keys_active_idx").on(t.revoked_at), index("api_keys_hash_idx").on(t.key_hash)]
+);
 
 // ---------------------------------------------------------------------------
 // Better Auth tables (user/session/account/verification + organization plugin).

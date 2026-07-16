@@ -32,9 +32,14 @@ const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
 let seq = 0;
 const ev = (partial: Partial<CampaignEventRow>): CampaignEventRow => {
   seq += 1;
+  const campaign_id = partial.campaign_id ?? "cmp_1";
   return {
     id: `evt-${seq}`,
-    campaign_id: "cmp_1",
+    campaign_id,
+    // A one-shot campaign is its own program; tests opt into drips explicitly.
+    program_id: campaign_id,
+    program_kind: "campaign",
+    step_id: null,
     organization_id: "org_1",
     user_id: `user-${seq}`,
     channel: "email",
@@ -55,6 +60,9 @@ async function insertRun(row: Record<string, unknown>): Promise<void> {
     .values({
       id: crypto.randomUUID(),
       campaign_id: "cmp_1",
+      program_id: "cmp_1",
+      program_kind: "campaign",
+      step_id: null,
       organization_id: "org_1",
       channel: "email",
       provider: "ses",
@@ -80,7 +88,7 @@ describe("insertCampaignEvents", () => {
     const bulk = Array.from({ length: 250 }, () => ev({}));
     await insertCampaignEvents([first, dupe, ...bulk]);
 
-    const page = await listCampaignEvents({ campaign_id: "cmp_1", limit: 500 });
+    const page = await listCampaignEvents({ program_id: "cmp_1", limit: 500 });
     expect(page.events).toHaveLength(251);
     const u1 = page.events.filter((e) => e.user_id === "u1");
     expect(u1).toHaveLength(1);
@@ -91,7 +99,7 @@ describe("insertCampaignEvents", () => {
     const rows = [ev({}), ev({}), ev({})];
     await insertCampaignEvents(rows);
     await insertCampaignEvents(rows);
-    const page = await listCampaignEvents({ campaign_id: "cmp_1", limit: 10 });
+    const page = await listCampaignEvents({ program_id: "cmp_1", limit: 10 });
     expect(page.events).toHaveLength(3);
   });
 });
@@ -105,20 +113,20 @@ describe("listCampaignEvents / listUserTimeline", () => {
       ev({ user_id: "gamma", event: "bounced", occurred_at: at(4), provider_message_id: "m-3" }),
     ]);
 
-    const bounced = await listCampaignEvents({ campaign_id: "cmp_1", event: "bounced", limit: 10 });
+    const bounced = await listCampaignEvents({ program_id: "cmp_1", event: "bounced", limit: 10 });
     expect(bounced.events.map((e) => e.user_id)).toEqual(["gamma"]);
 
-    const alpha = await listCampaignEvents({ campaign_id: "cmp_1", user_id: "alpha", limit: 10 });
+    const alpha = await listCampaignEvents({ program_id: "cmp_1", user_id: "alpha", limit: 10 });
     expect(alpha.events).toHaveLength(2);
 
-    const byMsg = await listCampaignEvents({ campaign_id: "cmp_1", q: "m-2", limit: 10 });
+    const byMsg = await listCampaignEvents({ program_id: "cmp_1", q: "m-2", limit: 10 });
     expect(byMsg.events.map((e) => e.user_id)).toEqual(["beta"]);
 
-    const page1 = await listCampaignEvents({ campaign_id: "cmp_1", limit: 2 });
+    const page1 = await listCampaignEvents({ program_id: "cmp_1", limit: 2 });
     expect(page1.events.map((e) => e.user_id)).toEqual(["gamma", "beta"]);
     expect(page1.next_cursor).not.toBeNull();
     const page2 = await listCampaignEvents({
-      campaign_id: "cmp_1",
+      program_id: "cmp_1",
       cursor: page1.next_cursor!,
       limit: 2,
     });
@@ -139,7 +147,7 @@ describe("listCampaignEvents / listUserTimeline", () => {
 });
 
 describe("getCampaignFunnel", () => {
-  it("counts unique users per stage and folds read into opened", async () => {
+  it("counts unique users per stage and keeps read separate from opened", async () => {
     await insertCampaignEvents([
       // u1 full journey with a duplicate open
       ev({ user_id: "u1", event: "dispatched" }),
@@ -161,7 +169,9 @@ describe("getCampaignFunnel", () => {
       unique_recipients: 3,
       dispatched: 3,
       delivered: 1,
-      opened: 2, // u1 (opened) + u2 (read)
+      // read is NOT folded into opened — different signals, different trust.
+      opened: 1, // u1 only
+      read: 1, // u2 (whatsapp)
       clicked: 1,
       bounced: 1,
       complained: 0,
@@ -206,11 +216,11 @@ describe("recipient rollup", () => {
 
   it("derives status by precedence and orders by last activity", async () => {
     await seedJourneys();
-    const page = await listRecipientRollup({ campaign_id: "cmp_1", limit: 10 });
+    const page = await listRecipientRollup({ program_id: "cmp_1", limit: 10 });
     const byUser = Object.fromEntries(page.recipients.map((r) => [r.user_id, r]));
     expect(byUser.clicker.status).toBe("clicked");
     expect(byUser.bouncer.status).toBe("bounced");
-    expect(byUser.reader.status).toBe("opened");
+    expect(byUser.reader.status).toBe("read");
     expect(byUser.sleeper.status).toBe("dispatched");
     expect(byUser.drifter.status).toBe("pending");
     // newest last_event_at first
@@ -223,23 +233,23 @@ describe("recipient rollup", () => {
   it("filters by derived status and by user substring", async () => {
     await seedJourneys();
     const bounced = await listRecipientRollup({
-      campaign_id: "cmp_1",
+      program_id: "cmp_1",
       status: "bounced",
       limit: 10,
     });
     expect(bounced.recipients.map((r) => r.user_id)).toEqual(["bouncer"]);
 
-    const opened = await listRecipientRollup({ campaign_id: "cmp_1", status: "opened", limit: 10 });
-    expect(opened.recipients.map((r) => r.user_id)).toEqual(["reader"]);
+    const read = await listRecipientRollup({ program_id: "cmp_1", status: "read", limit: 10 });
+    expect(read.recipients.map((r) => r.user_id)).toEqual(["reader"]);
 
     const pending = await listRecipientRollup({
-      campaign_id: "cmp_1",
+      program_id: "cmp_1",
       status: "pending",
       limit: 10,
     });
     expect(pending.recipients.map((r) => r.user_id)).toEqual(["drifter"]);
 
-    const search = await listRecipientRollup({ campaign_id: "cmp_1", q: "click", limit: 10 });
+    const search = await listRecipientRollup({ program_id: "cmp_1", q: "click", limit: 10 });
     expect(search.recipients.map((r) => r.user_id)).toEqual(["clicker"]);
   });
 
@@ -250,10 +260,10 @@ describe("recipient rollup", () => {
         ev({ user_id, event: "dispatched", occurred_at: sameTs })
       )
     );
-    const page1 = await listRecipientRollup({ campaign_id: "cmp_1", limit: 2 });
+    const page1 = await listRecipientRollup({ program_id: "cmp_1", limit: 2 });
     expect(page1.recipients.map((r) => r.user_id)).toEqual(["u-d", "u-c"]);
     const page2 = await listRecipientRollup({
-      campaign_id: "cmp_1",
+      program_id: "cmp_1",
       cursor: page1.next_cursor!,
       limit: 2,
     });
@@ -266,7 +276,7 @@ describe("recipient rollup", () => {
     const counts = await getRecipientStatusCounts("cmp_1");
     expect(counts.clicked).toBe(1);
     expect(counts.bounced).toBe(1);
-    expect(counts.opened).toBe(1);
+    expect(counts.read).toBe(1);
     expect(counts.dispatched).toBe(1);
     expect(counts.pending).toBe(1);
     expect(counts.complained + counts.failed + counts.unsubscribed + counts.delivered).toBe(0);
@@ -276,11 +286,112 @@ describe("recipient rollup", () => {
   });
 });
 
+describe("drip programs", () => {
+  /**
+   * The regression this whole model exists for: ScaleMargin addresses a drip
+   * step as `drip_{enrollmentId}_{stepId}`, unique per (sequence x lead x step).
+   * Grouping on that wire id would list one "campaign" per recipient per step.
+   */
+  const seedDrip = async () => {
+    const rows: CampaignEventRow[] = [];
+    const drip = (user: string, step: string, event: string, channel: string, minute: number) => {
+      seq += 1;
+      rows.push({
+        id: `drip-${seq}`,
+        campaign_id: `drip_enr-${user}_${step}`, // the wire id: per recipient, per step
+        program_id: "seq_welcome", // the sequence — what a human calls the campaign
+        program_kind: "drip",
+        step_id: step,
+        organization_id: "org_1",
+        user_id: user,
+        channel,
+        event,
+        provider: channel === "whatsapp" ? "gupshup" : "ses",
+        provider_message_id: `m-${seq}`,
+        occurred_at: at(minute),
+        received_at: at(minute),
+        metadata: null,
+        dedupe_key: `dk-drip-${seq}`,
+      });
+    };
+    // 3 recipients x 2 steps, second step switches channel to WhatsApp.
+    for (const user of ["u1", "u2", "u3"]) {
+      drip(user, "step1", "dispatched", "email", 1);
+      drip(user, "step1", "delivered", "email", 2);
+    }
+    drip("u1", "step1", "opened", "email", 3);
+    drip("u1", "step2", "dispatched", "whatsapp", 10);
+    drip("u1", "step2", "delivered", "whatsapp", 11);
+    drip("u1", "step2", "read", "whatsapp", 12);
+    drip("u2", "step2", "dispatched", "whatsapp", 10);
+    await insertCampaignEvents(rows);
+  };
+
+  it("collapses many wire sends into one program", async () => {
+    await seedDrip();
+    // 8 distinct wire campaign ids exist…
+    const wireIds = new Set(
+      (await listCampaignEvents({ program_id: "seq_welcome", limit: 100 })).events.map(
+        (e) => e.campaign_id
+      )
+    );
+    expect(wireIds.size).toBe(5); // u1+u2 got both steps, u3 only step1
+    // …but they roll up to ONE program with 3 recipients, not 5 campaigns.
+    const funnel = await getCampaignFunnel("seq_welcome");
+    expect(funnel.unique_recipients).toBe(3);
+    expect(funnel.dispatched).toBe(3);
+    expect(funnel.opened).toBe(1); // u1 email open
+    expect(funnel.read).toBe(1); // u1 whatsapp read — never merged into opened
+  });
+
+  it("scopes the funnel to a single step", async () => {
+    await seedDrip();
+    const step1 = await getCampaignFunnel("seq_welcome", "step1");
+    expect(step1.unique_recipients).toBe(3);
+    expect(step1.read).toBe(0); // step1 is email-only
+
+    const step2 = await getCampaignFunnel("seq_welcome", "step2");
+    expect(step2.unique_recipients).toBe(2); // u1 + u2
+    expect(step2.read).toBe(1);
+    expect(step2.opened).toBe(0); // whatsapp reports reads, not opens
+  });
+
+  it("gives a recipient one journey across steps and channels", async () => {
+    await seedDrip();
+    const page = await listRecipientRollup({ program_id: "seq_welcome", limit: 10 });
+    expect(page.recipients).toHaveLength(3);
+    const u1 = page.recipients.find((r) => r.user_id === "u1")!;
+    expect(u1.steps).toBe(2);
+    expect(u1.channel_count).toBe(2); // email -> whatsapp
+    expect(u1.opened).toBe(true);
+    expect(u1.read).toBe(true);
+    expect(u1.status).toBe("opened"); // opened outranks read for a mixed journey
+
+    const u3 = page.recipients.find((r) => r.user_id === "u3")!;
+    expect(u3.steps).toBe(1);
+    expect(u3.status).toBe("delivered");
+
+    // The timeline spans both steps in order.
+    const timeline = await listUserTimeline("seq_welcome", "u1");
+    expect(timeline.map((e) => e.event)).toEqual([
+      "dispatched",
+      "delivered",
+      "opened",
+      "dispatched",
+      "delivered",
+      "read",
+    ]);
+    expect(timeline.at(-1)?.channel).toBe("whatsapp");
+  });
+});
+
 describe("deriveRecipientStatus", () => {
   it("walks the precedence order", () => {
     expect(deriveRecipientStatus({ complained: true, clicked: true })).toBe("complained");
     expect(deriveRecipientStatus({ bounced: true, opened: true })).toBe("bounced");
     expect(deriveRecipientStatus({ failed: true, delivered: true })).toBe("failed");
+    expect(deriveRecipientStatus({ read: true })).toBe("read");
+    expect(deriveRecipientStatus({ opened: true, read: true })).toBe("opened");
     expect(deriveRecipientStatus({ delivered: true })).toBe("delivered");
     expect(deriveRecipientStatus({})).toBe("pending");
   });
@@ -288,12 +399,12 @@ describe("deriveRecipientStatus", () => {
 
 describe("listCampaignSummaries", () => {
   it("groups dispatch runs per campaign with aggregates", async () => {
-    await insertRun({ campaign_id: "cmp_a", status: "completed", sent_count: 8, failed_count: 2, recipient_count: 10, occurred_at: at(1), updated_at: at(1) });
-    await insertRun({ campaign_id: "cmp_a", status: "failed", sent_count: null, failed_count: null, recipient_count: 5, occurred_at: at(3), updated_at: at(3) });
-    await insertRun({ campaign_id: "cmp_b", status: "accepted", sent_count: null, failed_count: null, recipient_count: 7, occurred_at: at(2), updated_at: at(2) });
+    await insertRun({ campaign_id: "cmp_a", program_id: "cmp_a", status: "completed", sent_count: 8, failed_count: 2, recipient_count: 10, occurred_at: at(1), updated_at: at(1) });
+    await insertRun({ campaign_id: "cmp_a", program_id: "cmp_a", status: "failed", sent_count: null, failed_count: null, recipient_count: 5, occurred_at: at(3), updated_at: at(3) });
+    await insertRun({ campaign_id: "cmp_b", program_id: "cmp_b", status: "accepted", sent_count: null, failed_count: null, recipient_count: 7, occurred_at: at(2), updated_at: at(2) });
 
     const page = await listCampaignSummaries({ limit: 10 });
-    expect(page.campaigns.map((c) => c.campaign_id)).toEqual(["cmp_a", "cmp_b"]);
+    expect(page.campaigns.map((c) => c.program_id)).toEqual(["cmp_a", "cmp_b"]);
     const a = page.campaigns[0];
     expect(a.runs).toBe(2);
     expect(a.failed_runs).toBe(1);
@@ -308,28 +419,28 @@ describe("listCampaignSummaries", () => {
 
   it("searches by id substring and pages via the HAVING keyset", async () => {
     for (let i = 0; i < 5; i += 1) {
-      await insertRun({ campaign_id: `cmp_${i}`, occurred_at: at(i), updated_at: at(i) });
+      await insertRun({ campaign_id: `cmp_${i}`, program_id: `cmp_${i}`, occurred_at: at(i), updated_at: at(i) });
     }
     const filtered = await listCampaignSummaries({ q: "cmp_3", limit: 10 });
-    expect(filtered.campaigns.map((c) => c.campaign_id)).toEqual(["cmp_3"]);
+    expect(filtered.campaigns.map((c) => c.program_id)).toEqual(["cmp_3"]);
 
     const page1 = await listCampaignSummaries({ limit: 2 });
-    expect(page1.campaigns.map((c) => c.campaign_id)).toEqual(["cmp_4", "cmp_3"]);
+    expect(page1.campaigns.map((c) => c.program_id)).toEqual(["cmp_4", "cmp_3"]);
     const page2 = await listCampaignSummaries({ cursor: page1.next_cursor!, limit: 2 });
-    expect(page2.campaigns.map((c) => c.campaign_id)).toEqual(["cmp_2", "cmp_1"]);
+    expect(page2.campaigns.map((c) => c.program_id)).toEqual(["cmp_2", "cmp_1"]);
     const page3 = await listCampaignSummaries({ cursor: page2.next_cursor!, limit: 2 });
-    expect(page3.campaigns.map((c) => c.campaign_id)).toEqual(["cmp_0"]);
+    expect(page3.campaigns.map((c) => c.program_id)).toEqual(["cmp_0"]);
     expect(page3.next_cursor).toBeNull();
   });
 
   it("lists distinct channel/provider pairs for a page of campaigns", async () => {
-    await insertRun({ campaign_id: "cmp_a", channel: "email", provider: "ses" });
-    await insertRun({ campaign_id: "cmp_a", channel: "email", provider: "ses" });
-    await insertRun({ campaign_id: "cmp_a", channel: "whatsapp", provider: "gupshup" });
-    await insertRun({ campaign_id: "cmp_b", channel: "email", provider: "sendgrid" });
+    await insertRun({ campaign_id: "cmp_a", program_id: "cmp_a", channel: "email", provider: "ses" });
+    await insertRun({ campaign_id: "cmp_a", program_id: "cmp_a", channel: "email", provider: "ses" });
+    await insertRun({ campaign_id: "cmp_a", program_id: "cmp_a", channel: "whatsapp", provider: "gupshup" });
+    await insertRun({ campaign_id: "cmp_b", program_id: "cmp_b", channel: "email", provider: "sendgrid" });
     const pairs = await listCampaignChannels(["cmp_a", "cmp_b"]);
-    const key = (p: { campaign_id: string; channel: string; provider: string }) =>
-      `${p.campaign_id}:${p.channel}:${p.provider}`;
+    const key = (p: { program_id: string; channel: string; provider: string }) =>
+      `${p.program_id}:${p.channel}:${p.provider}`;
     expect(pairs.map(key).sort()).toEqual([
       "cmp_a:email:ses",
       "cmp_a:whatsapp:gupshup",

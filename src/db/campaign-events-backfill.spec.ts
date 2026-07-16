@@ -54,7 +54,7 @@ describe("backfillCampaignEventsOnce", () => {
     const result = await backfillCampaignEventsOnce();
     expect(result.copied).toBe(520);
 
-    const page = await listCampaignEvents({ campaign_id: "cmp_hist", limit: 200 });
+    const page = await listCampaignEvents({ program_id: "cmp_hist", limit: 200 });
     expect(page.events.length).toBe(200); // paged read; total verified via second run below
     expect(await getMeta(META_KEYS.campaignEventsBackfillDoneAt)).not.toBeNull();
 
@@ -85,7 +85,7 @@ describe("backfillCampaignEventsOnce", () => {
 
     const result = await backfillCampaignEventsOnce();
     expect(result.copied).toBe(3);
-    const page = await listCampaignEvents({ campaign_id: "cmp_hist", limit: 10 });
+    const page = await listCampaignEvents({ program_id: "cmp_hist", limit: 10 });
     expect(page.events).toHaveLength(3);
   });
 
@@ -107,7 +107,7 @@ describe("backfillCampaignEventsOnce", () => {
       },
     ]);
     await backfillCampaignEventsOnce();
-    const page = await listCampaignEvents({ campaign_id: "cmp_hist", limit: 10 });
+    const page = await listCampaignEvents({ program_id: "cmp_hist", limit: 10 });
     expect(page.events).toHaveLength(2);
   });
 });

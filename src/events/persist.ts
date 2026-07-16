@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { isDbInitialized } from "../db/client.js";
 import { insertCampaignEvents } from "../db/repos/campaign-events.js";
+import { resolveProgram, type ProgramRef } from "../db/repos/dispatch-programs.js";
 import type { CampaignEventRow } from "../db/schema/index.js";
 import { componentLogger } from "../logging/logger.js";
 import type { StandardizedEvent } from "./common/types.js";
@@ -46,12 +47,16 @@ export function computeDedupeKey(event: StandardizedEvent): string {
 
 export function campaignEventRowFromStandardized(
   event: StandardizedEvent,
-  receivedAt: Date
+  receivedAt: Date,
+  program: ProgramRef
 ): CampaignEventRow {
   const occurred = new Date(event.occurred_at);
   return {
     id: crypto.randomUUID(),
     campaign_id: event.campaign_id.slice(0, ID_MAX),
+    program_id: program.program_id.slice(0, ID_MAX),
+    program_kind: program.program_kind,
+    step_id: program.step_id ? program.step_id.slice(0, ID_MAX) : null,
     organization_id: event.organization_id.slice(0, ID_MAX),
     user_id: event.user_id.slice(0, ID_MAX),
     channel: event.channel,
@@ -71,7 +76,22 @@ export async function persistCampaignEvents(events: StandardizedEvent[]): Promis
   if (events.length === 0 || !isDbInitialized()) return;
   try {
     const now = new Date();
-    await insertCampaignEvents(events.map((event) => campaignEventRowFromStandardized(event, now)));
+    // A drip send's wire id names one recipient-step; resolve it back to the
+    // sequence so the console groups by program rather than by send.
+    const programs = await resolveProgram(events.map((event) => event.campaign_id));
+    await insertCampaignEvents(
+      events.map((event) =>
+        campaignEventRowFromStandardized(
+          event,
+          now,
+          programs.get(event.campaign_id) ?? {
+            program_id: event.campaign_id,
+            program_kind: "campaign",
+            step_id: null,
+          }
+        )
+      )
+    );
   } catch (error) {
     log.warn(
       `[Events] Could not persist ${events.length} campaign event(s) for the console: ${

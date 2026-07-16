@@ -36,11 +36,19 @@ export type VariableRow = {
   updated_by: string | null;
 };
 
+/** "campaign" = one-shot blast; "drip" = one step of a multi-step sequence. */
+export type ProgramKind = "campaign" | "drip";
+
 export type DispatchRunStatus = "accepted" | "completed" | "failed";
 
 export type DispatchRunRow = {
   id: string;
+  /** The wire id — one SEND (for drips: one recipient × one step). */
   campaign_id: string;
+  /** Grouping key: drip_sequence_id for drip steps, else campaign_id. */
+  program_id: string;
+  program_kind: ProgramKind;
+  step_id: string | null;
   organization_id: string | null;
   channel: string;
   provider: string;
@@ -115,13 +123,37 @@ export type OutboxRow = {
 };
 
 /**
+ * Wire campaign_id → program mapping row.
+ *
+ * For drips the wire id is `drip_{enrollmentId}_{stepId}` — unique per
+ * (sequence × lead × step) — so it names a SEND, not a campaign. Written at
+ * dispatch time (where drip_sequence_id is available) so inbound provider
+ * webhooks, which only carry the wire id, can still resolve their program.
+ */
+export type DispatchProgramRow = {
+  campaign_id: string;
+  program_id: string;
+  program_kind: ProgramKind;
+  step_id: string | null;
+  organization_id: string;
+  created_at: Date;
+  last_seen_at: Date;
+};
+
+/**
  * One PII-stripped per-recipient lifecycle event (dispatched/delivered/opened/…),
  * persisted for the admin campaign console. Mirrors StandardizedEvent minus the
  * callback URL; user_id is the client's opaque id, never an address.
  */
 export type CampaignEventRow = {
   id: string;
+  /** The wire id — one SEND (for drips: one recipient × one step). */
   campaign_id: string;
+  /** Grouping key a human calls "the campaign": drip_sequence_id, else campaign_id. */
+  program_id: string;
+  program_kind: ProgramKind;
+  /** Drip step this send belongs to; null for one-shot campaigns. */
+  step_id: string | null;
   organization_id: string;
   user_id: string;
   channel: string;
@@ -160,6 +192,18 @@ export type MetaRow = {
   key: string;
   value: string;
   updated_at: Date;
+};
+
+export type ApiKeyRow = {
+  id: string;
+  name: string;
+  key_hash: string;
+  key_ciphertext: string;
+  key_prefix: string;
+  created_at: Date;
+  updated_at: Date;
+  last_used_at: Date | null;
+  revoked_at: Date | null;
 };
 
 /** dispatcher_meta keys used by the app. */

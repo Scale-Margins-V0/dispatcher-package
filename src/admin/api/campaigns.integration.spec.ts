@@ -36,9 +36,14 @@ const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
 let seq = 0;
 const ev = (partial: Partial<CampaignEventRow>): CampaignEventRow => {
   seq += 1;
+  const campaign_id = partial.campaign_id ?? "cmp_1";
   return {
     id: `evt-${String(seq).padStart(4, "0")}`,
-    campaign_id: "cmp_1",
+    campaign_id,
+    // A one-shot campaign is its own program; tests opt into drips explicitly.
+    program_id: campaign_id,
+    program_kind: "campaign",
+    step_id: null,
     organization_id: "org_1",
     user_id: `user-${seq}`,
     channel: "email",
@@ -58,6 +63,9 @@ async function seedRun(overrides: Record<string, unknown> = {}): Promise<string>
   await upsertDispatchRun({
     id,
     campaign_id: "cmp_1",
+    program_id: "cmp_1",
+    program_kind: "campaign",
+    step_id: null,
     organization_id: "org_1",
     channel: "email",
     provider: "ses",
@@ -106,7 +114,7 @@ describe("/admin/api/campaigns", () => {
 
   it("lists campaigns with aggregates, channels, funnel and callback flag", async () => {
     await seedRun({});
-    await seedRun({ campaign_id: "cmp_2", channel: "whatsapp", provider: "gupshup", occurred_at: at(5) });
+    await seedRun({ campaign_id: "cmp_2", program_id: "cmp_2", channel: "whatsapp", provider: "gupshup", occurred_at: at(5) });
     await insertCampaignEvents([
       ev({ user_id: "u1", event: "dispatched" }),
       ev({ user_id: "u1", event: "delivered" }),
@@ -117,11 +125,11 @@ describe("/admin/api/campaigns", () => {
     const res = await agent.get("/admin/api/campaigns").expect(200);
     expect(res.body.campaigns).toHaveLength(2);
     const [newest, older] = res.body.campaigns;
-    expect(newest.campaign_id).toBe("cmp_2");
+    expect(newest.program_id).toBe("cmp_2");
     expect(newest.channels).toEqual(["whatsapp"]);
     expect(newest.has_callback).toBe(false);
     expect(newest.events).toBeNull();
-    expect(older.campaign_id).toBe("cmp_1");
+    expect(older.program_id).toBe("cmp_1");
     expect(older.sent).toBe(2);
     expect(older.has_callback).toBe(true);
     expect(older.events.delivered).toBe(1);
@@ -149,7 +157,7 @@ describe("/admin/api/campaigns", () => {
     const agent = await loginAgent();
     const res = await agent.get("/admin/api/campaigns/cmp_1").expect(200);
     expect(res.body.campaign).toMatchObject({
-      campaign_id: "cmp_1",
+      program_id: "cmp_1",
       organization_id: "org_1",
       active: true,
       callback: {
@@ -252,7 +260,7 @@ describe("/admin/api/campaigns", () => {
 
   it("wraps dispatch runs per campaign in the shared shape", async () => {
     await seedRun({});
-    await seedRun({ campaign_id: "cmp_other" });
+    await seedRun({ campaign_id: "cmp_other", program_id: "cmp_other" });
     const agent = await loginAgent();
     const res = await agent.get("/admin/api/campaigns/cmp_1/runs").expect(200);
     expect(res.body.dispatches).toHaveLength(1);

@@ -20,7 +20,7 @@ const SECRET_MASK = "••••••••";
 const webhookSchema = z.object({
   enabled: z.boolean(),
   url: z.string().max(2000),
-  min_level: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]),
+  levels: z.array(z.enum(["trace", "debug", "info", "warn", "error", "fatal"])).min(1).max(6),
   secret: z.string().max(200).optional(),
 });
 
@@ -28,7 +28,7 @@ function serializeWebhook(cfg: LogWebhookConfig) {
   return {
     enabled: cfg.enabled,
     url: cfg.url,
-    min_level: cfg.min_level,
+    levels: cfg.levels,
     has_secret: Boolean(cfg.secret),
     secret: cfg.secret ? SECRET_MASK : "",
   };
@@ -37,21 +37,13 @@ function serializeWebhook(cfg: LogWebhookConfig) {
 export const registerObservabilityRoutes = (app: Express): void => {
   const json = express.json({ limit: "16kb" });
 
-  // --- GET /logs bearer token ---
-  app.get(
-    "/admin/api/settings/logs-token",
-    asyncHandler(async (_req: Request, res: Response) => {
-      res.json(await getLogsTokenStatus());
-    })
-  );
-  app.post(
-    "/admin/api/settings/logs-token",
-    json,
-    asyncHandler(async (_req: Request, res: Response) => {
-      const token = await generateLogsToken();
-      res.status(201).json({ token });
-    })
-  );
+  // Legacy single-token endpoints remain available during migration to named API keys.
+  app.get("/admin/api/settings/logs-token", asyncHandler(async (_req, res) => {
+    res.json(await getLogsTokenStatus());
+  }));
+  app.post("/admin/api/settings/logs-token", json, asyncHandler(async (_req, res) => {
+    res.status(201).json({ token: await generateLogsToken() });
+  }));
 
   // --- Log webhook ---
   app.get(
@@ -88,7 +80,7 @@ export const registerObservabilityRoutes = (app: Express): void => {
       const next: LogWebhookConfig = {
         enabled: parsed.data.enabled,
         url: parsed.data.url.trim(),
-        min_level: parsed.data.min_level,
+        levels: parsed.data.levels,
         ...(secret ? { secret } : {}),
       };
       await saveLogWebhookConfig(next);
@@ -111,7 +103,7 @@ export const registerObservabilityRoutes = (app: Express): void => {
       const cfg: LogWebhookConfig = {
         enabled: true,
         url: parsed.data.url.trim(),
-        min_level: parsed.data.min_level,
+        levels: parsed.data.levels,
         ...(secret ? { secret } : {}),
       };
       const payload = payloadFromLine({

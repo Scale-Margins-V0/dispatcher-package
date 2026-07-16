@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { InfoTip } from "../components/InfoTip";
 import { AlertIcon, ChevronIcon, ClockIcon } from "../icons";
 import type { LogEntry } from "../types";
 
@@ -22,8 +23,19 @@ const formatTime = (value: string) => new Date(value).toLocaleString();
 
 type Filters = { level: string; campaign_id: string; q: string };
 
-export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) {
-  const [filters, setFilters] = useState<Filters>({ level: "", campaign_id: "", q: "" });
+export default function Logs({
+  refreshSignal = 0,
+  presetCampaignId,
+}: {
+  refreshSignal?: number;
+  /** Locks the campaign filter (campaign detail Logs tab) and hides its input. */
+  presetCampaignId?: string;
+}) {
+  const [filters, setFilters] = useState<Filters>({
+    level: "",
+    campaign_id: presetCampaignId ?? "",
+    q: "",
+  });
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -60,15 +72,17 @@ export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) 
 
   return (
     <>
-      <header className="page-head">
-        <div>
-          <h1>Logs</h1>
-          <p>
-            Structured application logs persisted in the dispatcher database — full error
-            messages and stack traces, correlated by request and campaign.
-          </p>
-        </div>
-      </header>
+      {!presetCampaignId && (
+        <header className="page-head">
+          <div>
+            <h1>Logs</h1>
+            <p>
+              Structured application logs persisted in the dispatcher database — full error
+              messages and stack traces, correlated by request and campaign.
+            </p>
+          </div>
+        </header>
+      )}
       <section className="panel log-filters">
         <Select
           value={filters.level || ALL_LEVELS}
@@ -88,11 +102,14 @@ export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) 
             ))}
           </SelectContent>
         </Select>
-        <input
-          placeholder="Campaign id"
-          value={filters.campaign_id}
-          onChange={(event) => setFilters({ ...filters, campaign_id: event.target.value })}
-        />
+        <InfoTip label="debug: diagnostic details · info: normal operations · warn: unexpected but handled · error: failure occurred · fatal: unrecoverable" />
+        {!presetCampaignId && (
+          <input
+            placeholder="Campaign id"
+            value={filters.campaign_id}
+            onChange={(event) => setFilters({ ...filters, campaign_id: event.target.value })}
+          />
+        )}
         <input
           placeholder="Search message text"
           value={filters.q}
@@ -118,6 +135,7 @@ export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) 
           <table>
             <thead>
               <tr>
+                <th className="log-disclosure-heading"><span className="sr-only">Details</span></th>
                 <th>Time</th>
                 <th>Level</th>
                 <th>Component</th>
@@ -132,22 +150,27 @@ export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) 
                   <Fragment key={log.id}>
                     <tr
                       className={`log-row ${open ? "active" : ""}`}
+                      tabIndex={0}
                       onClick={() => setOpenId(open ? null : log.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setOpenId(open ? null : log.id);
+                        }
+                      }}
                     >
+                      <td className="log-disclosure"><ChevronIcon className={`log-chevron ${open ? "open" : ""}`} /></td>
                       <td className="mono nowrap">{formatTime(log.ts)}</td>
                       <td>
                         <span className={`badge badge-${levelTone(log.level)}`}>{log.level}</span>
                       </td>
                       <td className="mono">{log.component ?? "—"}</td>
                       <td className="mono">{log.campaign_id ?? "—"}</td>
-                      <td className="message-cell">
-                        <ChevronIcon className={`log-chevron ${open ? "open" : ""}`} />
-                        {log.message}
-                      </td>
+                      <td className="message-cell">{log.message}</td>
                     </tr>
                     {open && (
                       <tr className="log-detail-row">
-                        <td colSpan={5}>
+                        <td colSpan={6}>
                           <div className="log-detail-inner">
                             <dl className="log-meta">
                               <div>

@@ -3,14 +3,16 @@ import { toast } from "sonner";
 import {
   cancelInvitation,
   changePassword,
+  createApiKey as createApiKeyRequest,
+  fetchApiKeys,
   fetchInvitations,
-  fetchLogsTokenStatus,
   fetchLogWebhook,
   fetchMembers,
   fetchOrganization,
-  generateLogsToken,
   inviteMember,
   removeMember,
+  revokeApiKey,
+  rotateApiKey,
   saveLogWebhook,
   testLogWebhook,
   updateMemberRole,
@@ -24,9 +26,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import ActionMenu from "../components/ActionMenu";
 import ConfirmDialog from "../components/ConfirmDialog";
+import { InfoTip } from "../components/InfoTip";
 import { ActivityIcon, AlertIcon, CheckIcon, CopyIcon, ShieldIcon, UsersIcon } from "../icons";
 import type {
+  ApiKeyRecord,
   LogLevelName,
   LogWebhookSettings,
   OrgMember,
@@ -35,12 +40,13 @@ import type {
   SessionUser,
 } from "../types";
 
-type Tab = "members" | "invitations" | "account" | "organization" | "observability";
+type Tab = "members" | "invitations" | "account" | "organization" | "api-keys" | "observability";
 const TABS: Array<[Tab, string]> = [
   ["members", "Members"],
   ["invitations", "Invitations"],
   ["account", "Account"],
   ["organization", "Organization"],
+  ["api-keys", "API keys"],
   ["observability", "Observability"],
 ];
 const TAB_COPY: Record<Tab, { title: string; description: string }> = {
@@ -48,13 +54,26 @@ const TAB_COPY: Record<Tab, { title: string; description: string }> = {
   invitations: { title: "Invitations", description: "Invite teammates and review pending access requests." },
   account: { title: "Account", description: "Update your personal profile and sign-in credentials." },
   organization: { title: "Organization", description: "Manage the organization attached to this dispatcher." },
+  "api-keys": {
+    title: "API keys",
+    description: "Create named bearer keys for programmatic access to dispatcher APIs.",
+  },
   observability: {
     title: "Observability settings",
-    description: "Route operational logs to your stack and control programmatic access to the logs API.",
+    description: "Choose which operational logs are forwarded to your external observability stack.",
   },
 };
 const ROLES = ["owner", "admin", "member"];
 const LOG_LEVELS: LogLevelName[] = ["trace", "debug", "info", "warn", "error", "fatal"];
+const webhookInput = (webhook: LogWebhookSettings) => ({
+  enabled: webhook.enabled,
+  url: webhook.url,
+  levels: webhook.levels,
+  ...(webhook.secret && webhook.secret !== "••••••••" ? { secret: webhook.secret } : {}),
+});
+const truncateApiKey = (value: string) => value.length > 20
+  ? `${value.slice(0, 12)}••••••${value.slice(-6)}`
+  : value;
 
 function readTab(): Tab {
   const seg = window.location.hash.replace(/^#\/?/, "").split("?")[0].split("/")[1];
@@ -123,7 +142,7 @@ function Members({ me }: { me: SessionUser | null }) {
             <tr>
               <th>Name</th>
               <th>Email</th>
-              <th>Role</th>
+              <th>Role <InfoTip label="owner: full access · admin: manage members and settings · member: view-only console access" /></th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -285,8 +304,8 @@ function Invitations() {
           <div className="invite-result">
             <CheckIcon /> Invitation created{lastLink.emailed ? " and emailed" : ""}. Share this link:
             <code className="invite-link">{lastLink.url}</code>
-            <button type="button" className="ghost" onClick={() => void copy(lastLink.url)}>
-              <CopyIcon /> {copied === lastLink.url ? "Copied" : "Copy"}
+            <button type="button" className="ghost icon-button" aria-label={copied === lastLink.url ? "Invitation link copied" : "Copy invitation link"} title={copied === lastLink.url ? "Copied" : "Copy invitation link"} onClick={() => void copy(lastLink.url)}>
+              {copied === lastLink.url ? <CheckIcon /> : <CopyIcon />}
             </button>
           </div>
         )}
@@ -298,7 +317,6 @@ function Invitations() {
               <tr>
                 <th>Email</th>
                 <th>Role</th>
-                <th>Link</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -309,28 +327,28 @@ function Invitations() {
                   <td>
                     <Badge tone="muted">{i.role ?? "member"}</Badge>
                   </td>
-                  <td>
-                    <button type="button" className="ghost" onClick={() => void copy(i.accept_url)}>
-                      <CopyIcon /> {copied === i.accept_url ? "Copied" : "Copy link"}
-                    </button>
-                  </td>
                   <td className="actions-cell">
-                    <ConfirmDialog
-                      trigger={
-                        <button type="button" className="ghost">
-                          Cancel
-                        </button>
-                      }
-                      title="Cancel this invitation?"
-                      description={
-                        <>
-                          The link sent to <strong>{i.email}</strong> will stop working. You can send
-                          a fresh invitation at any time.
-                        </>
-                      }
-                      confirmLabel="Cancel invitation"
-                      onConfirm={() => cancel(i.id)}
-                    />
+                    <ActionMenu label={`Actions for ${i.email}`}>
+                      <button type="button" className="action-menu-item" role="menuitem" onClick={() => void copy(i.accept_url)}>
+                        <CopyIcon /> Copy invitation link
+                      </button>
+                      <ConfirmDialog
+                        trigger={
+                          <button type="button" className="action-menu-item danger" role="menuitem">
+                            Cancel invitation
+                          </button>
+                        }
+                        title="Cancel this invitation?"
+                        description={
+                          <>
+                            The link sent to <strong>{i.email}</strong> will stop working. You can send
+                            a fresh invitation at any time.
+                          </>
+                        }
+                        confirmLabel="Cancel invitation"
+                        onConfirm={() => cancel(i.id)}
+                      />
+                    </ActionMenu>
                   </td>
                 </tr>
               ))}
@@ -488,23 +506,18 @@ function Organization({ canEdit }: { canEdit: boolean }) {
 function Observability() {
   const [wh, setWh] = useState<LogWebhookSettings | null>(null);
   const [savedWh, setSavedWh] = useState<LogWebhookSettings | null>(null);
-  const [token, setToken] = useState<{ configured: boolean; updated_at: string | null } | null>(null);
-  const [newToken, setNewToken] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
-  const [copied, setCopied] = useState<"token" | "command" | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [rotating, setRotating] = useState(false);
 
   const load = useCallback(async () => {
     setError("");
     try {
-      const [w, t] = await Promise.all([fetchLogWebhook(), fetchLogsTokenStatus()]);
+      const w = await fetchLogWebhook();
       setWh(w.webhook);
       setSavedWh(w.webhook);
-      setToken(t);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to load settings");
     }
@@ -512,14 +525,6 @@ function Observability() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  const input = (w: LogWebhookSettings) => ({
-    enabled: w.enabled,
-    url: w.url,
-    min_level: w.min_level,
-    // Send the secret only when the user changed it away from the mask.
-    ...(w.secret && w.secret !== "••••••••" ? { secret: w.secret } : {}),
-  });
 
   const webhookChanged = Boolean(wh && savedWh && JSON.stringify(wh) !== JSON.stringify(savedWh));
   const endpointValid = Boolean(wh?.url.trim() && (() => {
@@ -539,13 +544,13 @@ function Observability() {
     setError("");
     setSaving(true);
     try {
-      const res = await saveLogWebhook(input(wh));
+      const res = await saveLogWebhook(webhookInput(wh));
       setWh(res.webhook);
       setSavedWh(res.webhook);
       setSaved(true);
       toast.success("Log webhook saved", {
         description: res.webhook.enabled
-          ? `Forwarding ${res.webhook.min_level} and above.`
+          ? `Forwarding ${res.webhook.levels.join(", ")}.`
           : "Currently disabled.",
       });
     } catch (reason) {
@@ -561,7 +566,7 @@ function Observability() {
     setTest(null);
     setTesting(true);
     try {
-      const r = await testLogWebhook(input(wh));
+      const r = await testLogWebhook(webhookInput(wh));
       setTest(r.ok ? { ok: true, text: `Delivered (HTTP ${r.status ?? 200})` } : { ok: false, text: r.error ?? "Failed" });
       if (r.ok) toast.success("Test event delivered", { description: `HTTP ${r.status ?? 200}` });
       else toast.error("Test delivery failed", { description: r.error });
@@ -573,50 +578,19 @@ function Observability() {
       setTesting(false);
     }
   };
-  const rotate = async () => {
-    setRotating(true);
-    try {
-      const r = await generateLogsToken();
-      setNewToken(r.token);
-      toast.success("Logs API token generated", {
-        description: "Shown once — copy it now. Any previous token stopped working.",
-      });
-      await load();
-    } catch (reason) {
-      const m = reason instanceof Error ? reason.message : undefined;
-      setError(m ?? "Unable to generate token");
-      toast.error("Could not generate token", { description: m });
-    } finally {
-      setRotating(false);
-    }
-  };
-  const copy = async (text: string, target: "token" | "command") => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(target);
-      setTimeout(() => setCopied(null), 1500);
-    } catch {
-      /* clipboard blocked */
-    }
-  };
-
-  if (!wh || !token) {
+  if (!wh) {
     return error ? <ErrorNote message={error} /> : <div className="loading-state"><span className="loader" />Loading…</div>;
   }
 
-  const curlCommand = newToken
-    ? `curl -H "Authorization: Bearer ${newToken}" \\\n+  "${window.location.origin}/logs?since=1h&min_level=warn&limit=50"`
-    : "";
-
   return (
-    <div className="observability-layout">
+    <div className="observability-layout single">
       {error && <ErrorNote message={error} />}
       <section className="panel observability-panel webhook-panel">
         <div className="observability-panel-head">
           <div className="settings-panel-copy">
             <div className="panel-title"><ActivityIcon /> Log webhook</div>
             <p className="panel-description">
-              Forward logs at or above the selected level as HMAC-signable JSON.
+              Forward only the selected log levels as HMAC-signable JSON.
             </p>
           </div>
           <label className="webhook-toggle" htmlFor="log-webhook-enabled">
@@ -652,29 +626,30 @@ function Observability() {
               {endpointError ? "Enter a complete HTTP or HTTPS endpoint." : "The dispatcher sends an HTTP POST request to this URL."}
             </span>
           </label>
-          <label>
-            Minimum level
-            <Select
-              value={wh.min_level}
-              onValueChange={(value) => {
-                setWh({ ...wh, min_level: value as LogLevelName });
-                setSaved(false);
-                setTest(null);
-              }}
-            >
-              <SelectTrigger aria-label="Minimum log level">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {LOG_LEVELS.map((l) => (
-                  <SelectItem key={l} value={l}>
-                    {l}
-                    {l === "warn" ? " (default)" : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
+          <fieldset className="log-level-fieldset">
+            <legend>Forward log levels <InfoTip label="trace: all details · debug: diagnostic info · info: normal operations · warn: unexpected but handled · error: failure occurred · fatal: unrecoverable" /></legend>
+            <p>Select every level the endpoint should receive.</p>
+            <div className="log-level-grid">
+              {LOG_LEVELS.map((level) => (
+                <label className={`log-level-option level-${level}`} key={level}>
+                  <input
+                    type="checkbox"
+                    checked={wh.levels.includes(level)}
+                    onChange={() => {
+                      const levels = wh.levels.includes(level)
+                        ? wh.levels.filter((item) => item !== level)
+                        : LOG_LEVELS.filter((item) => item === level || wh.levels.includes(item));
+                      if (levels.length === 0) return;
+                      setWh({ ...wh, levels });
+                      setSaved(false);
+                      setTest(null);
+                    }}
+                  />
+                  <span>{level}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
           <label>
             Signing secret <span className="optional-label">Optional</span>
             <input
@@ -720,65 +695,96 @@ function Observability() {
           )}
         </form>
       </section>
+    </div>
+  );
+}
 
-      <section className="panel observability-panel token-panel">
-        <div className="observability-panel-head token-heading">
-          <div className="settings-panel-copy">
-            <div className="panel-title"><ShieldIcon /> Logs API token</div>
-            <p className="panel-description">Authenticate requests to <code>GET /logs</code>.</p>
+function ApiKeys() {
+  const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      setKeys((await fetchApiKeys()).api_keys);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to load API keys");
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const create = async (event: FormEvent) => {
+    event.preventDefault();
+    if (name.trim().length < 2) return;
+    setBusy(true);
+    try {
+      await createApiKeyRequest(name.trim());
+      setName("");
+      toast.success("API key created");
+      await load();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Unable to create API key";
+      setError(message);
+      toast.error("Could not create API key", { description: message });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copy = async (key: ApiKeyRecord) => {
+    await navigator.clipboard.writeText(key.key);
+    setCopied(key.id);
+    setTimeout(() => setCopied(null), 1500);
+  };
+  const rotate = async (key: ApiKeyRecord) => {
+    await rotateApiKey(key.id);
+    toast.success(`${key.name} rotated`, { description: "The previous value stopped working immediately." });
+    await load();
+  };
+  const revoke = async (key: ApiKeyRecord) => {
+    await revokeApiKey(key.id);
+    toast.success(`${key.name} revoked`);
+    await load();
+  };
+  return (
+    <div className="api-key-settings">
+      {error && <ErrorNote message={error} />}
+      <section className="panel api-key-create-panel">
+        <div className="panel-title"><ShieldIcon /> Create API key <InfoTip label="Bearer tokens for programmatic access to dispatcher APIs. Each key gets a unique value shown once." /></div>
+        <p className="panel-description">Use a distinct name for each client or environment. Values remain available to copy and are encrypted at rest.</p>
+        <form className="api-key-create" onSubmit={(event) => void create(event)}>
+          <label htmlFor="api-key-name">Key name</label>
+          <div>
+            <input id="api-key-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Production reporting" maxLength={64} />
+            <button type="submit" disabled={busy || name.trim().length < 2}>{busy ? "Creating…" : "Create key"}</button>
           </div>
-          <span className={`token-status ${token.configured ? "configured" : "empty"}`}>
-            <span className="dot" />{token.configured ? "Configured" : "Not configured"}
-          </span>
+        </form>
+      </section>
+      <section className="panel api-key-list-panel">
+        <div className="api-key-list-head">
+          <div><div className="panel-title">Keys</div><p className="panel-description">Send a key as <code>Authorization: Bearer &lt;key&gt;</code>.</p></div>
+          <Badge tone="muted">{keys.filter((key) => !key.revoked_at).length} active</Badge>
         </div>
-        {newToken && (
-          <div className="token-reveal" role="status">
-            <div className="token-reveal-head">
-              <span><CheckIcon /> New token</span>
-              <strong>Shown once</strong>
-            </div>
-            <p>Copy this token now. You will not be able to retrieve it again.</p>
-            <div className="copy-field">
-              <code>{newToken}</code>
-              <button type="button" className="ghost" onClick={() => void copy(newToken, "token")}>
-                <CopyIcon /> {copied === "token" ? "Copied" : "Copy"}
-              </button>
-            </div>
-            <div className="code-block-wrap">
-              <pre className="stack-trace">{curlCommand}</pre>
-              <button type="button" className="ghost code-copy" onClick={() => void copy(curlCommand, "command")}>
-                <CopyIcon /> {copied === "command" ? "Copied" : "Copy command"}
-              </button>
-            </div>
+        {keys.length === 0 ? (
+          <div className="api-key-empty"><ShieldIcon /><strong>No API keys</strong><span>Create one when a service needs programmatic access.</span></div>
+        ) : (
+          <div className="api-key-list">
+            {keys.map((key) => (
+              <article className={`api-key-row ${key.revoked_at ? "revoked" : ""}`} key={key.id}>
+                <div className="api-key-identity"><strong>{key.name}</strong><span>{key.revoked_at ? "Revoked" : key.last_used_at ? `Last used ${new Date(key.last_used_at).toLocaleString()}` : "Never used"}</span></div>
+                <div className="api-key-value"><code>{truncateApiKey(key.key)}</code><button type="button" className="ghost icon-button" aria-label={copied === key.id ? `${key.name} copied` : `Copy ${key.name}`} title={copied === key.id ? "Copied" : "Copy API key"} disabled={Boolean(key.revoked_at)} onClick={() => void copy(key)}>{copied === key.id ? <CheckIcon /> : <CopyIcon />}</button></div>
+                <div className="api-key-actions">
+                  {key.revoked_at ? <Badge tone="muted">Revoked</Badge> : <ActionMenu label={`Actions for ${key.name}`}>
+                    <button type="button" className="action-menu-item" role="menuitem" onClick={() => void rotate(key)}>Rotate key <InfoTip label="Generate a new key value without changing the name. Previous value stops working immediately." /></button>
+                    <ConfirmDialog trigger={<button type="button" className="action-menu-item danger" role="menuitem">Revoke key <InfoTip label="Permanently disable this key. This cannot be undone." /></button>} title={`Revoke ${key.name}?`} description="Requests using this key will fail immediately." confirmLabel="Revoke key" onConfirm={() => revoke(key)} />
+                  </ActionMenu>}
+                </div>
+              </article>
+            ))}
           </div>
         )}
-        {!newToken && (
-          <div className="token-empty-state">
-            <ShieldIcon />
-            <strong>{token.configured ? "A token is active" : "No API token yet"}</strong>
-            <p>
-              {token.configured
-                ? "For security, the existing token cannot be displayed. Rotate it only if you can update every client using it."
-                : "Generate a bearer token when an external tool needs access to dispatcher logs."}
-            </p>
-            {token.configured && token.updated_at && (
-              <span>Last rotated {new Date(token.updated_at).toLocaleString()}</span>
-            )}
-          </div>
-        )}
-        <div className="editor-actions token-actions">
-          <button
-            type="button"
-            className={token.configured ? "ghost" : undefined}
-            disabled={rotating}
-            onClick={() => void rotate()}
-          >
-            {rotating ? "Generating…" : token.configured ? "Rotate token" : "Generate token"}
-          </button>
-          {token.configured && !newToken && (
-            <span className="action-help">Rotation immediately invalidates the current token.</span>
-          )}
-        </div>
       </section>
     </div>
   );
@@ -827,6 +833,7 @@ export default function Settings({
         {tab === "invitations" && <Invitations />}
         {tab === "account" && <Account me={user} />}
         {tab === "organization" && <Organization canEdit={canManageOrg} />}
+        {tab === "api-keys" && <ApiKeys />}
         {tab === "observability" && <Observability />}
       </div>
     </>

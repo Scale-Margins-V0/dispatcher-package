@@ -39,6 +39,7 @@ import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerLogsApiRoutes } from "./logs-api.js";
 import { recordDispatchActivity } from "./admin/activity.js";
+import { programOf, recordDispatchProgramForPayload } from "./db/repos/dispatch-programs.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
 import { logUnlessVitest } from "./logging.js";
@@ -314,6 +315,11 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
       `${payload.user_ids?.length || 0} recipients, channel: ${payload.channel}`
   );
 
+  // Record wire id → program before any event is emitted. A drip step's
+  // sequence id lives only in this payload; provider webhooks arriving later
+  // carry the wire id alone and resolve their program through this mapping.
+  await recordDispatchProgramForPayload(payload);
+
   // Acknowledge immediately
   telemetry.capture("dispatcher_dispatch_accepted", {
     channel: payload.channel,
@@ -323,6 +329,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   recordDispatchActivity({
     id: activityId,
     campaign_id: String(payload.campaign_id ?? "unknown"),
+    ...programOf(payload),
     organization_id: payload.metadata?.organization_id,
     channel: String(payload.channel ?? "unknown"),
     provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
@@ -340,6 +347,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
     recordDispatchActivity({
       id: activityId,
       campaign_id: String(payload.campaign_id ?? "unknown"),
+      ...programOf(payload),
       organization_id: payload.metadata?.organization_id,
       channel: String(payload.channel ?? "unknown"),
       provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
@@ -354,6 +362,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
     recordDispatchActivity({
       id: activityId,
       campaign_id: String(payload.campaign_id ?? "unknown"),
+      ...programOf(payload),
       organization_id: payload.metadata?.organization_id,
       channel: String(payload.channel ?? "unknown"),
       provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),

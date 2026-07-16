@@ -33,6 +33,7 @@ describe("runDispatcherMigrations (sqlite)", () => {
       "app_logs",
       "dev_sent_campaigns",
       "dispatcher_meta",
+      "api_keys",
       "user",
       "session",
       "account",

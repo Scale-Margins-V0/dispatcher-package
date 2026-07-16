@@ -8,6 +8,7 @@ import type { Express, NextFunction, Request, RequestHandler, Response } from "e
 import { fromNodeHeaders } from "better-auth/node";
 import { z } from "zod";
 import { getAuth, isAuthInitialized } from "./auth/index.js";
+import { bearerFromRequest, verifyApiKey } from "./auth/api-keys.js";
 import { queryLogs } from "./db/repos/logs.js";
 import type { AppLogRow, LogLevel } from "./db/schema/index.js";
 import { isDbInitialized } from "./db/state.js";
@@ -48,9 +49,8 @@ const querySchema = z.object({
 });
 
 async function isAuthorized(req: Request): Promise<boolean> {
-  const header = req.header("authorization") ?? "";
-  const bearer = /^Bearer\s+(.+)$/i.exec(header)?.[1]?.trim();
-  if (bearer && (await verifyLogsToken(bearer))) return true;
+  const bearer = bearerFromRequest(req.header("authorization"));
+  if (bearer && ((await verifyApiKey(bearer)) || (await verifyLogsToken(bearer)))) return true;
   // Fall back to a valid admin session (cookie) for console/curl convenience.
   if (isAuthInitialized()) {
     try {

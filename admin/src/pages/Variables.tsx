@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import ConfirmDialog from "../components/ConfirmDialog";
+import ActionMenu from "../components/ActionMenu";
+import { InfoTip } from "../components/InfoTip";
 import { AlertIcon, CheckIcon, SlidersIcon } from "../icons";
 import type {
   AdminVariable,
@@ -518,7 +520,7 @@ function Editor({
             />
           </label>
           <label>
-            Source
+            Source <InfoTip label="Where the variable value comes from — a recipient field, an expression, a fixed constant, a SQL query, or an external API call." />
             <Select
               value={state.source}
               onValueChange={(value) => onChange({ ...state, source: value as VariableSource })}
@@ -539,7 +541,7 @@ function Editor({
 
         {state.source === "field" && (
           <label className="field-row">
-            Field
+            Field <InfoTip label="Column name from the recipient lookup to copy as the variable value." />
             <input
               value={state.field}
               onChange={(event) => onChange({ ...state, field: event.target.value })}
@@ -550,7 +552,7 @@ function Editor({
         )}
         {state.source === "computed" && (
           <label className="field-row">
-            Expression
+            Expression <InfoTip label="Concatenate fields and literals using + and string operators, e.g. 'Hello ' + first_name" />
             <input
               value={state.expr}
               onChange={(event) => onChange({ ...state, expr: event.target.value })}
@@ -572,7 +574,7 @@ function Editor({
         )}
         {state.source === "query" && (
           <label className="field-row">
-            SQL query <span className="field-hint">{TOKEN_HINT}</span>
+            SQL query <InfoTip label="Parameterized query that returns a single value. Tokens like {{user_id}} are substituted per recipient." /> <span className="field-hint">{TOKEN_HINT}</span>
             <textarea
               className="code-input"
               rows={3}
@@ -799,15 +801,16 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
                       </button>
                     </td>
                     <td className="actions-cell">
-                      <button type="button" className="ghost" onClick={() => setEditor(editorFromVariable(variable))}>
-                        Edit
-                      </button>
-                      <ConfirmDialog
-                        trigger={
-                          <button type="button" className="ghost">
-                            Delete
-                          </button>
-                        }
+                      <ActionMenu label={`Actions for ${variable.name}`}>
+                        <button type="button" className="action-menu-item" role="menuitem" onClick={() => setEditor(editorFromVariable(variable))}>
+                          Edit variable
+                        </button>
+                        <ConfirmDialog
+                          trigger={
+                            <button type="button" className="action-menu-item danger" role="menuitem">
+                              Delete variable
+                            </button>
+                          }
                         title={`Delete ${variable.name}?`}
                         description={
                           <>
@@ -816,8 +819,9 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
                           </>
                         }
                         confirmLabel="Delete variable"
-                        onConfirm={() => remove(variable.name)}
-                      />
+                          onConfirm={() => remove(variable.name)}
+                        />
+                      </ActionMenu>
                     </td>
                   </tr>
                 );

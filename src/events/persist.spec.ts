@@ -60,7 +60,8 @@ describe("campaignEventRowFromStandardized", () => {
         occurred_at: "not-a-date",
         metadata: { bounce_type: "hard" },
       }),
-      received
+      received,
+      { program_id: "cmp_1", program_kind: "campaign", step_id: null }
     );
     expect(row.provider_message_id).toHaveLength(191);
     expect(row.occurred_at).toEqual(received);
@@ -74,7 +75,7 @@ describe("persistCampaignEvents", () => {
     await persistCampaignEvents([std({ idempotency_key: "same" })]);
     await persistCampaignEvents([std({ idempotency_key: "same" })]); // webhook replay
     await persistCampaignEvents([std({ user_id: "user_2", event: "opened" })]);
-    const page = await listCampaignEvents({ campaign_id: "cmp_1", limit: 10 });
+    const page = await listCampaignEvents({ program_id: "cmp_1", limit: 10 });
     expect(page.events).toHaveLength(2);
   });
 
