@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { toast } from "sonner";
 import {
   createVariable,
   deleteVariable,
@@ -476,9 +477,15 @@ function Editor({
       const payload = toPayload(state);
       if (state.original) await updateVariable(state.original, payload);
       else await createVariable(payload);
+      toast.success(
+        state.original ? `Variable {{${payload.name}}} updated` : `Variable {{${payload.name}}} created`,
+        { description: "Applies to the next dispatch — no restart needed." }
+      );
       onSaved();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to save variable");
+      const message = reason instanceof Error ? reason.message : "Unable to save variable";
+      setError(message);
+      toast.error("Could not save variable", { description: message });
     } finally {
       setBusy(false);
     }
@@ -658,7 +665,9 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
       const data = await fetchVariables();
       setVariables(data.variables);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to load variables");
+      const message = reason instanceof Error ? reason.message : "Unable to load variables";
+      setError(message);
+      toast.error("Could not load variables", { description: message });
     }
   }, []);
 
@@ -669,9 +678,12 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
   const toggle = async (variable: AdminVariable) => {
     try {
       await updateVariable(variable.name, { ...variableToPayload(variable), enabled: !variable.enabled });
+      toast.success(`{{${variable.name}}} ${variable.enabled ? "disabled" : "enabled"}`);
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to update variable");
+      toast.error("Could not update variable", {
+        description: reason instanceof Error ? reason.message : undefined,
+      });
     }
   };
 
@@ -679,9 +691,12 @@ export default function Variables({ refreshSignal = 0 }: { refreshSignal?: numbe
     try {
       await deleteVariable(name);
       setPendingDelete(null);
+      toast.success(`Variable {{${name}}} deleted`);
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to delete variable");
+      toast.error("Could not delete variable", {
+        description: reason instanceof Error ? reason.message : undefined,
+      });
     }
   };
 

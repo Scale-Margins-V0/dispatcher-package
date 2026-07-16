@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { toast } from "sonner";
 import {
   cancelInvitation,
   changePassword,
@@ -75,18 +76,24 @@ function Members({ me }: { me: SessionUser | null }) {
   const changeRole = async (memberId: string, role: string) => {
     try {
       await updateMemberRole(memberId, role);
+      toast.success(`Role changed to ${role}`);
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to change role");
+      const m = reason instanceof Error ? reason.message : undefined;
+      setError(m ?? "Unable to change role");
+      toast.error("Could not change role", { description: m });
     }
   };
   const remove = async (email: string) => {
     try {
       await removeMember(email);
       setPendingRemove(null);
+      toast.success(`${email} removed from the organization`);
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to remove member");
+      const m = reason instanceof Error ? reason.message : undefined;
+      setError(m ?? "Unable to remove member");
+      toast.error("Could not remove member", { description: m });
     }
   };
 
@@ -182,12 +189,18 @@ function Invitations() {
     setBusy(true);
     setError("");
     try {
-      const res = await inviteMember(email.trim(), role);
+      const invited = email.trim();
+      const res = await inviteMember(invited, role);
       setLastLink({ url: res.accept_url, emailed: res.emailed });
       setEmail("");
+      toast.success(`Invitation created for ${invited}`, {
+        description: res.emailed ? "Emailed, and the link is below." : "Copy the link below to share it.",
+      });
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to send invitation");
+      const m = reason instanceof Error ? reason.message : undefined;
+      setError(m ?? "Unable to send invitation");
+      toast.error("Could not send invitation", { description: m });
     } finally {
       setBusy(false);
     }
@@ -204,9 +217,12 @@ function Invitations() {
   const cancel = async (id: string) => {
     try {
       await cancelInvitation(id);
+      toast.success("Invitation cancelled");
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to cancel invitation");
+      const m = reason instanceof Error ? reason.message : undefined;
+      setError(m ?? "Unable to cancel invitation");
+      toast.error("Could not cancel invitation", { description: m });
     }
   };
 
@@ -317,8 +333,11 @@ function Account({ me }: { me: SessionUser | null }) {
       setCurrent("");
       setNext("");
       setConfirm("");
+      toast.success("Password updated", { description: "Other sessions were signed out." });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to change password");
+      const m = reason instanceof Error ? reason.message : undefined;
+      setError(m ?? "Unable to change password");
+      toast.error("Could not change password", { description: m });
     } finally {
       setBusy(false);
     }
@@ -393,9 +412,12 @@ function Organization({ canEdit }: { canEdit: boolean }) {
     try {
       await updateOrganization(name.trim());
       setOk(true);
+      toast.success("Organization updated");
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to update organization");
+      const m = reason instanceof Error ? reason.message : undefined;
+      setError(m ?? "Unable to update organization");
+      toast.error("Could not update organization", { description: m });
     }
   };
 
@@ -461,8 +483,15 @@ function Observability() {
       const res = await saveLogWebhook(input(wh));
       setWh(res.webhook);
       setSaved(true);
+      toast.success("Log webhook saved", {
+        description: res.webhook.enabled
+          ? `Forwarding ${res.webhook.min_level} and above.`
+          : "Currently disabled.",
+      });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to save");
+      const m = reason instanceof Error ? reason.message : undefined;
+      setError(m ?? "Unable to save");
+      toast.error("Could not save the webhook", { description: m });
     }
   };
   const sendTest = async () => {
@@ -471,17 +500,26 @@ function Observability() {
     try {
       const r = await testLogWebhook(input(wh));
       setTest(r.ok ? { ok: true, text: `Delivered (HTTP ${r.status ?? 200})` } : { ok: false, text: r.error ?? "Failed" });
+      if (r.ok) toast.success("Test event delivered", { description: `HTTP ${r.status ?? 200}` });
+      else toast.error("Test delivery failed", { description: r.error });
     } catch (reason) {
-      setTest({ ok: false, text: reason instanceof Error ? reason.message : "Failed" });
+      const m = reason instanceof Error ? reason.message : "Failed";
+      setTest({ ok: false, text: m });
+      toast.error("Test delivery failed", { description: m });
     }
   };
   const rotate = async () => {
     try {
       const r = await generateLogsToken();
       setNewToken(r.token);
+      toast.success("Logs API token generated", {
+        description: "Shown once — copy it now. Any previous token stopped working.",
+      });
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to generate token");
+      const m = reason instanceof Error ? reason.message : undefined;
+      setError(m ?? "Unable to generate token");
+      toast.error("Could not generate token", { description: m });
     }
   };
   const copy = async (text: string) => {

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { toast } from "sonner";
 import { acceptInvite } from "../api";
 import { AlertIcon, CheckIcon, ShieldIcon } from "../icons";
 
@@ -31,11 +32,14 @@ export default function AcceptInvite() {
     try {
       await acceptInvite(token, name.trim(), password);
       setDone(true);
+      toast.success("Account created — welcome aboard");
       // Signed in via the accept response; drop into the console.
       window.location.hash = "overview";
       window.location.reload();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to accept the invitation");
+      const m = reason instanceof Error ? reason.message : "Unable to accept the invitation";
+      setError(m);
+      toast.error("Could not accept the invitation", { description: m });
     } finally {
       setBusy(false);
     }

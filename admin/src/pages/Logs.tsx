@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { fetchLogs } from "../api";
 import { AlertIcon, ChevronIcon, ClockIcon } from "../icons";
 import type { LogEntry } from "../types";
@@ -34,7 +35,9 @@ export default function Logs({ refreshSignal = 0 }: { refreshSignal?: number }) 
         setLogs((prev) => (append ? [...prev, ...page.logs] : page.logs));
         setCursor(page.next_cursor);
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "Unable to load logs");
+        const m = reason instanceof Error ? reason.message : "Unable to load logs";
+        setError(m);
+        toast.error("Could not load logs", { description: m });
       } finally {
         setLoading(false);
       }

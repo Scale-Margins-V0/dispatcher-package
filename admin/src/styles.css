@@ -1,4 +1,55 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * shadcn components use `dark:` utilities, but this app themes via
+ * `color-scheme` + `data-theme` (light | dark | unset = follow system), not a
+ * `.dark` class. Match both: an explicit data-theme="dark", or system dark when
+ * the user hasn't pinned light.
+ */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+}
+
+/*
+ * Map shadcn's Tailwind color tokens onto the palette below so its components
+ * inherit this app's look and follow the theme automatically via light-dark().
+ * NOTE: we deliberately map --color-* here rather than defining :root --accent
+ * / --muted, because this app already uses those names with *different*
+ * meanings (--accent = primary ink, --muted = muted text colour).
+ */
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-ink);
+  --color-secondary: var(--raised);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--raised);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--accent-soft);
+  --color-accent-foreground: var(--text);
+  --color-destructive: var(--red);
+  --color-destructive-foreground: var(--accent-ink);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--accent-ring);
+  --radius-sm: var(--radius-xs);
+  --radius-md: var(--radius-sm);
+  --radius-lg: var(--radius);
+  --radius-xl: 16px;
+}
 
 :root {
   color-scheme: light dark;
