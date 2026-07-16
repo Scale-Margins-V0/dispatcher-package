@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { RequestHandler } from "express";
 import { buildPayloadForGroup, postAnalyticsWithRetry } from "../events/forwarder.js";
+import { persistCampaignEvents } from "../events/persist.js";
 import { logPreferenceSideEffectSimulation } from "../events/preference-side-effect-log.js";
 import { scrubPii } from "../events/scrubber.js";
 import type { StandardizedEvent } from "../events/common/types.js";
@@ -242,7 +243,9 @@ export function createUnsubscribeLinkPostHandler(): RequestHandler {
       );
     }
 
-    if (canProxy && analyticsUrl && campaignId && organizationId) {
+    // Persist for the console whenever the link carries correlation;
+    // forwarding additionally needs the analytics URL + secret.
+    if (campaignId && organizationId) {
       const occurredAt = new Date().toISOString();
       const std = buildUnsubscribeEvent({
         uid,
@@ -253,14 +256,17 @@ export function createUnsubscribeLinkPostHandler(): RequestHandler {
         reason: resolved.reason,
       });
       logPreferenceSideEffectSimulation(std);
-      const payload = buildPayloadForGroup({
-        campaign_id: std.campaign_id,
-        organization_id: std.organization_id,
-        events: [std],
-      });
-      const r = await postAnalyticsWithRetry(analyticsUrl, payload, secret);
-      if (!r.success) {
-        logUnlessVitest(`[UnsubscribeLink] Analytics POST failed: ${r.error ?? "unknown"}`);
+      await persistCampaignEvents([std]);
+      if (canProxy && analyticsUrl) {
+        const payload = buildPayloadForGroup({
+          campaign_id: std.campaign_id,
+          organization_id: std.organization_id,
+          events: [std],
+        });
+        const r = await postAnalyticsWithRetry(analyticsUrl, payload, secret);
+        if (!r.success) {
+          logUnlessVitest(`[UnsubscribeLink] Analytics POST failed: ${r.error ?? "unknown"}`);
+        }
       }
     }
 
