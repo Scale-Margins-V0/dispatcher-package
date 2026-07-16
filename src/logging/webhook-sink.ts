@@ -10,14 +10,6 @@ import { createHmac } from "node:crypto";
 import type { LogLevel } from "../db/schema/shared.js";
 import { getLogWebhookConfig, type LogWebhookConfig } from "./webhook-config.js";
 
-const LEVEL_ORDER: Record<LogLevel, number> = {
-  trace: 10,
-  debug: 20,
-  info: 30,
-  warn: 40,
-  error: 50,
-  fatal: 60,
-};
 const LABEL_BY_NUM: Record<number, LogLevel> = {
   10: "trace",
   20: "debug",
@@ -111,7 +103,8 @@ class LogWebhookSink {
       return;
     }
     const levelNum = typeof parsed.level === "number" ? parsed.level : 30;
-    if (levelNum < LEVEL_ORDER[cfg.min_level]) return;
+    const level = LABEL_BY_NUM[levelNum] ?? "info";
+    if (!cfg.levels.includes(level)) return;
     if (this.inflight >= MAX_INFLIGHT) return; // drop-on-overflow — never block/grow
     this.inflight++;
     void deliverLogWebhook(cfg, payloadFromLine(parsed))

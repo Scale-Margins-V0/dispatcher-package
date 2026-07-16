@@ -104,7 +104,7 @@ describe("inbound webhook persistence", () => {
     expect(result()).toBe(200);
 
     // Console store has both events…
-    const page = await listCampaignEvents({ campaign_id: "cmp_nb", limit: 10 });
+    const page = await listCampaignEvents({ program_id: "cmp_nb", limit: 10 });
     expect(page.events.map((e) => e.user_id).sort()).toEqual(["u1", "u2"]);
     expect(page.events[0].event).toBe("delivered");
 
@@ -124,7 +124,7 @@ describe("inbound webhook persistence", () => {
     const second = mockReqRes(items);
     await handler(second.req, second.res, () => {});
 
-    const page = await listCampaignEvents({ campaign_id: "cmp_nb", limit: 10 });
+    const page = await listCampaignEvents({ program_id: "cmp_nb", limit: 10 });
     expect(page.events).toHaveLength(1);
   });
 });

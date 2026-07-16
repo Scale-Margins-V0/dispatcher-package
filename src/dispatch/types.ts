@@ -24,5 +24,23 @@ export type DispatchPayload = {
   metadata: {
     organization_id: string;
     analytics_callback_url: string;
+    /**
+     * Program correlation, sent by ScaleMargin on every dispatch.
+     *
+     * A drip step arrives with campaign_id = `drip_{enrollmentId}_{stepId}`,
+     * which is unique per (sequence × lead × step) — i.e. the wire id names one
+     * SEND, not a campaign. `drip_sequence_id` is the only key that groups a
+     * drip back into the thing a human calls "the campaign", and it exists ONLY
+     * here (provider webhooks later carry just the wire id). Capture it.
+     */
+    dispatch_kind?: "drip" | "campaign";
+    drip_sequence_id?: string;
+    step_id?: string;
+    enrollment_id?: string;
+    lead_id?: string;
+    correlation_id?: string;
+    campaign_name?: string;
+    variant_id?: string;
+    scheduled_at?: string | null;
   };
 };

@@ -119,6 +119,9 @@ export type RunPage = { runs: DispatchRunRow[]; next_cursor: { ts: Date; id: str
 
 export async function listDispatchRuns(options: {
   campaign_id?: string;
+  /** Group key — a drip program's runs span many wire campaign ids. */
+  program_id?: string;
+  step_id?: string;
   status?: string;
   cursor?: { ts: Date; id: string };
   limit: number;
@@ -127,6 +130,8 @@ export async function listDispatchRuns(options: {
   const runs = tableFor(dbx, "dispatchRuns");
   const conditions: unknown[] = [];
   if (options.campaign_id) conditions.push(eq(runs.campaign_id, options.campaign_id));
+  if (options.program_id) conditions.push(eq(runs.program_id, options.program_id));
+  if (options.step_id) conditions.push(eq(runs.step_id, options.step_id));
   if (options.status) conditions.push(eq(runs.status, options.status));
   if (options.cursor) {
     // Drizzle operators, not raw sql`` — raw templates don't run Date params
@@ -154,31 +159,54 @@ export async function listDispatchRuns(options: {
 }
 
 /** True when the campaign has an in-flight (accepted) run since `since` — drives GUI polling. */
-export async function hasActiveRun(campaign_id: string, since: Date): Promise<boolean> {
+export async function hasActiveRun(program_id: string, since: Date): Promise<boolean> {
   const dbx = getDb();
   const runs = tableFor(dbx, "dispatchRuns");
   const [row] = await queryDb(dbx)
     .select({ n: sql`count(*)` })
     .from(runs)
     .where(
-      and(eq(runs.campaign_id, campaign_id), eq(runs.status, "accepted"), gte(runs.occurred_at, since))
+      and(eq(runs.program_id, program_id), eq(runs.status, "accepted"), gte(runs.occurred_at, since))
     );
   return num(row?.n) > 0;
 }
 
-/** Send-time failures for one recipient of a campaign (feeds the per-user timeline). */
+/**
+ * Send-time failures for one recipient across a whole program. A drip
+ * recipient's failures are spread over many wire campaign ids, so we join
+ * through the program map rather than enumerating sends.
+ */
 export async function listRecipientFailuresForUser(
-  campaign_id: string,
+  program_id: string,
   user_id: string,
   limit = 100
 ): Promise<RecipientFailureRow[]> {
   const dbx = getDb();
-  const failures = tableFor(dbx, "dispatchRecipientFailures");
+  const f = tableFor(dbx, "dispatchRecipientFailures");
+  const p = tableFor(dbx, "dispatchPrograms");
   const raw: Record<string, unknown>[] = await queryDb(dbx)
-    .select()
-    .from(failures)
-    .where(and(eq(failures.campaign_id, campaign_id), eq(failures.user_id, user_id)))
-    .orderBy(desc(failures.occurred_at), desc(failures.id))
+    .select({
+      id: f.id,
+      dispatch_run_id: f.dispatch_run_id,
+      campaign_id: f.campaign_id,
+      user_id: f.user_id,
+      provider: f.provider,
+      error_category: f.error_category,
+      error_message: f.error_message,
+      error_stack: f.error_stack,
+      context: f.context,
+      occurred_at: f.occurred_at,
+    })
+    .from(f)
+    // LEFT JOIN + fallback: an unmapped send still shows its failures.
+    .leftJoin(p, eq(p.campaign_id, f.campaign_id))
+    .where(
+      and(
+        or(eq(p.program_id, program_id), eq(f.campaign_id, program_id)),
+        eq(f.user_id, user_id)
+      )
+    )
+    .orderBy(desc(f.occurred_at), desc(f.id))
     .limit(limit);
   return raw as unknown as RecipientFailureRow[];
 }

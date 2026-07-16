@@ -193,12 +193,196 @@ export interface RecipientFailure {
   error_category: string;
   error_message: string;
   error_stack: string | null;
+  context?: Record<string, unknown> | null;
   occurred_at: string;
 }
 
 export interface DispatchDetail {
   dispatch: DispatchActivity;
   recipient_failures: RecipientFailure[];
+}
+
+// --- Campaign console ---
+
+export type RecipientStatus =
+  | "complained"
+  | "bounced"
+  | "failed"
+  | "unsubscribed"
+  | "clicked"
+  | "opened"
+  | "read"
+  | "delivered"
+  | "dispatched"
+  | "pending";
+
+/** "campaign" = one-shot blast; "drip" = a multi-step (often multi-channel) sequence. */
+export type ProgramKind = "campaign" | "drip";
+
+export interface CampaignFunnel {
+  unique_recipients: number;
+  dispatched: number;
+  delivered: number;
+  /** Email/push tracking-pixel opens. Never merged with `read`. */
+  opened: number;
+  /** WhatsApp read receipts — a different signal from an email open. */
+  read: number;
+  clicked: number;
+  bounced: number;
+  complained: number;
+  unsubscribed: number;
+  failed: number;
+}
+
+export interface CampaignSummary {
+  /** Grouping key: drip_sequence_id for drips, campaign_id for blasts. */
+  program_id: string;
+  program_kind: ProgramKind;
+  /** Distinct drip steps; 0 for one-shot campaigns. */
+  steps: number;
+  /** Distinct wire sends — a drip fans out roughly people x steps. */
+  sends: number;
+  organization_id: string | null;
+  runs: number;
+  accepted_runs: number;
+  failed_runs: number;
+  /**
+   * Sum of run recipient counts. For a drip this counts SENDS, not people —
+   * show `events.unique_recipients` to humans instead.
+   */
+  recipients: number;
+  sent: number;
+  failed: number;
+  first_activity: string;
+  last_activity: string;
+  channels: string[];
+  providers: string[];
+  has_callback: boolean;
+  events: CampaignFunnel | null;
+}
+
+export interface CampaignPage {
+  generated_at: string;
+  campaigns: CampaignSummary[];
+  next_cursor: string | null;
+}
+
+export interface ProgramStep {
+  step_id: string;
+  channel: string;
+  provider: string;
+  sends: number;
+  first_activity: string;
+  last_activity: string;
+}
+
+export interface CampaignInfo {
+  program_id: string;
+  program_kind: ProgramKind;
+  /** Ordered drip steps; empty for one-shot campaigns. */
+  steps: ProgramStep[];
+  sends: number;
+  organization_id: string | null;
+  /** A drip picks a channel per step, so a program can span channels. */
+  channels: string[];
+  providers: string[];
+  runs: number;
+  accepted_runs: number;
+  failed_runs: number;
+  recipients: number;
+  sent: number;
+  failed: number;
+  first_activity: string | null;
+  last_activity: string | null;
+  active: boolean;
+  callback: { registered: boolean; destination: string; last_used_at: string } | null;
+  funnel: CampaignFunnel;
+  outbox: Record<string, number>;
+}
+
+export interface RecipientRollup {
+  user_id: string;
+  status: RecipientStatus;
+  stages: {
+    dispatched: boolean;
+    delivered: boolean;
+    opened: boolean;
+    read: boolean;
+    clicked: boolean;
+  };
+  flags: { bounced: boolean; complained: boolean; unsubscribed: boolean; failed: boolean };
+  event_count: number;
+  /** Drip steps this person was touched by; 0 for one-shot campaigns. */
+  steps: number;
+  /** >1 means their journey crossed channels (e.g. email -> WhatsApp). */
+  channel_count: number;
+  first_event_at: string;
+  last_event_at: string;
+}
+
+export interface RecipientPage {
+  generated_at: string;
+  status_counts: Record<RecipientStatus, number>;
+  recipients: RecipientRollup[];
+  next_cursor: string | null;
+}
+
+export interface CampaignEvent {
+  id: string;
+  /** The wire id — one send (for drips: one recipient x one step). */
+  campaign_id: string;
+  program_id: string;
+  program_kind: ProgramKind;
+  step_id: string | null;
+  organization_id: string;
+  user_id: string;
+  channel: string;
+  event: string;
+  provider: string;
+  provider_message_id: string | null;
+  occurred_at: string;
+  received_at: string;
+  metadata: Record<string, unknown> | null;
+  dedupe_key: string;
+}
+
+export interface CampaignEventPage {
+  generated_at: string;
+  events: CampaignEvent[];
+  next_cursor: string | null;
+}
+
+export interface RecipientTimeline {
+  program_id: string;
+  user_id: string;
+  status: RecipientStatus;
+  events: CampaignEvent[];
+  recipient_failures: RecipientFailure[];
+}
+
+export interface DispatchPage {
+  generated_at: string;
+  dispatches: DispatchActivity[];
+  next_cursor: string | null;
+}
+
+export interface CampaignOutboxEntry {
+  id: string;
+  status: string;
+  attempts: number;
+  destination: string;
+  last_error: string | null;
+  created_at: string;
+  next_attempt_at: string;
+  delivered_at: string | null;
+  event: Record<string, unknown>;
+}
+
+export interface CampaignOutboxPage {
+  generated_at: string;
+  status_counts: Record<string, number>;
+  entries: CampaignOutboxEntry[];
+  next_cursor: string | null;
 }
 
 export interface SessionUser {
@@ -241,7 +425,7 @@ export type LogLevelName = "trace" | "debug" | "info" | "warn" | "error" | "fata
 export interface LogWebhookSettings {
   enabled: boolean;
   url: string;
-  min_level: LogLevelName;
+  levels: LogLevelName[];
   has_secret: boolean;
   secret: string;
 }
@@ -249,6 +433,17 @@ export interface LogWebhookSettings {
 export interface LogWebhookInput {
   enabled: boolean;
   url: string;
-  min_level: LogLevelName;
+  levels: LogLevelName[];
   secret?: string;
+}
+
+export interface ApiKeyRecord {
+  id: string;
+  name: string;
+  key: string;
+  prefix: string;
+  created_at: string;
+  updated_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
 }

@@ -13,12 +13,13 @@ export const LOG_WEBHOOK_KEY = "log_webhook";
 export type LogWebhookConfig = {
   enabled: boolean;
   url: string;
-  min_level: LogLevel;
+  levels: LogLevel[];
   secret?: string;
 };
 
-const DEFAULT: LogWebhookConfig = { enabled: false, url: "", min_level: "warn" };
-const LEVELS = new Set<LogLevel>(["trace", "debug", "info", "warn", "error", "fatal"]);
+const LEVEL_LIST: LogLevel[] = ["trace", "debug", "info", "warn", "error", "fatal"];
+const DEFAULT: LogWebhookConfig = { enabled: false, url: "", levels: ["warn", "error", "fatal"] };
+const LEVELS = new Set<LogLevel>(LEVEL_LIST);
 
 let snapshot: LogWebhookConfig = DEFAULT;
 
@@ -35,11 +36,16 @@ export async function refreshLogWebhookConfig(): Promise<void> {
   }
   try {
     const p = JSON.parse(raw) as Partial<LogWebhookConfig>;
-    const min = LEVELS.has(p.min_level as LogLevel) ? (p.min_level as LogLevel) : "warn";
+    const legacyMin = LEVELS.has((p as { min_level?: LogLevel }).min_level as LogLevel)
+      ? (p as { min_level: LogLevel }).min_level
+      : "warn";
+    const levels = Array.isArray(p.levels)
+      ? p.levels.filter((level): level is LogLevel => LEVELS.has(level as LogLevel))
+      : LEVEL_LIST.slice(LEVEL_LIST.indexOf(legacyMin));
     snapshot = {
       enabled: Boolean(p.enabled),
       url: typeof p.url === "string" ? p.url : "",
-      min_level: min,
+      levels: levels.length > 0 ? levels : DEFAULT.levels,
       ...(p.secret ? { secret: String(p.secret) } : {}),
     };
   } catch {

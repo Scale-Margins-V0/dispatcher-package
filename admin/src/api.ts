@@ -2,13 +2,20 @@ import type {
   AdminActivity,
   AdminOverview,
   AdminVariable,
+  CampaignEventPage,
+  CampaignInfo,
+  CampaignOutboxPage,
+  CampaignPage,
   DispatchDetail,
+  DispatchPage,
   LogPage,
   LogWebhookInput,
   LogWebhookSettings,
   OrgMember,
   OrgSummary,
   PendingInvitation,
+  RecipientPage,
+  RecipientTimeline,
   SessionInfo,
   VariablePayload,
   VariableTestResult,
@@ -70,13 +77,24 @@ export const inviteMember = (email: string, role: string) =>
 export const cancelInvitation = (invitationId: string) =>
   json<{ cancelled: boolean }>("/admin/api/settings/invitations/cancel", { method: "POST", ...jsonBody({ invitationId }) });
 
-// --- Observability: log webhook + /logs API token ---
+// --- Observability: log webhook + global API keys ---
 export const fetchLogWebhook = () =>
   json<{ webhook: LogWebhookSettings }>("/admin/api/settings/log-webhook");
 export const saveLogWebhook = (cfg: LogWebhookInput) =>
   json<{ webhook: LogWebhookSettings }>("/admin/api/settings/log-webhook", { method: "PUT", ...jsonBody(cfg) });
 export const testLogWebhook = (cfg: LogWebhookInput) =>
   json<{ ok: boolean; status?: number; error?: string }>("/admin/api/settings/log-webhook/test", { method: "POST", ...jsonBody(cfg) });
+export const fetchApiKeys = () =>
+  json<{ api_keys: import("./types").ApiKeyRecord[] }>("/admin/api/settings/api-keys");
+export const createApiKey = (name: string) =>
+  json<{ api_key: import("./types").ApiKeyRecord }>("/admin/api/settings/api-keys", { method: "POST", ...jsonBody({ name }) });
+export const rotateApiKey = (id: string) =>
+  json<{ api_key: import("./types").ApiKeyRecord }>(`/admin/api/settings/api-keys/${encodeURIComponent(id)}/rotate`, { method: "POST", ...jsonBody({}) });
+export const revokeApiKey = (id: string) =>
+  json<{ revoked: boolean }>(`/admin/api/settings/api-keys/${encodeURIComponent(id)}/revoke`, { method: "POST", ...jsonBody({}) });
+export const fetchPlatformSecrets = () =>
+  json<{ secrets: Array<{ name: string; value: string }> }>("/admin/api/settings/platform-secrets");
+/** Legacy helpers kept for existing clients while named API keys replace the UI. */
 export const fetchLogsTokenStatus = () =>
   json<{ configured: boolean; updated_at: string | null }>("/admin/api/settings/logs-token");
 export const generateLogsToken = () =>
@@ -99,3 +117,29 @@ export const fetchLogs = (params: Record<string, string>) =>
   json<LogPage>(`/admin/api/logs?${new URLSearchParams(params).toString()}`);
 export const fetchDispatchDetail = (id: string) =>
   json<DispatchDetail>(`/admin/api/dispatches/${encodeURIComponent(id)}`);
+
+// --- Campaign console ---
+const query = (params: Record<string, string | undefined>) => {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value) search.set(key, value);
+  const s = search.toString();
+  return s ? `?${s}` : "";
+};
+type PageParams = { q?: string; cursor?: string; limit?: string };
+
+export const fetchCampaigns = (params: PageParams = {}) =>
+  json<CampaignPage>(`/admin/api/campaigns${query(params)}`);
+export const fetchCampaign = (id: string) =>
+  json<{ campaign: CampaignInfo }>(`/admin/api/campaigns/${encodeURIComponent(id)}`);
+export const fetchCampaignRecipients = (id: string, params: PageParams & { status?: string } = {}) =>
+  json<RecipientPage>(`/admin/api/campaigns/${encodeURIComponent(id)}/recipients${query(params)}`);
+export const fetchCampaignRecipient = (id: string, userId: string) =>
+  json<RecipientTimeline>(
+    `/admin/api/campaigns/${encodeURIComponent(id)}/recipients/${encodeURIComponent(userId)}`
+  );
+export const fetchCampaignEvents = (id: string, params: PageParams & { event?: string } = {}) =>
+  json<CampaignEventPage>(`/admin/api/campaigns/${encodeURIComponent(id)}/events${query(params)}`);
+export const fetchCampaignRuns = (id: string, params: PageParams = {}) =>
+  json<DispatchPage>(`/admin/api/campaigns/${encodeURIComponent(id)}/runs${query(params)}`);
+export const fetchCampaignOutbox = (id: string, params: PageParams & { status?: string } = {}) =>
+  json<CampaignOutboxPage>(`/admin/api/campaigns/${encodeURIComponent(id)}/outbox${query(params)}`);

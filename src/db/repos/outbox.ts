@@ -107,16 +107,24 @@ export async function countOutboxByStatus(): Promise<Record<string, number>> {
 
 export type OutboxPage = { rows: OutboxRow[]; next_cursor: { ts: Date; id: string } | null };
 
-/** Forwarding attempts for one campaign, newest first (campaign Forwarding tab). */
-export async function listOutboxByCampaign(options: {
-  campaign_id: string;
+/**
+ * Forwarding attempts for one program, newest first. Outbox rows key on the
+ * wire campaign id, so a drip's attempts span many ids — join the program map.
+ */
+export async function listOutboxByProgram(options: {
+  program_id: string;
   status?: string;
   cursor?: { ts: Date; id: string };
   limit: number;
 }): Promise<OutboxPage> {
   const dbx = getDb();
   const table = tableFor(dbx, "eventOutbox");
-  const conditions: unknown[] = [eq(table.campaign_id, options.campaign_id)];
+  const p = tableFor(dbx, "dispatchPrograms");
+  // LEFT JOIN + fallback: recordDispatchProgram is best-effort, so an unmapped
+  // send must still surface under its own id rather than vanish from the tab.
+  const conditions: unknown[] = [
+    or(eq(p.program_id, options.program_id), eq(table.campaign_id, options.program_id)),
+  ];
   if (options.status) conditions.push(eq(table.status, options.status));
   if (options.cursor) {
     conditions.push(
@@ -127,8 +135,22 @@ export async function listOutboxByCampaign(options: {
     );
   }
   const raw: Record<string, unknown>[] = await queryDb(dbx)
-    .select()
+    .select({
+      id: table.id,
+      callback_url: table.callback_url,
+      campaign_id: table.campaign_id,
+      organization_id: table.organization_id,
+      event: table.event,
+      idempotency_key: table.idempotency_key,
+      status: table.status,
+      attempts: table.attempts,
+      next_attempt_at: table.next_attempt_at,
+      last_error: table.last_error,
+      created_at: table.created_at,
+      delivered_at: table.delivered_at,
+    })
     .from(table)
+    .leftJoin(p, eq(p.campaign_id, table.campaign_id))
     .where(and(...(conditions as never[])))
     .orderBy(desc(table.created_at), desc(table.id))
     .limit(options.limit + 1);
@@ -142,15 +164,17 @@ export async function listOutboxByCampaign(options: {
   };
 }
 
-export async function countOutboxByStatusForCampaign(
-  campaign_id: string
+export async function countOutboxByStatusForProgram(
+  program_id: string
 ): Promise<Record<string, number>> {
   const dbx = getDb();
   const table = tableFor(dbx, "eventOutbox");
+  const p = tableFor(dbx, "dispatchPrograms");
   const rows: Array<{ status: string; n: unknown }> = await queryDb(dbx)
     .select({ status: table.status, n: sql`count(*)` })
     .from(table)
-    .where(eq(table.campaign_id, campaign_id))
+    .leftJoin(p, eq(p.campaign_id, table.campaign_id))
+    .where(or(eq(p.program_id, program_id), eq(table.campaign_id, program_id)))
     .groupBy(table.status);
   return Object.fromEntries(rows.map((row) => [row.status, Number(row.n ?? 0)]));
 }

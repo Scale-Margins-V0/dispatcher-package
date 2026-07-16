@@ -13,6 +13,7 @@ import { componentLogger } from "../logging/logger.js";
 import { isDbInitialized, getDb } from "./client.js";
 import { queryDb, tableFor } from "./dialect-helpers.js";
 import { insertCampaignEvents } from "./repos/campaign-events.js";
+import { resolveProgram } from "./repos/dispatch-programs.js";
 import { getMeta, setMeta } from "./repos/meta.js";
 import { META_KEYS, type OutboxRow } from "./schema/index.js";
 
@@ -43,11 +44,26 @@ export async function backfillCampaignEventsOnce(): Promise<{ copied: number }> 
       .limit(BATCH);
     if (raw.length === 0) break;
 
-    const rows = (raw as unknown as OutboxRow[]).flatMap((row) => {
+    const outboxRows = (raw as unknown as OutboxRow[]).filter((row) => {
       const event = row.event as unknown as StandardizedEvent;
-      if (!event || !event.campaign_id || !event.user_id || !event.event) return [];
+      return Boolean(event && event.campaign_id && event.user_id && event.event);
+    });
+    // Historical sends resolve through the same program map as live ones.
+    const programs = await resolveProgram(
+      outboxRows.map((row) => (row.event as unknown as StandardizedEvent).campaign_id)
+    );
+    const rows = outboxRows.map((row) => {
+      const event = row.event as unknown as StandardizedEvent;
       // received_at = the outbox enqueue time, for historical fidelity.
-      return [campaignEventRowFromStandardized(event, row.created_at)];
+      return campaignEventRowFromStandardized(
+        event,
+        row.created_at,
+        programs.get(event.campaign_id) ?? {
+          program_id: event.campaign_id,
+          program_kind: "campaign",
+          step_id: null,
+        }
+      );
     });
     await insertCampaignEvents(rows);
     copied += rows.length;

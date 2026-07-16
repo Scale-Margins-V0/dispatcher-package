@@ -22,7 +22,7 @@ describe("deliverLogWebhook", () => {
   it("POSTs the payload and signs it when a secret is set", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 200 }));
     const payload = payloadFromLine({ level: 50, time: Date.now(), msg: "boom", component: "x" });
-    const r = await deliverLogWebhook({ enabled: true, url: "https://sink.example/logs", min_level: "warn", secret: "s3cret" }, payload);
+    const r = await deliverLogWebhook({ enabled: true, url: "https://sink.example/logs", levels: ["warn", "error", "fatal"], secret: "s3cret" }, payload);
     expect(r.ok).toBe(true);
     const [, init] = fetchMock.mock.calls[0]!;
     const body = (init as RequestInit).body as string;
@@ -35,7 +35,7 @@ describe("deliverLogWebhook", () => {
   it("reports non-2xx as not ok", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("no", { status: 500 }));
     const r = await deliverLogWebhook(
-      { enabled: true, url: "https://sink.example/logs", min_level: "warn" },
+      { enabled: true, url: "https://sink.example/logs", levels: ["warn", "error", "fatal"] },
       payloadFromLine({ level: 50, msg: "x" })
     );
     expect(r.ok).toBe(false);
@@ -44,7 +44,7 @@ describe("deliverLogWebhook", () => {
 
   it("rejects a non-http url", async () => {
     const r = await deliverLogWebhook(
-      { enabled: true, url: "ftp://nope", min_level: "warn" },
+      { enabled: true, url: "ftp://nope", levels: ["warn", "error", "fatal"] },
       payloadFromLine({ level: 50, msg: "x" })
     );
     expect(r.ok).toBe(false);
@@ -54,14 +54,14 @@ describe("deliverLogWebhook", () => {
 describe("LogWebhookSink.write", () => {
   it("does nothing when disabled", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 200 }));
-    setLogWebhookConfigForTests({ enabled: false, url: "https://x/y", min_level: "info" });
+    setLogWebhookConfigForTests({ enabled: false, url: "https://x/y", levels: ["info"] });
     logWebhookSink.write(line(50));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("skips logs below the min level, forwards at/above", () => {
+  it("forwards only the selected log levels", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 200 }));
-    setLogWebhookConfigForTests({ enabled: true, url: "https://x/y", min_level: "warn" });
+    setLogWebhookConfigForTests({ enabled: true, url: "https://x/y", levels: ["warn", "error"] });
     logWebhookSink.write(line(30)); // info — skipped
     logWebhookSink.write(line(40)); // warn — forwarded
     logWebhookSink.write(line(50)); // error — forwarded
@@ -71,7 +71,7 @@ describe("LogWebhookSink.write", () => {
   it("caps in-flight and drops the overflow", () => {
     // fetch never resolves → in-flight stays pinned
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => {}));
-    setLogWebhookConfigForTests({ enabled: true, url: "https://x/y", min_level: "info" });
+    setLogWebhookConfigForTests({ enabled: true, url: "https://x/y", levels: ["info", "warn", "error", "fatal"] });
     for (let i = 0; i < 20; i++) logWebhookSink.write(line(40));
     expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(5);
   });

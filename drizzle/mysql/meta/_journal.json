@@ -36,6 +36,20 @@
       "when": 1784186896201,
       "tag": "0004_silent_lady_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1784190812371,
+      "tag": "0005_glorious_saracen",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1784193932622,
+      "tag": "0006_slow_hellfire_club",
+      "breakpoints": true
     }
   ]
 }

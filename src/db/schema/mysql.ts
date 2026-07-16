@@ -39,6 +39,10 @@ export const dispatchRuns = mysqlTable(
   {
     id: varchar("id", { length: 36 }).primaryKey(),
     campaign_id: id191("campaign_id").notNull(),
+    /** Grouping key: drip_sequence_id for drip steps, else campaign_id. */
+    program_id: id191("program_id").notNull().default(""),
+    program_kind: varchar("program_kind", { length: 16 }).notNull().default("campaign"),
+    step_id: id191("step_id"),
     organization_id: id191("organization_id"),
     channel: varchar("channel", { length: 32 }).notNull(),
     provider: varchar("provider", { length: 32 }).notNull(),
@@ -56,6 +60,7 @@ export const dispatchRuns = mysqlTable(
   (t) => [
     index("dispatch_runs_occurred_at_idx").on(t.occurred_at),
     index("dispatch_runs_campaign_id_idx").on(t.campaign_id),
+    index("dispatch_runs_program_idx").on(t.program_id, t.occurred_at),
   ]
 );
 
@@ -128,11 +133,40 @@ export const eventOutbox = mysqlTable(
   ]
 );
 
+/**
+ * Wire campaign_id → program mapping, written on every dispatch.
+ *
+ * ScaleMargin sends drip steps with campaign_id = `drip_{enrollmentId}_{stepId}`,
+ * which is unique per (sequence × lead × step) — so the wire id identifies a
+ * single SEND, not a campaign. The real grouping key (drip_sequence_id) only
+ * arrives in the dispatch metadata; inbound provider webhooks carry just the
+ * wire id. This table lets those inbound events resolve their program.
+ */
+export const dispatchPrograms = mysqlTable(
+  "dispatch_programs",
+  {
+    campaign_id: id191("campaign_id").primaryKey(),
+    program_id: id191("program_id").notNull(),
+    program_kind: varchar("program_kind", { length: 16 }).notNull().default("campaign"),
+    step_id: id191("step_id"),
+    organization_id: id191("organization_id").notNull(),
+    created_at: ts("created_at").notNull(),
+    last_seen_at: ts("last_seen_at").notNull(),
+  },
+  (t) => [index("dispatch_programs_program_idx").on(t.program_id)]
+);
+
 export const campaignEvents = mysqlTable(
   "campaign_events",
   {
     id: varchar("id", { length: 36 }).primaryKey(),
+    /** The wire id — one SEND (for drips: one recipient × one step). */
     campaign_id: id191("campaign_id").notNull(),
+    /** The grouping key a human calls "the campaign": drip_sequence_id, else campaign_id. */
+    program_id: id191("program_id").notNull().default(""),
+    program_kind: varchar("program_kind", { length: 16 }).notNull().default("campaign"),
+    /** Drip step this send belongs to; null for one-shot campaigns. */
+    step_id: id191("step_id"),
     organization_id: id191("organization_id").notNull(),
     user_id: id191("user_id").notNull(),
     channel: varchar("channel", { length: 16 }).notNull(),
@@ -146,7 +180,8 @@ export const campaignEvents = mysqlTable(
   },
   (t) => [
     index("campaign_events_campaign_occurred_idx").on(t.campaign_id, t.occurred_at),
-    index("campaign_events_campaign_user_idx").on(t.campaign_id, t.user_id),
+    index("campaign_events_program_occurred_idx").on(t.program_id, t.occurred_at),
+    index("campaign_events_program_user_idx").on(t.program_id, t.user_id),
     index("campaign_events_occurred_at_idx").on(t.occurred_at),
     uniqueIndex("campaign_events_dedupe_uq").on(t.dedupe_key),
   ]
@@ -182,6 +217,22 @@ export const dispatcherMeta = mysqlTable("dispatcher_meta", {
   value: text("value").notNull(),
   updated_at: ts("updated_at").notNull(),
 });
+
+export const apiKeys = mysqlTable(
+  "api_keys",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    name: id191("name").notNull().unique(),
+    key_hash: varchar("key_hash", { length: 64 }).notNull().unique(),
+    key_ciphertext: text("key_ciphertext").notNull(),
+    key_prefix: varchar("key_prefix", { length: 16 }).notNull(),
+    created_at: ts("created_at").notNull(),
+    updated_at: ts("updated_at").notNull(),
+    last_used_at: ts("last_used_at"),
+    revoked_at: ts("revoked_at"),
+  },
+  (t) => [index("api_keys_active_idx").on(t.revoked_at), index("api_keys_hash_idx").on(t.key_hash)]
+);
 
 // ---------------------------------------------------------------------------
 // Better Auth tables. JS property names match Better Auth model fields; DB

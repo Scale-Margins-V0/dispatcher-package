@@ -10,6 +10,7 @@ import { getBuildInfo } from "../ops/build-info.js";
 import { buildDiagnosticsReport } from "../ops/diagnostics.js";
 import { getAdminActivity } from "./activity.js";
 import { registerCampaignRoutes } from "./api/campaigns.js";
+import { registerApiKeyRoutes } from "./api/api-keys.js";
 import { registerHistoryRoutes } from "./api/history.js";
 import { registerLogRoutes } from "./api/logs.js";
 import { registerMemberRoutes } from "./api/members.js";
@@ -40,6 +41,7 @@ export const registerAdminRoutes = (app: Express): void => {
   registerCampaignRoutes(app);
   registerMemberRoutes(app);
   registerObservabilityRoutes(app);
+  registerApiKeyRoutes(app);
 
   app.get("/admin/api/overview", async (_req, res) => {
     try {

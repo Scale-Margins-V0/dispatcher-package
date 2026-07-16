@@ -11,10 +11,10 @@
  * - json/timestamp columns projected as columns, never through sql``.
  */
 
-import { and, asc, desc, eq, inArray, like, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, like, lt, or, sql } from "drizzle-orm";
 import { getDb } from "../client.js";
 import { insertIgnore, queryDb, tableFor } from "../dialect-helpers.js";
-import type { CampaignEventRow } from "../schema/index.js";
+import type { CampaignEventRow, ProgramKind } from "../schema/index.js";
 
 const num = (value: unknown): number => Number(value ?? 0);
 const escLike = (value: string): string => value.replaceAll("%", "\\%");
@@ -43,7 +43,8 @@ export type CampaignEventPage = {
 };
 
 export async function listCampaignEvents(options: {
-  campaign_id: string;
+  program_id: string;
+  step_id?: string;
   event?: string;
   user_id?: string;
   q?: string;
@@ -52,7 +53,8 @@ export async function listCampaignEvents(options: {
 }): Promise<CampaignEventPage> {
   const dbx = getDb();
   const t = tableFor(dbx, "campaignEvents");
-  const conditions: unknown[] = [eq(t.campaign_id, options.campaign_id)];
+  const conditions: unknown[] = [eq(t.program_id, options.program_id)];
+  if (options.step_id) conditions.push(eq(t.step_id, options.step_id));
   if (options.event) conditions.push(eq(t.event, options.event));
   if (options.user_id) conditions.push(eq(t.user_id, options.user_id));
   if (options.q) {
@@ -85,7 +87,7 @@ export async function listCampaignEvents(options: {
 
 /** Full chronological journey of one recipient in one campaign. */
 export async function listUserTimeline(
-  campaign_id: string,
+  program_id: string,
   user_id: string,
   limit = 200
 ): Promise<CampaignEventRow[]> {
@@ -94,7 +96,7 @@ export async function listUserTimeline(
   const raw: Record<string, unknown>[] = await queryDb(dbx)
     .select()
     .from(t)
-    .where(and(eq(t.campaign_id, campaign_id), eq(t.user_id, user_id)))
+    .where(and(eq(t.program_id, program_id), eq(t.user_id, user_id)))
     .orderBy(asc(t.occurred_at), asc(t.id))
     .limit(limit);
   return raw.map(toEvent);
@@ -104,11 +106,20 @@ export async function listUserTimeline(
 // Funnel + rollups
 // ---------------------------------------------------------------------------
 
-/** WhatsApp "read" counts as an open everywhere in the console. */
+/**
+ * Stages are kept in each channel's own vocabulary — `read` is NOT folded into
+ * `opened`. They are different signals with different trust: an email open is a
+ * tracking pixel (inflated by Apple MPP prefetch, suppressed by blocked
+ * images), a WhatsApp read is a delivery receipt the recipient can disable.
+ * SMS has no view signal at all. Callers pick the labels per channel; the store
+ * never averages them together. This matches ScaleMargin's own canonicalizer,
+ * which deliberately preserves `read` as distinct.
+ */
 const STAGE_EVENTS: Record<string, string[]> = {
   dispatched: ["dispatched"],
   delivered: ["delivered"],
-  opened: ["opened", "read"],
+  opened: ["opened"],
+  read: ["read"],
   clicked: ["clicked"],
   bounced: ["bounced"],
   complained: ["complained"],
@@ -120,7 +131,10 @@ export type CampaignFunnel = {
   unique_recipients: number;
   dispatched: number;
   delivered: number;
+  /** Email/push tracking-pixel opens. */
   opened: number;
+  /** WhatsApp read receipts — counted separately from opens, never merged. */
+  read: number;
   clicked: number;
   bounced: number;
   complained: number;
@@ -133,6 +147,7 @@ const EMPTY_FUNNEL: CampaignFunnel = {
   dispatched: 0,
   delivered: 0,
   opened: 0,
+  read: 0,
   clicked: 0,
   bounced: 0,
   complained: 0,
@@ -166,36 +181,45 @@ function rowToFunnel(row: Record<string, unknown> | undefined): CampaignFunnel {
   return funnel;
 }
 
-export async function getCampaignFunnel(campaign_id: string): Promise<CampaignFunnel> {
+export async function getCampaignFunnel(
+  program_id: string,
+  step_id?: string
+): Promise<CampaignFunnel> {
   const dbx = getDb();
   const t = tableFor(dbx, "campaignEvents");
+  const where = [eq(t.program_id, program_id)];
+  if (step_id) where.push(eq(t.step_id, step_id));
   const [row]: Record<string, unknown>[] = await queryDb(dbx)
     .select(funnelProjection(t))
     .from(t)
-    .where(eq(t.campaign_id, campaign_id));
+    .where(and(...(where as never[])));
   return rowToFunnel(row);
 }
 
 /** Per-campaign funnels for a page of campaign ids (hub engagement column). */
 export async function getCampaignEventAggregates(
-  campaignIds: string[]
+  programIds: string[]
 ): Promise<Map<string, CampaignFunnel>> {
-  if (campaignIds.length === 0) return new Map();
+  if (programIds.length === 0) return new Map();
   const dbx = getDb();
   const t = tableFor(dbx, "campaignEvents");
   const rows: Record<string, unknown>[] = await queryDb(dbx)
-    .select({ campaign_id: t.campaign_id, ...funnelProjection(t) })
+    .select({ program_id: t.program_id, ...funnelProjection(t) })
     .from(t)
-    .where(inArray(t.campaign_id, campaignIds))
-    .groupBy(t.campaign_id);
-  return new Map(rows.map((row) => [String(row.campaign_id), rowToFunnel(row)]));
+    .where(inArray(t.program_id, programIds))
+    .groupBy(t.program_id);
+  return new Map(rows.map((row) => [String(row.program_id), rowToFunnel(row)]));
 }
 
 // ---------------------------------------------------------------------------
 // Recipient rollup — one row per user with stage flags + derived status
 // ---------------------------------------------------------------------------
 
-/** Ordered worst-signal-first; the first raised flag names the recipient status. */
+/**
+ * Ordered worst-signal-first; the first raised flag names the recipient status.
+ * `opened` and `read` are the same rung on different channels — a recipient can
+ * only hold both via a mixed-channel drip, where `opened` wins and is still true.
+ */
 export const RECIPIENT_STATUS_ORDER = [
   "complained",
   "bounced",
@@ -203,6 +227,7 @@ export const RECIPIENT_STATUS_ORDER = [
   "unsubscribed",
   "clicked",
   "opened",
+  "read",
   "delivered",
   "dispatched",
 ] as const;
@@ -214,6 +239,7 @@ export type RecipientRollupRow = {
   dispatched: boolean;
   delivered: boolean;
   opened: boolean;
+  read: boolean;
   clicked: boolean;
   bounced: boolean;
   complained: boolean;
@@ -223,6 +249,10 @@ export type RecipientRollupRow = {
   first_event_at: Date;
   last_event_at: Date;
   status: RecipientStatus;
+  /** Distinct drip steps this recipient was touched by; 0 for one-shot campaigns. */
+  steps: number;
+  /** Distinct channels reached on — >1 means a mixed-channel drip journey. */
+  channel_count: number;
 };
 
 export function deriveRecipientStatus(flags: Record<string, boolean>): RecipientStatus {
@@ -247,6 +277,9 @@ function rollupProjection(t: any): Record<string, unknown> {
     projection[stage] = flagIf(t, events).as(stage);
   }
   projection.event_count = sql`count(*)`.as("event_count");
+  // A drip journey spans steps and can change channel between them.
+  projection.steps = sql`count(distinct ${t.step_id})`.as("steps");
+  projection.channel_count = sql`count(distinct ${t.channel})`.as("channel_count");
   projection.first_event_at = sql`min(${t.occurred_at})`.mapWith(t.occurred_at).as("first_event_at");
   projection.last_event_at = sql`max(${t.occurred_at})`.mapWith(t.occurred_at).as("last_event_at");
   return projection;
@@ -276,7 +309,7 @@ export type RecipientRollupPage = {
 };
 
 export async function listRecipientRollup(options: {
-  campaign_id: string;
+  program_id: string;
   status?: RecipientStatus;
   q?: string;
   cursor?: { ts: Date; user_id: string };
@@ -286,7 +319,7 @@ export async function listRecipientRollup(options: {
   const q = queryDb(dbx);
   const t = tableFor(dbx, "campaignEvents");
 
-  const where = [eq(t.campaign_id, options.campaign_id)];
+  const where = [eq(t.program_id, options.program_id)];
   if (options.q) where.push(like(t.user_id, `%${escLike(options.q)}%`));
 
   const having: ReturnType<typeof sql>[] = [];
@@ -316,12 +349,15 @@ export async function listRecipientRollup(options: {
       dispatched: flags.dispatched,
       delivered: flags.delivered,
       opened: flags.opened,
+      read: flags.read,
       clicked: flags.clicked,
       bounced: flags.bounced,
       complained: flags.complained,
       unsubscribed: flags.unsubscribed,
       failed: flags.failed,
       event_count: num(row.event_count),
+      steps: num(row.steps),
+      channel_count: num(row.channel_count),
       first_event_at: row.first_event_at as Date,
       last_event_at: row.last_event_at as Date,
       status: deriveRecipientStatus(flags),
@@ -339,7 +375,7 @@ export async function listRecipientRollup(options: {
 
 /** Disjoint per-status recipient counts (chip labels); one pass over a per-user subquery. */
 export async function getRecipientStatusCounts(
-  campaign_id: string
+  program_id: string
 ): Promise<Record<RecipientStatus, number>> {
   const dbx = getDb();
   const q = queryDb(dbx);
@@ -348,7 +384,7 @@ export async function getRecipientStatusCounts(
   const inner: any = q
     .select(rollupProjection(t))
     .from(t)
-    .where(eq(t.campaign_id, campaign_id))
+    .where(eq(t.program_id, program_id))
     .groupBy(t.user_id)
     .as("r");
 
@@ -381,11 +417,23 @@ export async function getRecipientStatusCounts(
 // ---------------------------------------------------------------------------
 
 export type CampaignSummaryRow = {
-  campaign_id: string;
+  /** The grouping key: drip_sequence_id for drips, campaign_id for blasts. */
+  program_id: string;
+  program_kind: ProgramKind;
+  /** Distinct drip steps in this program; 0 for one-shot campaigns. */
+  steps: number;
+  /** Distinct wire sends — for a drip this is roughly people x steps. */
+  sends: number;
   organization_id: string | null;
   runs: number;
   accepted_runs: number;
   failed_runs: number;
+  /**
+   * Sum of dispatch_runs.recipient_count. NOTE: a drip fans out one run per
+   * lead per step, so for drips this counts SENDS, not people — the headcount
+   * is the funnel's unique_recipients. Callers showing "recipients" to a human
+   * should prefer that.
+   */
   recipients: number;
   sent: number;
   failed: number;
@@ -395,12 +443,12 @@ export type CampaignSummaryRow = {
 
 export type CampaignSummaryPage = {
   campaigns: CampaignSummaryRow[];
-  next_cursor: { ts: Date; campaign_id: string } | null;
+  next_cursor: { ts: Date; program_id: string } | null;
 };
 
 export async function listCampaignSummaries(options: {
   q?: string;
-  cursor?: { ts: Date; campaign_id: string };
+  cursor?: { ts: Date; program_id: string };
   limit: number;
 }): Promise<CampaignSummaryPage> {
   const dbx = getDb();
@@ -409,9 +457,14 @@ export async function listCampaignSummaries(options: {
 
   let builder = q
     .select({
-      campaign_id: runs.campaign_id,
+      program_id: runs.program_id,
+      program_kind: sql`max(${runs.program_kind})`,
       organization_id: sql`max(${runs.organization_id})`,
       runs: sql`count(*)`,
+      // A drip sends one run per (recipient x step); count the distinct steps
+      // and sends so the hub can say "5 steps" instead of "5,000 campaigns".
+      steps: sql`count(distinct ${runs.step_id})`,
+      sends: sql`count(distinct ${runs.campaign_id})`,
       accepted_runs: sql`sum(case when ${runs.status} = 'accepted' then 1 else 0 end)`,
       failed_runs: sql`sum(case when ${runs.status} = 'failed' then 1 else 0 end)`,
       recipients: sql`coalesce(sum(${runs.recipient_count}), 0)`,
@@ -421,20 +474,23 @@ export async function listCampaignSummaries(options: {
       last_activity: sql`max(${runs.occurred_at})`.mapWith(runs.occurred_at),
     })
     .from(runs);
-  if (options.q) builder = builder.where(like(runs.campaign_id, `%${escLike(options.q)}%`));
-  builder = builder.groupBy(runs.campaign_id);
+  if (options.q) builder = builder.where(like(runs.program_id, `%${escLike(options.q)}%`));
+  builder = builder.groupBy(runs.program_id);
   if (options.cursor) {
     const ts = sql.param(options.cursor.ts, runs.occurred_at);
     builder = builder.having(
-      sql`(max(${runs.occurred_at}) < ${ts} or (max(${runs.occurred_at}) = ${ts} and ${runs.campaign_id} < ${options.cursor.campaign_id}))`
+      sql`(max(${runs.occurred_at}) < ${ts} or (max(${runs.occurred_at}) = ${ts} and ${runs.program_id} < ${options.cursor.program_id}))`
     );
   }
   const raw: Record<string, unknown>[] = await builder
-    .orderBy(desc(sql`max(${runs.occurred_at})`), desc(runs.campaign_id))
+    .orderBy(desc(sql`max(${runs.occurred_at})`), desc(runs.program_id))
     .limit(options.limit + 1);
 
   const rows: CampaignSummaryRow[] = raw.map((row) => ({
-    campaign_id: String(row.campaign_id),
+    program_id: String(row.program_id),
+    program_kind: (row.program_kind === "drip" ? "drip" : "campaign") as ProgramKind,
+    steps: num(row.steps),
+    sends: num(row.sends),
     organization_id: row.organization_id === null ? null : String(row.organization_id),
     runs: num(row.runs),
     accepted_runs: num(row.accepted_runs),
@@ -452,19 +508,22 @@ export async function listCampaignSummaries(options: {
   return {
     campaigns: page,
     next_cursor:
-      hasMore && last ? { ts: last.last_activity, campaign_id: last.campaign_id } : null,
+      hasMore && last ? { ts: last.last_activity, program_id: last.program_id } : null,
   };
 }
 
 /** Aggregates for exactly one campaign (detail header); null when it has no runs. */
 export async function getCampaignRunSummary(
-  campaign_id: string
+  program_id: string
 ): Promise<CampaignSummaryRow | null> {
   const dbx = getDb();
   const runs = tableFor(dbx, "dispatchRuns");
   const raw: Record<string, unknown>[] = await queryDb(dbx)
     .select({
-      campaign_id: runs.campaign_id,
+      program_id: runs.program_id,
+      program_kind: sql`max(${runs.program_kind})`,
+      steps: sql`count(distinct ${runs.step_id})`,
+      sends: sql`count(distinct ${runs.campaign_id})`,
       organization_id: sql`max(${runs.organization_id})`,
       runs: sql`count(*)`,
       accepted_runs: sql`sum(case when ${runs.status} = 'accepted' then 1 else 0 end)`,
@@ -476,12 +535,15 @@ export async function getCampaignRunSummary(
       last_activity: sql`max(${runs.occurred_at})`.mapWith(runs.occurred_at),
     })
     .from(runs)
-    .where(eq(runs.campaign_id, campaign_id))
-    .groupBy(runs.campaign_id);
+    .where(eq(runs.program_id, program_id))
+    .groupBy(runs.program_id);
   const row = raw[0];
   if (!row) return null;
   return {
-    campaign_id: String(row.campaign_id),
+    program_id: String(row.program_id),
+    program_kind: (row.program_kind === "drip" ? "drip" : "campaign") as ProgramKind,
+    steps: num(row.steps),
+    sends: num(row.sends),
     organization_id: row.organization_id === null ? null : String(row.organization_id),
     runs: num(row.runs),
     accepted_runs: num(row.accepted_runs),
@@ -494,20 +556,56 @@ export async function getCampaignRunSummary(
   };
 }
 
+/** Per-step rollup for a drip program: the step list with its own funnel. */
+export type ProgramStepRow = {
+  step_id: string;
+  channel: string;
+  provider: string;
+  sends: number;
+  first_activity: Date;
+  last_activity: Date;
+};
+
+export async function listProgramSteps(program_id: string): Promise<ProgramStepRow[]> {
+  const dbx = getDb();
+  const runs = tableFor(dbx, "dispatchRuns");
+  const raw: Record<string, unknown>[] = await queryDb(dbx)
+    .select({
+      step_id: runs.step_id,
+      channel: runs.channel,
+      provider: runs.provider,
+      sends: sql`count(distinct ${runs.campaign_id})`,
+      first_activity: sql`min(${runs.occurred_at})`.mapWith(runs.occurred_at),
+      last_activity: sql`max(${runs.occurred_at})`.mapWith(runs.occurred_at),
+    })
+    .from(runs)
+    .where(and(eq(runs.program_id, program_id), isNotNull(runs.step_id)))
+    .groupBy(runs.step_id, runs.channel, runs.provider)
+    .orderBy(asc(sql`min(${runs.occurred_at})`));
+  return raw.map((row) => ({
+    step_id: String(row.step_id),
+    channel: String(row.channel),
+    provider: String(row.provider),
+    sends: num(row.sends),
+    first_activity: row.first_activity as Date,
+    last_activity: row.last_activity as Date,
+  }));
+}
+
 /** Distinct channel/provider pairs per campaign for a page of ids. */
 export async function listCampaignChannels(
-  campaignIds: string[]
-): Promise<Array<{ campaign_id: string; channel: string; provider: string }>> {
-  if (campaignIds.length === 0) return [];
+  programIds: string[]
+): Promise<Array<{ program_id: string; channel: string; provider: string }>> {
+  if (programIds.length === 0) return [];
   const dbx = getDb();
   const runs = tableFor(dbx, "dispatchRuns");
   const rows: Record<string, unknown>[] = await queryDb(dbx)
-    .select({ campaign_id: runs.campaign_id, channel: runs.channel, provider: runs.provider })
+    .select({ program_id: runs.program_id, channel: runs.channel, provider: runs.provider })
     .from(runs)
-    .where(inArray(runs.campaign_id, campaignIds))
-    .groupBy(runs.campaign_id, runs.channel, runs.provider);
+    .where(inArray(runs.program_id, programIds))
+    .groupBy(runs.program_id, runs.channel, runs.provider);
   return rows.map((row) => ({
-    campaign_id: String(row.campaign_id),
+    program_id: String(row.program_id),
     channel: String(row.channel),
     provider: String(row.provider),
   }));

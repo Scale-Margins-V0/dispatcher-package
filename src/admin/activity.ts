@@ -14,6 +14,7 @@ import {
 import { isDbInitialized } from "../db/state.js";
 import type {
   DispatchRunRow,
+  ProgramKind,
   WebhookActivityRow,
   WebhookDirection,
   WebhookStatus,
@@ -24,7 +25,12 @@ const log = componentLogger("admin.activity");
 
 export type DispatchActivity = {
   id: string;
+  /** The wire id — one SEND (for drips: one recipient × one step). */
   campaign_id: string;
+  /** Grouping key: drip_sequence_id for drip steps, else campaign_id. */
+  program_id?: string;
+  program_kind?: ProgramKind;
+  step_id?: string | null;
   organization_id?: string;
   channel: string;
   provider: string;
@@ -80,6 +86,10 @@ export const recordDispatchActivity = (activity: DispatchActivity): void => {
   const run: Omit<DispatchRunRow, "updated_at"> = {
     id: activity.id,
     campaign_id: safeId(activity.campaign_id),
+    // Denormalised so the console can GROUP BY program without a join.
+    program_id: safeId(activity.program_id ?? activity.campaign_id),
+    program_kind: activity.program_kind ?? "campaign",
+    step_id: activity.step_id ?? null,
     organization_id: activity.organization_id ?? null,
     channel: activity.channel,
     provider: activity.provider,

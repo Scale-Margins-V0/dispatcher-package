@@ -62,6 +62,9 @@ describe("runRetentionSweep", () => {
     const mkEvent = (id: string, occurred: Date) => ({
       id,
       campaign_id: "c1",
+      program_id: "c1",
+      program_kind: "campaign" as const,
+      step_id: null,
       organization_id: "o1",
       user_id: `u-${id}`,
       channel: "email",
@@ -80,7 +83,7 @@ describe("runRetentionSweep", () => {
       mkEvent("fresh", daysAgo(1)),
     ]);
     await runRetentionSweep(now);
-    const page = await listCampaignEvents({ campaign_id: "c1", limit: 10 });
+    const page = await listCampaignEvents({ program_id: "c1", limit: 10 });
     expect(page.events.map((e) => e.id)).toEqual(["fresh", "mid"]);
   });
 
