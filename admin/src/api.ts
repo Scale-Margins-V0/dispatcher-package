@@ -11,6 +11,7 @@ import type {
   PendingInvitation,
   SessionInfo,
   VariablePayload,
+  VariableTestResult,
 } from "./types";
 
 const json = async <T>(path: string, init?: RequestInit): Promise<T> => {
@@ -92,7 +93,7 @@ export const deleteVariable = (name: string) =>
 export const validateVariable = (payload: VariablePayload) =>
   json<{ ok: boolean; error?: string; preview?: string }>("/admin/api/variables/validate", { method: "POST", ...jsonBody(payload) });
 export const testVariable = (payload: VariablePayload) =>
-  json<{ ok: boolean; value?: string; error?: string }>("/admin/api/variables/test", { method: "POST", ...jsonBody(payload) });
+  json<VariableTestResult>("/admin/api/variables/test", { method: "POST", ...jsonBody(payload) });
 
 export const fetchLogs = (params: Record<string, string>) =>
   json<LogPage>(`/admin/api/logs?${new URLSearchParams(params).toString()}`);

@@ -189,7 +189,26 @@ describe("testVariableDefinition", () => {
       source: "api",
       api: { method: "GET", url: "https://x.example/{{user_id}}", json_path: "ok.name" },
     });
-    expect(r).toEqual({ ok: true, value: "Ada" });
+    expect(r).toMatchObject({ ok: true, value: "Ada" });
+    // The raw exchange comes back too, so the editor can render it like a REST client.
+    expect(r.response).toMatchObject({ ok: true, status: 200 });
+    expect(r.response?.body).toContain("Ada");
+  });
+
+  it("returns the response (not just an error) when the API fails", async () => {
+    setDispatchConfigForTests(configWith({}));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ message: "nope" }), { status: 404 })
+    );
+    const r = await testVariableDefinition({
+      source: "api",
+      api: { method: "GET", url: "https://x.example/u", json_path: "a" },
+      fallback: "standard",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("404");
+    expect(r.response).toMatchObject({ status: 404, ok: false });
+    expect(r.response?.body).toContain("nope");
   });
 
   it("reports the error for a query variable with no SQL backend", async () => {

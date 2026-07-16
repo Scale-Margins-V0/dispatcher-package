@@ -280,12 +280,16 @@ export const registerVariableRoutes = (app: Express): void => {
     })
   );
 
-  // Live test — runs query/api for real against the sample user; returns value or error.
+  // Live test — runs query/api for real against the sample user; returns value or
+  // error (plus the raw HTTP response for api). The variable need not be named
+  // yet, so you can fire a request from the builder before saving it.
   app.post(
     "/admin/api/variables/test",
     json,
     asyncHandler(async (req: Request, res: Response) => {
-      const parsed = variablePayloadSchema.safeParse(req.body);
+      const named =
+        typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name : "_unsaved";
+      const parsed = variablePayloadSchema.safeParse({ ...req.body, name: named });
       if (!parsed.success) {
         res.json({ ok: false, error: parsed.error.issues.map((i) => i.message).join("; ") });
         return;
