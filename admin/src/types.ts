@@ -124,6 +124,22 @@ export interface ApiVarConfig {
   timeout_ms?: number;
 }
 
+/** Raw HTTP exchange returned by /variables/test for source=api. */
+export interface ApiTestResponse {
+  ok: boolean;
+  status: number;
+  time_ms: number;
+  size: number;
+  body: string;
+}
+
+export interface VariableTestResult {
+  ok: boolean;
+  value?: string;
+  error?: string;
+  response?: ApiTestResponse;
+}
+
 export interface AdminVariable {
   name: string;
   source: VariableSource;

@@ -8,7 +8,12 @@ import {
   validateVariable,
 } from "../api";
 import { AlertIcon, CheckIcon, SlidersIcon } from "../icons";
-import type { AdminVariable, VariablePayload, VariableSource } from "../types";
+import type {
+  AdminVariable,
+  VariablePayload,
+  VariableSource,
+  VariableTestResult,
+} from "../types";
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -159,6 +164,258 @@ function editorFromVariable(v: AdminVariable): EditorState {
 
 const TOKEN_HINT = "Tokens: {{user_id}} {{email}} {{campaign_id}} {{organization_id}}";
 
+// --- REST-client style API builder -----------------------------------------
+
+/** Split/join a URL's query string WITHOUT encoding, so {{tokens}} survive. */
+function splitUrl(url: string): { base: string; params: HeaderRow[] } {
+  const i = url.indexOf("?");
+  if (i === -1) return { base: url, params: [] };
+  const params = url
+    .slice(i + 1)
+    .split("&")
+    .filter(Boolean)
+    .map((pair) => {
+      const e = pair.indexOf("=");
+      return e === -1 ? { key: pair, value: "" } : { key: pair.slice(0, e), value: pair.slice(e + 1) };
+    });
+  return { base: url.slice(0, i), params };
+}
+function joinUrl(base: string, params: HeaderRow[]): string {
+  const qs = params
+    .filter((p) => p.key.trim())
+    .map((p) => `${p.key}=${p.value}`)
+    .join("&");
+  return qs ? `${base}?${qs}` : base;
+}
+
+/** Walk a dotted path for the live "extracted value" readout. */
+function extractPath(bodyText: string, path: string): string {
+  let cur: unknown;
+  try {
+    cur = JSON.parse(bodyText);
+  } catch {
+    return "(response is not JSON)";
+  }
+  if (path.trim()) {
+    for (const seg of path.split(".")) {
+      if (cur === null || typeof cur !== "object") return "(not found)";
+      cur = (cur as Record<string, unknown>)[seg];
+    }
+  }
+  if (cur === undefined || cur === null) return "(not found)";
+  return typeof cur === "object" ? JSON.stringify(cur) : String(cur);
+}
+
+function prettyJson(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+const formatBytes = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
+
+function KeyValueRows({
+  rows,
+  onChange,
+  addLabel,
+  keyPlaceholder,
+  valuePlaceholder,
+}: {
+  rows: HeaderRow[];
+  onChange: (next: HeaderRow[]) => void;
+  addLabel: string;
+  keyPlaceholder: string;
+  valuePlaceholder: string;
+}) {
+  return (
+    <div className="kv-rows">
+      {rows.length === 0 && <div className="kv-empty">None yet.</div>}
+      {rows.map((r, i) => (
+        <div className="kv-row" key={i}>
+          <input
+            placeholder={keyPlaceholder}
+            value={r.key}
+            onChange={(e) => {
+              const next = [...rows];
+              next[i] = { ...r, key: e.target.value };
+              onChange(next);
+            }}
+          />
+          <input
+            placeholder={valuePlaceholder}
+            value={r.value}
+            onChange={(e) => {
+              const next = [...rows];
+              next[i] = { ...r, value: e.target.value };
+              onChange(next);
+            }}
+          />
+          <button type="button" className="ghost" onClick={() => onChange(rows.filter((_, j) => j !== i))}>
+            ✕
+          </button>
+        </div>
+      ))}
+      <button type="button" className="ghost kv-add" onClick={() => onChange([...rows, { key: "", value: "" }])}>
+        {addLabel}
+      </button>
+    </div>
+  );
+}
+
+type ReqTab = "params" | "headers" | "body" | "settings";
+
+function ApiBuilder({
+  api,
+  onChange,
+  onSend,
+  sending,
+  result,
+}: {
+  api: ApiState;
+  onChange: (patch: Partial<ApiState>) => void;
+  onSend: () => void;
+  sending: boolean;
+  result: VariableTestResult | null;
+}) {
+  const [tab, setTab] = useState<ReqTab>("params");
+  const { base, params } = splitUrl(api.url);
+  const res = result?.response;
+
+  return (
+    <div className="api-client">
+      {/* Method + URL + Send — the request bar */}
+      <div className="req-bar">
+        <select
+          className="req-method"
+          value={api.method}
+          onChange={(e) => onChange({ method: e.target.value as "GET" | "POST" })}
+        >
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+        </select>
+        <input
+          className="req-url"
+          value={api.url}
+          onChange={(e) => onChange({ url: e.target.value })}
+          placeholder="https://crm.example.com/users/{{user_id}}"
+          spellCheck={false}
+          required
+        />
+        <button type="button" className="req-send" onClick={onSend} disabled={sending}>
+          {sending ? "Sending…" : "Send"}
+        </button>
+      </div>
+      <div className="req-hint">
+        Tokens resolve per recipient: <code>{"{{user_id}}"}</code> <code>{"{{email}}"}</code>{" "}
+        <code>{"{{campaign_id}}"}</code> <code>{"{{field.NAME}}"}</code>
+      </div>
+
+      {/* Request tabs */}
+      <div className="req-tabs">
+        {(
+          [
+            ["params", "Params", params.length],
+            ["headers", "Headers", api.headers.length],
+            ["body", "Body", api.body.trim() ? 1 : 0],
+            ["settings", "Settings", 0],
+          ] as Array<[ReqTab, string, number]>
+        ).map(([id, label, count]) => (
+          <button
+            key={id}
+            type="button"
+            className={`req-tab ${tab === id ? "active" : ""}`}
+            onClick={() => setTab(id)}
+          >
+            {label}
+            {count > 0 && <span className="tab-badge">{count}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div className="req-panel">
+        {tab === "params" && (
+          <KeyValueRows
+            rows={params}
+            onChange={(next) => onChange({ url: joinUrl(base, next) })}
+            addLabel="+ Add query param"
+            keyPlaceholder="tier"
+            valuePlaceholder="{{user_id}}"
+          />
+        )}
+        {tab === "headers" && (
+          <KeyValueRows
+            rows={api.headers}
+            onChange={(headers) => onChange({ headers })}
+            addLabel="+ Add header"
+            keyPlaceholder="Authorization"
+            valuePlaceholder="Bearer …"
+          />
+        )}
+        {tab === "body" && (
+          <>
+            {api.method === "GET" && <div className="kv-empty">GET requests are sent without a body.</div>}
+            <textarea
+              className="code-input"
+              rows={5}
+              value={api.body}
+              onChange={(e) => onChange({ body: e.target.value })}
+              placeholder={'{\n  "user": "{{user_id}}"\n}'}
+              disabled={api.method === "GET"}
+              spellCheck={false}
+            />
+          </>
+        )}
+        {tab === "settings" && (
+          <label className="field-row settings-row">
+            Timeout (ms) <span className="field-hint">default 5000, max 30000</span>
+            <input
+              value={api.timeout_ms}
+              onChange={(e) => onChange({ timeout_ms: e.target.value.replace(/[^0-9]/g, "") })}
+              placeholder="5000"
+            />
+          </label>
+        )}
+      </div>
+
+      {/* Response pane */}
+      {(res || result?.error) && (
+        <div className="res-pane">
+          <div className="res-head">
+            <span className="res-title">Response</span>
+            {res && (
+              <>
+                <span className={`badge badge-${res.ok ? "green" : "red"}`}>{res.status}</span>
+                <span className="res-meta">{res.time_ms} ms</span>
+                <span className="res-meta">{formatBytes(res.size)}</span>
+              </>
+            )}
+            {!res && result?.error && <span className="badge badge-red">error</span>}
+          </div>
+          {result?.error && !res && <div className="login-error"><AlertIcon />{result.error}</div>}
+          {res && <pre className="res-body">{prettyJson(res.body)}</pre>}
+          {res && (
+            <div className="res-extract">
+              <label>
+                JSON path
+                <input
+                  value={api.json_path}
+                  onChange={(e) => onChange({ json_path: e.target.value })}
+                  placeholder="data.tier"
+                  spellCheck={false}
+                />
+              </label>
+              <div className="res-value">
+                <CheckIcon /> Resolves to <code>{extractPath(res.body, api.json_path) || "(empty)"}</code>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Editor({
   state,
   onChange,
@@ -171,9 +428,10 @@ function Editor({
   onSaved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testResult, setTestResult] = useState<VariableTestResult | null>(null);
   const setApi = (patch: Partial<ApiState>) => onChange({ ...state, api: { ...state.api, ...patch } });
 
   const runValidation = async () => {
@@ -200,15 +458,13 @@ function Editor({
   const runTest = async () => {
     setTestResult(null);
     setError("");
+    setSending(true);
     try {
-      const r = await testVariable(toPayload(state));
-      setTestResult(
-        r.ok
-          ? { ok: true, text: r.value && r.value.length > 0 ? r.value : "(empty — fallback used)" }
-          : { ok: false, text: r.error ?? "Test failed" }
-      );
+      setTestResult(await testVariable(toPayload(state)));
     } catch (reason) {
-      setTestResult({ ok: false, text: reason instanceof Error ? reason.message : "Test failed" });
+      setTestResult({ ok: false, error: reason instanceof Error ? reason.message : "Test failed" });
+    } finally {
+      setSending(false);
     }
   };
 
@@ -306,100 +562,13 @@ function Editor({
           </label>
         )}
         {state.source === "api" && (
-          <div className="api-form">
-            <div className="api-row">
-              <label className="api-method">
-                Method
-                <select
-                  value={state.api.method}
-                  onChange={(event) => setApi({ method: event.target.value as "GET" | "POST" })}
-                >
-                  <option value="GET">GET</option>
-                  <option value="POST">POST</option>
-                </select>
-              </label>
-              <label className="api-url">
-                URL <span className="field-hint">tokens allowed, {"{{field.NAME}}"} too</span>
-                <input
-                  value={state.api.url}
-                  onChange={(event) => setApi({ url: event.target.value })}
-                  placeholder="https://crm.example.com/users/{{user_id}}"
-                  required
-                />
-              </label>
-            </div>
-            <div className="api-headers">
-              <div className="field-label-row">
-                <span>Headers</span>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => setApi({ headers: [...state.api.headers, { key: "", value: "" }] })}
-                >
-                  + Add header
-                </button>
-              </div>
-              {state.api.headers.map((h, i) => (
-                <div className="header-row" key={i}>
-                  <input
-                    placeholder="Authorization"
-                    value={h.key}
-                    onChange={(event) => {
-                      const headers = [...state.api.headers];
-                      headers[i] = { ...h, key: event.target.value };
-                      setApi({ headers });
-                    }}
-                  />
-                  <input
-                    placeholder="Bearer …"
-                    value={h.value}
-                    onChange={(event) => {
-                      const headers = [...state.api.headers];
-                      headers[i] = { ...h, value: event.target.value };
-                      setApi({ headers });
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => setApi({ headers: state.api.headers.filter((_, j) => j !== i) })}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-            <div className="api-row">
-              <label className="api-jsonpath">
-                JSON path
-                <input
-                  value={state.api.json_path}
-                  onChange={(event) => setApi({ json_path: event.target.value })}
-                  placeholder="data.tier"
-                />
-              </label>
-              <label className="api-timeout">
-                Timeout (ms)
-                <input
-                  value={state.api.timeout_ms}
-                  onChange={(event) => setApi({ timeout_ms: event.target.value.replace(/[^0-9]/g, "") })}
-                  placeholder="5000"
-                />
-              </label>
-            </div>
-            {state.api.method === "POST" && (
-              <label className="field-row">
-                Request body
-                <textarea
-                  className="code-input"
-                  rows={2}
-                  value={state.api.body}
-                  onChange={(event) => setApi({ body: event.target.value })}
-                  placeholder='{"user":"{{user_id}}"}'
-                />
-              </label>
-            )}
-          </div>
+          <ApiBuilder
+            api={state.api}
+            onChange={setApi}
+            onSend={() => void runTest()}
+            sending={sending}
+            result={testResult}
+          />
         )}
 
         <label className="field-row">
@@ -430,19 +599,26 @@ function Editor({
             <CheckIcon /> Sample render: <code>{preview || "(empty)"}</code>
           </div>
         )}
-        {testResult && (
+        {/* api renders its own response pane inside the builder */}
+        {testResult && state.source !== "api" && (
           <div className={testResult.ok ? "variable-preview" : "login-error"}>
-            {testResult.ok ? <CheckIcon /> : <AlertIcon />} {testResult.ok ? "Test result: " : ""}
-            <code>{testResult.text}</code>
+            {testResult.ok ? <CheckIcon /> : <AlertIcon />}
+            {testResult.ok ? (
+              <>
+                Test result: <code>{testResult.value || "(empty — fallback used)"}</code>
+              </>
+            ) : (
+              testResult.error
+            )}
           </div>
         )}
         <div className="editor-actions">
           <button type="submit" disabled={busy}>
             {busy ? "Saving…" : state.original ? "Save changes" : "Create variable"}
           </button>
-          {isDynamic(state.source) && (
-            <button type="button" className="ghost" onClick={() => void runTest()} disabled={busy}>
-              Test
+          {state.source === "query" && (
+            <button type="button" className="ghost" onClick={() => void runTest()} disabled={busy || sending}>
+              {sending ? "Testing…" : "Test"}
             </button>
           )}
           <button type="button" className="ghost" onClick={onCancel} disabled={busy}>
