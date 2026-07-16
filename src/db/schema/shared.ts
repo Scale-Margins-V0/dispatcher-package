@@ -114,6 +114,29 @@ export type OutboxRow = {
   delivered_at: Date | null;
 };
 
+/**
+ * One PII-stripped per-recipient lifecycle event (dispatched/delivered/opened/…),
+ * persisted for the admin campaign console. Mirrors StandardizedEvent minus the
+ * callback URL; user_id is the client's opaque id, never an address.
+ */
+export type CampaignEventRow = {
+  id: string;
+  campaign_id: string;
+  organization_id: string;
+  user_id: string;
+  channel: string;
+  event: string;
+  provider: string;
+  provider_message_id: string | null;
+  /** Provider clock. */
+  occurred_at: Date;
+  /** Server clock at persist time. */
+  received_at: Date;
+  metadata: Record<string, unknown> | null;
+  /** envelope idempotency_key when present, else a deterministic hash — unique. */
+  dedupe_key: string;
+};
+
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 
 export type AppLogRow = {
@@ -142,4 +165,5 @@ export type MetaRow = {
 /** dispatcher_meta keys used by the app. */
 export const META_KEYS = {
   yamlImportDoneAt: "yaml_import_done_at",
+  campaignEventsBackfillDoneAt: "campaign_events_backfill_done_at",
 } as const;

@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, lt, ne, or, sql } from "drizzle-orm";
 import { getDb } from "../client.js";
 import { queryDb, tableFor, upsert } from "../dialect-helpers.js";
 import type {
@@ -129,10 +129,12 @@ export async function listDispatchRuns(options: {
   if (options.campaign_id) conditions.push(eq(runs.campaign_id, options.campaign_id));
   if (options.status) conditions.push(eq(runs.status, options.status));
   if (options.cursor) {
+    // Drizzle operators, not raw sql`` — raw templates don't run Date params
+    // through the column encoder, which breaks on sqlite (ms-integer storage).
     conditions.push(
       or(
-        sql`${runs.occurred_at} < ${options.cursor.ts}`,
-        and(eq(runs.occurred_at, options.cursor.ts), sql`${runs.id} < ${options.cursor.id}`)
+        lt(runs.occurred_at, options.cursor.ts),
+        and(eq(runs.occurred_at, options.cursor.ts), lt(runs.id, options.cursor.id))
       )
     );
   }
@@ -149,6 +151,23 @@ export async function listDispatchRuns(options: {
     runs: page,
     next_cursor: hasMore && last ? { ts: last.occurred_at, id: last.id } : null,
   };
+}
+
+/** Send-time failures for one recipient of a campaign (feeds the per-user timeline). */
+export async function listRecipientFailuresForUser(
+  campaign_id: string,
+  user_id: string,
+  limit = 100
+): Promise<RecipientFailureRow[]> {
+  const dbx = getDb();
+  const failures = tableFor(dbx, "dispatchRecipientFailures");
+  const raw: Record<string, unknown>[] = await queryDb(dbx)
+    .select()
+    .from(failures)
+    .where(and(eq(failures.campaign_id, campaign_id), eq(failures.user_id, user_id)))
+    .orderBy(desc(failures.occurred_at), desc(failures.id))
+    .limit(limit);
+  return raw as unknown as RecipientFailureRow[];
 }
 
 export async function getDispatchRun(id: string): Promise<{

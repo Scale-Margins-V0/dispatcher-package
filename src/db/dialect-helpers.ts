@@ -48,3 +48,24 @@ export async function upsert(
     .values(values)
     .onConflictDoUpdate({ target, set: updateSet });
 }
+
+/**
+ * Cross-dialect insert-or-skip. Rows whose `conflictKeys` collide with an
+ * existing row are silently dropped (MySQL uses INSERT IGNORE, which keys on
+ * any unique constraint; sqlite/pg target the named columns).
+ */
+export async function insertIgnore(
+  dbx: DispatcherDb,
+  name: StateTableName,
+  rows: Record<string, unknown>[],
+  conflictKeys: string[]
+): Promise<void> {
+  if (rows.length === 0) return;
+  const table = tableFor(dbx, name);
+  if (dbx.dialect === "mysql") {
+    await (dbx.db as any).insert(table).ignore().values(rows);
+    return;
+  }
+  const target = conflictKeys.map((key) => table[key]);
+  await (dbx.db as any).insert(table).values(rows).onConflictDoNothing({ target });
+}

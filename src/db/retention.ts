@@ -43,6 +43,31 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
       );
   }
 
+  const events = tableFor(dbx, "campaignEvents");
+  await q
+    .delete(events)
+    .where(
+      lt(events.occurred_at, daysAgo(intEnv("DISPATCHER_CAMPAIGN_EVENTS_RETENTION_DAYS", 90)))
+    );
+  // Row cap mirrors the app_logs boundary pattern.
+  const maxEventRows = intEnv("DISPATCHER_CAMPAIGN_EVENTS_MAX_ROWS", 500_000);
+  const eventBoundary: Array<{ ts: Date; id: string }> = await q
+    .select({ ts: events.occurred_at, id: events.id })
+    .from(events)
+    .orderBy(desc(events.occurred_at), desc(events.id))
+    .offset(maxEventRows)
+    .limit(1);
+  if (eventBoundary[0]) {
+    await q
+      .delete(events)
+      .where(
+        or(
+          lt(events.occurred_at, eventBoundary[0].ts),
+          and(eq(events.occurred_at, eventBoundary[0].ts), lte(events.id, eventBoundary[0].id))
+        )
+      );
+  }
+
   const runs = tableFor(dbx, "dispatchRuns");
   await q.delete(runs).where(lt(runs.occurred_at, daysAgo(90)));
   const failures = tableFor(dbx, "dispatchRecipientFailures");
