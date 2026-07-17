@@ -5,6 +5,12 @@ import { logPreferenceSideEffectSimulation } from "../events/preference-side-eff
 import { scrubPii } from "../events/scrubber.js";
 import type { StandardizedEvent } from "../events/common/types.js";
 import { componentLogger } from "../logging/logger.js";
+import {
+  escapeHtml,
+  PUBLIC_PAGE_STYLES,
+  renderCloseTabButtonHtml,
+  renderLogoHtml,
+} from "../public-pages/branding.js";
 
 const log = componentLogger("preferences");
 
@@ -41,14 +47,6 @@ function logUnlessVitest(...args: unknown[]): void {
   );
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 function renderPreferencesPage(params: {
   uid: string;
   campaignId?: string;
@@ -57,48 +55,39 @@ function renderPreferencesPage(params: {
   checkedCategoryKeys?: ReadonlySet<string>;
 }): string {
   const { uid, campaignId, organizationId, message } = params;
-  const checked = params.checkedCategoryKeys ?? new Set(PREFERENCE_CATEGORIES.map((c) => c.key));
+  const done = Boolean(message);
 
-  const hiddenFields = [
-    `<input type="hidden" name="uid" value="${escapeHtml(uid)}" />`,
-    campaignId ? `<input type="hidden" name="campaign_id" value="${escapeHtml(campaignId)}" />` : "",
-    organizationId
-      ? `<input type="hidden" name="organization_id" value="${escapeHtml(organizationId)}" />`
-      : "",
-  ].join("\n      ");
+  let bodyContent: string;
+  if (done) {
+    bodyContent = `
+    <h1>Email preferences</h1>
+    <div class="msg">${escapeHtml(message!)}</div>
+    ${renderCloseTabButtonHtml()}`;
+  } else {
+    const checked =
+      params.checkedCategoryKeys ?? new Set(PREFERENCE_CATEGORIES.map((c) => c.key));
 
-  const categoryRows = PREFERENCE_CATEGORIES.map(
-    (c) => `
+    const hiddenFields = [
+      `<input type="hidden" name="uid" value="${escapeHtml(uid)}" />`,
+      campaignId
+        ? `<input type="hidden" name="campaign_id" value="${escapeHtml(campaignId)}" />`
+        : "",
+      organizationId
+        ? `<input type="hidden" name="organization_id" value="${escapeHtml(organizationId)}" />`
+        : "",
+    ].join("\n      ");
+
+    const categoryRows = PREFERENCE_CATEGORIES.map(
+      (c) => `
       <label class="row">
         <input type="checkbox" name="category_${c.key}" value="1" ${checked.has(c.key) ? "checked" : ""} />
         <span>${escapeHtml(c.label)}</span>
       </label>`
-  ).join("");
+    ).join("");
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Email preferences</title>
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background:#f7f7f8; margin:0; padding:24px; color:#1f2328; }
-  .card { max-width:420px; margin:40px auto; background:#fff; border-radius:12px; padding:28px; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
-  h1 { font-size:18px; margin:0 0 6px; }
-  p.sub { color:#6b7280; font-size:13px; margin:0 0 20px; line-height:1.5; }
-  .row { display:flex; align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid #eee; }
-  .row input { width:18px; height:18px; }
-  button { width:100%; padding:12px; border-radius:8px; border:none; font-size:14px; font-weight:600; cursor:pointer; margin-top:16px; }
-  .save { background:#111827; color:#fff; }
-  .unsub { background:none; color:#b42318; text-decoration:underline; font-weight:400; padding:8px 0; margin-top:8px; }
-  .msg { background:#ecfdf3; color:#027a48; border-radius:8px; padding:10px 14px; font-size:13px; margin-bottom:16px; }
-</style>
-</head>
-<body>
-  <div class="card">
+    bodyContent = `
     <h1>Email preferences</h1>
     <p class="sub">Choose which emails you'd like to keep receiving. Unchecking a category stops those emails only — you'll still get everything else.</p>
-    ${message ? `<div class="msg">${escapeHtml(message)}</div>` : ""}
     <form method="POST" action="/api/preferences">
       ${hiddenFields}${categoryRows}
       <button type="submit" class="save">Save preferences</button>
@@ -107,7 +96,23 @@ function renderPreferencesPage(params: {
       ${hiddenFields}
       <input type="hidden" name="unsubscribe_all" value="1" />
       <button type="submit" class="unsub">Unsubscribe from all emails</button>
-    </form>
+    </form>`;
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Email preferences</title>
+<style>
+${PUBLIC_PAGE_STYLES}
+</style>
+</head>
+<body>
+  <div class="card">
+    ${renderLogoHtml()}
+    ${bodyContent}
   </div>
 </body>
 </html>`;

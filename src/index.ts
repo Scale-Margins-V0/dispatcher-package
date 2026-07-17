@@ -59,7 +59,10 @@ import {
   createPreferencesGetHandler,
   createPreferencesPostHandler,
 } from "./preferences/link.js";
-import { createUnsubscribeLinkGetHandler } from "./unsubscribe/link.js";
+import {
+  createUnsubscribeLinkGetHandler,
+  createUnsubscribeLinkPostHandler,
+} from "./unsubscribe/link.js";
 import { telemetry } from "./telemetry/posthog.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
@@ -172,8 +175,10 @@ if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
   app.use("/images", express.static(imgDir));
 }
 
-// GET /api/unsubscribe — public unsubscribe link (no /scalemargin/ in client-facing URLs); PII-free analytics POST
+// GET/POST /api/unsubscribe — reason survey, then PII-free unsubscribed analytics POST
+app.use("/api/unsubscribe", express.urlencoded({ extended: false }));
 app.get("/api/unsubscribe", createUnsubscribeLinkGetHandler());
+app.post("/api/unsubscribe", createUnsubscribeLinkPostHandler());
 
 // GET/POST /api/preferences — public email-preferences screen (per-category opt-out, or unsubscribe from all)
 app.use("/api/preferences", express.urlencoded({ extended: false }));

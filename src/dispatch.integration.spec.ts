@@ -127,7 +127,7 @@ placeholders:
     app = mod.app;
     const { initializeEventPipeline } = await import("./events/index.js");
     initializeEventPipeline();
-  });
+  }, 60_000);
 
   beforeEach(() => {
     sendMock.mockClear();
@@ -296,14 +296,42 @@ placeholders:
     expect(ada.text).toContain("Ada Lovelace");
   });
 
-  it("GET /api/unsubscribe forwards PII-free unsubscribed analytics when UNSUBSCRIBE_LINK_ANALYTICS_URL is set", async () => {
+  it("GET /api/unsubscribe renders a reason survey instead of recording immediately", async () => {
     process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL =
       "http://127.0.0.1:9/api/webhooks/campaign-analytics/unsub-link";
+    process.env.LOGO_URL = "https://cdn.example.com/brand-logo.png";
     fetchMock.mockClear();
 
     const res = await request(app)
       .get("/api/unsubscribe")
       .query({ uid: "u1", campaign_id: "camp-unsub", organization_id: "org-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.text).toContain("Confirm unsubscribe");
+    expect(res.text).toContain("This email is not relevant to me");
+    expect(res.text).toContain('name="reason"');
+    expect(res.text).toContain('src="https://cdn.example.com/brand-logo.png"');
+    expect(fetchMock.mock.calls).toHaveLength(0);
+
+    delete process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL;
+    delete process.env.LOGO_URL;
+  });
+
+  it("POST /api/unsubscribe forwards PII-free unsubscribed analytics with reason", async () => {
+    process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL =
+      "http://127.0.0.1:9/api/webhooks/campaign-analytics/unsub-link";
+    fetchMock.mockClear();
+
+    const res = await request(app)
+      .post("/api/unsubscribe")
+      .type("form")
+      .send({
+        uid: "u1",
+        campaign_id: "camp-unsub",
+        organization_id: "org-1",
+        reason: "too_frequent",
+      });
 
     expect(res.status).toBe(200);
     expect(res.text).toContain("recorded");
@@ -313,16 +341,54 @@ placeholders:
     expect(call).toBeDefined();
     const init = (call as unknown as [string, RequestInit])[1];
     const body = JSON.parse(String(init?.body ?? "")) as {
-      events?: Array<{ event: string; user_id: string; metadata?: { source?: string } }>;
+      events?: Array<{
+        event: string;
+        user_id: string;
+        metadata?: { source?: string; reason?: string; reason_id?: string };
+      }>;
     };
     expect(body.events?.[0]?.event).toBe("unsubscribed");
     expect(body.events?.[0]?.user_id).toBe("u1");
     expect(body.events?.[0]?.metadata?.source).toBe("unsubscribe_link_click");
+    expect(body.events?.[0]?.metadata?.reason_id).toBe("too_frequent");
+    expect(body.events?.[0]?.metadata?.reason).toBe("The emails are too frequent");
+
+    delete process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL;
+  });
+
+  it("POST /api/unsubscribe stores free-text when Other is selected", async () => {
+    process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL =
+      "http://127.0.0.1:9/api/webhooks/campaign-analytics/unsub-other";
+    fetchMock.mockClear();
+
+    const res = await request(app)
+      .post("/api/unsubscribe")
+      .type("form")
+      .send({
+        uid: "u1",
+        campaign_id: "camp-unsub",
+        organization_id: "org-1",
+        reason: "other",
+        reason_other: "Changed my role",
+      });
+
+    expect(res.status).toBe(200);
+    const call = (fetchMock.mock.calls as unknown[][]).find((c) =>
+      String(c[0]).includes("campaign-analytics/unsub-other")
+    );
+    expect(call).toBeDefined();
+    const init = (call as unknown as [string, RequestInit])[1];
+    const body = JSON.parse(String(init?.body ?? "")) as {
+      events?: Array<{ metadata?: { reason?: string; reason_id?: string } }>;
+    };
+    expect(body.events?.[0]?.metadata?.reason_id).toBe("other");
+    expect(body.events?.[0]?.metadata?.reason).toBe("Changed my role");
 
     delete process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL;
   });
 
   it("GET /api/preferences renders a preference-selection screen with both categories checked", async () => {
+    process.env.LOGO_URL = "https://cdn.example.com/prefs-logo.png";
     const res = await request(app)
       .get("/api/preferences")
       .query({ uid: "u1", campaign_id: "camp-pref", organization_id: "org-1" });
@@ -334,6 +400,8 @@ placeholders:
     expect(res.text).toContain("Unsubscribe from all emails");
     expect(res.text).toContain('name="category_newsletter" value="1" checked');
     expect(res.text).toContain('name="category_promotional" value="1" checked');
+    expect(res.text).toContain('src="https://cdn.example.com/prefs-logo.png"');
+    delete process.env.LOGO_URL;
   });
 
   it("POST /api/preferences forwards a category-scoped unsubscribed event when a box is unchecked", async () => {
