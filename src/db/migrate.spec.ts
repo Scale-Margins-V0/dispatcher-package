@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDispatcherDb, resetDbForTests, type DispatcherDb } from "./client.js";
+import {
+  createDispatcherDb,
+  resetDbForTests,
+  type DispatcherDb,
+} from "./client.js";
 import { resolveMigrationsDir, runDispatcherMigrations } from "./migrate.js";
 
 type SqliteDb = Extract<DispatcherDb, { dialect: "sqlite" }>;
@@ -19,7 +23,9 @@ describe("runDispatcherMigrations (sqlite)", () => {
     dbx = createDispatcherDb({ dialect: "sqlite", file: ":memory:" });
     await runDispatcherMigrations(dbx);
     const rows = dbx.sqlite
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+      )
       .all() as Array<{ name: string }>;
     const names = rows.map((r) => r.name);
     for (const expected of [
@@ -34,6 +40,10 @@ describe("runDispatcherMigrations (sqlite)", () => {
       "dev_sent_campaigns",
       "dispatcher_meta",
       "api_keys",
+      "onsite_decisions",
+      "onsite_activations",
+      "onsite_sessions",
+      "onsite_receipts",
       "user",
       "session",
       "account",
@@ -63,7 +73,10 @@ describe("migration folders", () => {
   it("all three dialects have the same number of migrations (drift guard)", () => {
     const counts = (["sqlite", "mysql", "postgres"] as const).map((dialect) => {
       const journal = JSON.parse(
-        readFileSync(join(resolveMigrationsDir(dialect), "meta", "_journal.json"), "utf8")
+        readFileSync(
+          join(resolveMigrationsDir(dialect), "meta", "_journal.json"),
+          "utf8"
+        )
       ) as { entries: unknown[] };
       return journal.entries.length;
     });

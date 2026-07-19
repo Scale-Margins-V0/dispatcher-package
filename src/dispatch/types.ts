@@ -1,3 +1,5 @@
+import type { OnsiteConfigInput } from "../onsite/types.js";
+
 export type DispatchPayload = {
   campaign_id: string;
   channel: string;
@@ -42,5 +44,13 @@ export type DispatchPayload = {
     campaign_name?: string;
     variant_id?: string;
     scheduled_at?: string | null;
+    /**
+     * Optional onsite activation config. Validated at dispatch time by
+     * onsiteConfigSchema (see src/onsite/types.ts); an invalid block fails the
+     * onsite feature closed without affecting the ordinary send. When present
+     * and the content references {{onsite_url}}, each recipient is issued a
+     * one-time activation link.
+     */
+    onsite?: OnsiteConfigInput;
   };
 };

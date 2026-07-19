@@ -1,11 +1,15 @@
 import { recordRecipientFailure } from "../admin/activity.js";
-import { hasDevSentCampaign, markDevSentCampaign } from "../db/repos/dev-sent.js";
+import {
+  hasDevSentCampaign,
+  markDevSentCampaign,
+} from "../db/repos/dev-sent.js";
 import { emitEvent } from "../events/index.js";
 import { registerCampaignCallback } from "../events/campaign-callback-registry.js";
 import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callback-url.js";
 import { processImages, type ImageMapping } from "../images/handler.js";
 import { rewriteImageUrls } from "../images/rewriter.js";
 import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
+import { applyOnsiteUrl, prepareOnsite } from "../onsite/issue.js";
 import { personalize } from "../personalize.js";
 import { getProvider } from "../providers/index.js";
 import type { EmailMessage } from "../providers/types.js";
@@ -59,12 +63,21 @@ export async function processDispatch(
 
   // Resolve async (query/api) variables once for the whole recipient set, before
   // the sync personalize pass. Sync sources (field/computed/constant) skip this.
-  const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx);
+  const resolvedVars = await resolveDynamicValues(
+    [...users.values()],
+    personalizeCtx
+  );
 
   let imageMappings: ImageMapping[] = [];
   if (payload.images && payload.images.length > 0) {
     imageMappings = await processImages(payload.images, campaign_id);
   }
+
+  // Onsite activation: validates metadata.onsite and upserts the offer. Returns
+  // null (and issues nothing) unless onsite is configured AND the content
+  // references {{onsite_url}} — so ordinary dispatches pay no cost and never
+  // break when onsite is unconfigured.
+  const onsite = await prepareOnsite(payload);
 
   const provider = getProvider();
   const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
@@ -81,7 +94,9 @@ export async function processDispatch(
   for (const userId of user_ids) {
     const user = users.get(userId);
     if (!user) {
-      warnUnlessVitest(`[Dispatch] User ${userId} not found in database, skipping`);
+      warnUnlessVitest(
+        `[Dispatch] User ${userId} not found in database, skipping`
+      );
       if (dispatchRunId) {
         recordRecipientFailure({
           dispatch_run_id: dispatchRunId,
@@ -96,16 +111,34 @@ export async function processDispatch(
     }
 
     const resolved = resolvedVars.get(user.user_id);
-    const subject = content.subject
-      ? personalize(content.subject, user, personalizeCtx, resolved)
+    const personalizeString = (input: string): string =>
+      personalize(input, user, personalizeCtx, resolved);
+    let subject = content.subject
+      ? personalizeString(content.subject)
       : "No Subject";
-    let html = content.html_body
-      ? personalize(content.html_body, user, personalizeCtx, resolved)
-      : "";
+    let html = content.html_body ? personalizeString(content.html_body) : "";
+    let text = content.text_body
+      ? personalizeString(content.text_body)
+      : undefined;
 
     if (imageMappings.length > 0) {
       html = rewriteImageUrls(html, imageMappings);
     }
+
+    // Reserved {{onsite_url}} personalization: substitute the recipient's
+    // one-time activation URL, or strip the placeholder when no link was issued
+    // (onsite disabled or issuance failed closed) so it never ships literally.
+    const onsiteUrl = onsite
+      ? await onsite.issue({
+          userId,
+          channel: "email",
+          now: new Date(),
+          personalizeString,
+        })
+      : null;
+    subject = applyOnsiteUrl(subject, onsiteUrl);
+    html = applyOnsiteUrl(html, onsiteUrl);
+    if (text !== undefined) text = applyOnsiteUrl(text, onsiteUrl);
 
     const recipientEmail = devRecipient || user.email;
 
@@ -116,9 +149,7 @@ export async function processDispatch(
         from: fromEmail,
         subject,
         html,
-        ...(content.text_body && {
-          text: personalize(content.text_body, user, personalizeCtx, resolved),
-        }),
+        ...(text !== undefined && { text }),
         context: {
           campaign_id,
           user_id: userId,
@@ -138,7 +169,12 @@ export async function processDispatch(
     }
   }
 
-  logUnlessVitest(`[Dispatch] Sending ${messages.length} emails via ${provider.name}`);
+  // Persist all issued activations in one batch after the recipient loop.
+  if (onsite) await onsite.flush();
+
+  logUnlessVitest(
+    `[Dispatch] Sending ${messages.length} emails via ${provider.name}`
+  );
 
   const sendResults: Array<{
     userId: string;
@@ -196,7 +232,9 @@ export async function processDispatch(
       },
     });
     logUnlessVitest(
-      `[Dispatch] event emitted user=${userId} event=${result.success ? "dispatched" : "failed"} messageId=${result.messageId ?? "unknown"}`
+      `[Dispatch] event emitted user=${userId} event=${
+        result.success ? "dispatched" : "failed"
+      } messageId=${result.messageId ?? "unknown"}`
     );
   }
 

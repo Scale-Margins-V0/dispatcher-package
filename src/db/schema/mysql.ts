@@ -41,7 +41,9 @@ export const dispatchRuns = mysqlTable(
     campaign_id: id191("campaign_id").notNull(),
     /** Grouping key: drip_sequence_id for drip steps, else campaign_id. */
     program_id: id191("program_id").notNull().default(""),
-    program_kind: varchar("program_kind", { length: 16 }).notNull().default("campaign"),
+    program_kind: varchar("program_kind", { length: 16 })
+      .notNull()
+      .default("campaign"),
     step_id: id191("step_id"),
     organization_id: id191("organization_id"),
     channel: varchar("channel", { length: 32 }).notNull(),
@@ -147,7 +149,9 @@ export const dispatchPrograms = mysqlTable(
   {
     campaign_id: id191("campaign_id").primaryKey(),
     program_id: id191("program_id").notNull(),
-    program_kind: varchar("program_kind", { length: 16 }).notNull().default("campaign"),
+    program_kind: varchar("program_kind", { length: 16 })
+      .notNull()
+      .default("campaign"),
     step_id: id191("step_id"),
     organization_id: id191("organization_id").notNull(),
     created_at: ts("created_at").notNull(),
@@ -164,7 +168,9 @@ export const campaignEvents = mysqlTable(
     campaign_id: id191("campaign_id").notNull(),
     /** The grouping key a human calls "the campaign": drip_sequence_id, else campaign_id. */
     program_id: id191("program_id").notNull().default(""),
-    program_kind: varchar("program_kind", { length: 16 }).notNull().default("campaign"),
+    program_kind: varchar("program_kind", { length: 16 })
+      .notNull()
+      .default("campaign"),
     /** Drip step this send belongs to; null for one-shot campaigns. */
     step_id: id191("step_id"),
     organization_id: id191("organization_id").notNull(),
@@ -179,8 +185,14 @@ export const campaignEvents = mysqlTable(
     dedupe_key: varchar("dedupe_key", { length: 64 }).notNull(),
   },
   (t) => [
-    index("campaign_events_campaign_occurred_idx").on(t.campaign_id, t.occurred_at),
-    index("campaign_events_program_occurred_idx").on(t.program_id, t.occurred_at),
+    index("campaign_events_campaign_occurred_idx").on(
+      t.campaign_id,
+      t.occurred_at
+    ),
+    index("campaign_events_program_occurred_idx").on(
+      t.program_id,
+      t.occurred_at
+    ),
     index("campaign_events_program_user_idx").on(t.program_id, t.user_id),
     index("campaign_events_occurred_at_idx").on(t.occurred_at),
     uniqueIndex("campaign_events_dedupe_uq").on(t.dedupe_key),
@@ -231,7 +243,126 @@ export const apiKeys = mysqlTable(
     last_used_at: ts("last_used_at"),
     revoked_at: ts("revoked_at"),
   },
-  (t) => [index("api_keys_active_idx").on(t.revoked_at), index("api_keys_hash_idx").on(t.key_hash)]
+  (t) => [
+    index("api_keys_active_idx").on(t.revoked_at),
+    index("api_keys_hash_idx").on(t.key_hash),
+  ]
+);
+
+// ---------------------------------------------------------------------------
+// Onsite activation subsystem (ScaleMargin cross-repo contract). See sqlite.ts
+// for design notes. Decision snapshots stored encrypted; sm_t tokens, visitor
+// nonces and session cookies stored as SHA-256 hashes (64 hex chars). Keep in
+// lockstep with sqlite.ts / pg.ts.
+// ---------------------------------------------------------------------------
+
+const hash64 = (name: string) => varchar(name, { length: 64 });
+
+export const onsiteDecisions = mysqlTable(
+  "onsite_decisions",
+  {
+    decision_id: id191("decision_id").primaryKey(),
+    campaign_id: id191("campaign_id").notNull(),
+    program_id: id191("program_id").notNull().default(""),
+    program_kind: varchar("program_kind", { length: 16 })
+      .notNull()
+      .default("campaign"),
+    step_id: id191("step_id"),
+    organization_id: id191("organization_id").notNull(),
+    site_key: id191("site_key").notNull(),
+    snapshot_ciphertext: text("snapshot_ciphertext").notNull(),
+    created_at: ts("created_at").notNull(),
+    updated_at: ts("updated_at").notNull(),
+  },
+  (t) => [index("onsite_decisions_campaign_idx").on(t.campaign_id)]
+);
+
+export const onsiteActivations = mysqlTable(
+  "onsite_activations",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    touch_id: varchar("touch_id", { length: 36 }).notNull(),
+    decision_id: id191("decision_id").notNull(),
+    campaign_id: id191("campaign_id").notNull(),
+    program_id: id191("program_id").notNull().default(""),
+    program_kind: varchar("program_kind", { length: 16 })
+      .notNull()
+      .default("campaign"),
+    step_id: id191("step_id"),
+    organization_id: id191("organization_id").notNull(),
+    user_id: id191("user_id").notNull(),
+    channel: varchar("channel", { length: 16 }).notNull(),
+    site_key: id191("site_key").notNull(),
+    placement: id191("placement").notNull(),
+    analytics_token: text("analytics_token").notNull(),
+    offer_ref: id191("offer_ref").notNull(),
+    offer_version: varchar("offer_version", { length: 64 }).notNull(),
+    token_hash: hash64("token_hash").notNull(),
+    visitor_nonce_hash: hash64("visitor_nonce_hash"),
+    status: varchar("status", { length: 16 }).notNull().default("issued"),
+    starts_at: ts("starts_at").notNull(),
+    expires_at: ts("expires_at").notNull(),
+    issued_at: ts("issued_at").notNull(),
+    bound_at: ts("bound_at"),
+    created_at: ts("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("onsite_activations_token_uq").on(t.token_hash),
+    index("onsite_activations_decision_idx").on(t.decision_id),
+    index("onsite_activations_campaign_idx").on(t.campaign_id),
+    index("onsite_activations_user_idx").on(t.user_id),
+    index("onsite_activations_expires_idx").on(t.expires_at),
+  ]
+);
+
+export const onsiteSessions = mysqlTable(
+  "onsite_sessions",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    activation_id: varchar("activation_id", { length: 36 }).notNull(),
+    decision_id: id191("decision_id").notNull(),
+    campaign_id: id191("campaign_id").notNull(),
+    organization_id: id191("organization_id").notNull(),
+    user_id: id191("user_id").notNull(),
+    session_token_hash: hash64("session_token_hash").notNull(),
+    nonce_hash: hash64("nonce_hash").notNull(),
+    page_key: id191("page_key").notNull(),
+    consent_version: varchar("consent_version", { length: 64 }),
+    status: varchar("status", { length: 16 }).notNull().default("active"),
+    created_at: ts("created_at").notNull(),
+    absolute_expires_at: ts("absolute_expires_at").notNull(),
+    last_seen_at: ts("last_seen_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("onsite_sessions_token_uq").on(t.session_token_hash),
+    index("onsite_sessions_activation_idx").on(t.activation_id),
+    index("onsite_sessions_absolute_idx").on(t.absolute_expires_at),
+  ]
+);
+
+export const onsiteReceipts = mysqlTable(
+  "onsite_receipts",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    receipt_id: id191("receipt_id").notNull(),
+    activation_id: varchar("activation_id", { length: 36 }).notNull(),
+    decision_id: id191("decision_id").notNull(),
+    session_id: varchar("session_id", { length: 36 }),
+    campaign_id: id191("campaign_id").notNull(),
+    organization_id: id191("organization_id").notNull(),
+    user_id: id191("user_id").notNull(),
+    type: varchar("type", { length: 24 }).notNull(),
+    occurred_at: ts("occurred_at").notNull(),
+    received_at: ts("received_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("onsite_receipts_receipt_uq").on(t.receipt_id),
+    index("onsite_receipts_activation_idx").on(t.activation_id),
+    index("onsite_receipts_campaign_received_idx").on(
+      t.campaign_id,
+      t.received_at
+    ),
+  ]
 );
 
 // ---------------------------------------------------------------------------

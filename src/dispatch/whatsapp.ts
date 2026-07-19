@@ -3,6 +3,8 @@ import { computeTagSign } from "../events/tag-sign.js";
 import { registerCampaignCallback } from "../events/campaign-callback-registry.js";
 import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callback-url.js";
 import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
+import { applyOnsiteUrl, prepareOnsite } from "../onsite/issue.js";
+import { personalize } from "../personalize.js";
 import {
   buildWhatsAppMediaMessageForUser,
   buildWhatsAppMessageForUser,
@@ -57,6 +59,12 @@ export async function processWhatsAppDispatch(
   const provider = new GupshupWhatsAppProvider();
   const devRecipient = resolveDevTestRecipient();
 
+  // Onsite activation: reserved {{onsite_url}} in the WhatsApp caption is
+  // replaced per-recipient. Returns null (issues nothing) unless onsite is
+  // configured AND the caption references {{onsite_url}} — ordinary WhatsApp
+  // dispatch is unaffected and never broken by onsite.
+  const onsite = await prepareOnsite(payload);
+
   const sendResults: Array<{
     userId: string;
     success: boolean;
@@ -67,7 +75,9 @@ export async function processWhatsAppDispatch(
   for (const userId of user_ids) {
     const user = users.get(userId);
     if (!user) {
-      warnUnlessVitest(`[Dispatch] User ${userId} not found in database, skipping`);
+      warnUnlessVitest(
+        `[Dispatch] User ${userId} not found in database, skipping`
+      );
       continue;
     }
 
@@ -123,6 +133,21 @@ export async function processWhatsAppDispatch(
           sendContext
         );
 
+    // Reserved {{onsite_url}} in the caption → per-recipient landing URL, or
+    // stripped when no link was issued (fail closed) so it never ships literally.
+    if (typeof message.caption === "string" && message.caption.length > 0) {
+      const onsiteUrl = onsite
+        ? await onsite.issue({
+            userId,
+            channel: "whatsapp",
+            now: new Date(),
+            personalizeString: (input: string) =>
+              personalize(input, user, personalizeCtx),
+          })
+        : null;
+      message.caption = applyOnsiteUrl(message.caption, onsiteUrl);
+    }
+
     const result = await provider.send(message);
     if (!result.success) {
       telemetry.capture("dispatcher_provider_send_failed", {
@@ -150,6 +175,9 @@ export async function processWhatsAppDispatch(
 
     if (devRecipient) break;
   }
+
+  // Persist all issued activations in one batch after the recipient loop.
+  if (onsite) await onsite.flush();
 
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;
@@ -233,6 +261,8 @@ async function emitWhatsAppEvent(args: {
   });
 
   logUnlessVitest(
-    `[Dispatch] event emitted user=${userId} event=${effectiveSuccess ? "dispatched" : "failed"} messageId=${messageId ?? "unknown"}`
+    `[Dispatch] event emitted user=${userId} event=${
+      effectiveSuccess ? "dispatched" : "failed"
+    } messageId=${messageId ?? "unknown"}`
   );
 }

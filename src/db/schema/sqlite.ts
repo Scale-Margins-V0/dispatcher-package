@@ -4,7 +4,13 @@
  * run `pnpm db:generate` to regenerate all three migration folders.
  */
 
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 const ts = (name: string) => integer(name, { mode: "timestamp_ms" });
 const bool = (name: string) => integer(name, { mode: "boolean" });
@@ -169,8 +175,14 @@ export const campaignEvents = sqliteTable(
     dedupe_key: text("dedupe_key").notNull(),
   },
   (t) => [
-    index("campaign_events_campaign_occurred_idx").on(t.campaign_id, t.occurred_at),
-    index("campaign_events_program_occurred_idx").on(t.program_id, t.occurred_at),
+    index("campaign_events_campaign_occurred_idx").on(
+      t.campaign_id,
+      t.occurred_at
+    ),
+    index("campaign_events_program_occurred_idx").on(
+      t.program_id,
+      t.occurred_at
+    ),
     index("campaign_events_program_user_idx").on(t.program_id, t.user_id),
     index("campaign_events_occurred_at_idx").on(t.occurred_at),
     uniqueIndex("campaign_events_dedupe_uq").on(t.dedupe_key),
@@ -221,7 +233,137 @@ export const apiKeys = sqliteTable(
     last_used_at: ts("last_used_at"),
     revoked_at: ts("revoked_at"),
   },
-  (t) => [index("api_keys_active_idx").on(t.revoked_at), index("api_keys_hash_idx").on(t.key_hash)]
+  (t) => [
+    index("api_keys_active_idx").on(t.revoked_at),
+    index("api_keys_hash_idx").on(t.key_hash),
+  ]
+);
+
+// ---------------------------------------------------------------------------
+// Onsite activation subsystem (ScaleMargin cross-repo contract). A dispatch
+// carries metadata.onsite with per-user assignments; each mints a random 256-bit
+// sm_t token (stored only as a SHA-256 hash) embedded in the landing_url
+// fragment. Redeeming binds the first visitor nonce, sets a __Host-sm_as session
+// cookie, and returns the typed ScaleMargin envelope. The personalized decision
+// is frozen (encrypted) per decision_id and reused across channels. Keep columns
+// in lockstep with mysql.ts / pg.ts.
+// ---------------------------------------------------------------------------
+
+/** Frozen, encrypted decision snapshot — one row per decision_id, reused across
+ * channels (email + WhatsApp) that share the same decision. */
+export const onsiteDecisions = sqliteTable(
+  "onsite_decisions",
+  {
+    decision_id: text("decision_id").primaryKey(),
+    campaign_id: text("campaign_id").notNull(),
+    program_id: text("program_id").notNull().default(""),
+    program_kind: text("program_kind").notNull().default("campaign"),
+    step_id: text("step_id"),
+    organization_id: text("organization_id").notNull(),
+    site_key: text("site_key").notNull(),
+    /** AES-256-GCM ciphertext of the resolved, channel-independent envelope core. */
+    snapshot_ciphertext: text("snapshot_ciphertext").notNull(),
+    created_at: ts("created_at").notNull(),
+    updated_at: ts("updated_at").notNull(),
+  },
+  (t) => [index("onsite_decisions_campaign_idx").on(t.campaign_id)]
+);
+
+/** Per-assignment activation: hashed sm_t token + the visitor nonce bound on
+ * first redeem. One "touch" of a decision on a channel. */
+export const onsiteActivations = sqliteTable(
+  "onsite_activations",
+  {
+    id: text("id").primaryKey(),
+    touch_id: text("touch_id").notNull(),
+    decision_id: text("decision_id").notNull(),
+    campaign_id: text("campaign_id").notNull(),
+    program_id: text("program_id").notNull().default(""),
+    program_kind: text("program_kind").notNull().default("campaign"),
+    step_id: text("step_id"),
+    organization_id: text("organization_id").notNull(),
+    user_id: text("user_id").notNull(),
+    channel: text("channel").notNull(),
+    site_key: text("site_key").notNull(),
+    placement: text("placement").notNull(),
+    analytics_token: text("analytics_token").notNull(),
+    offer_ref: text("offer_ref").notNull(),
+    offer_version: text("offer_version").notNull(),
+    /** SHA-256 hex of the 256-bit sm_t token carried in the landing_url fragment. */
+    token_hash: text("token_hash").notNull(),
+    /** SHA-256 hex of the first visitor nonce bound at redeem; null until then. */
+    visitor_nonce_hash: text("visitor_nonce_hash"),
+    status: text("status").notNull().default("issued"),
+    starts_at: ts("starts_at").notNull(),
+    expires_at: ts("expires_at").notNull(),
+    issued_at: ts("issued_at").notNull(),
+    bound_at: ts("bound_at"),
+    created_at: ts("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("onsite_activations_token_uq").on(t.token_hash),
+    index("onsite_activations_decision_idx").on(t.decision_id),
+    index("onsite_activations_campaign_idx").on(t.campaign_id),
+    index("onsite_activations_user_idx").on(t.user_id),
+    index("onsite_activations_expires_idx").on(t.expires_at),
+  ]
+);
+
+/** A redeemed session: hashed __Host-sm_as cookie, bound to the visitor nonce.
+ * Enforces a 30m idle and 24h absolute lifetime. */
+export const onsiteSessions = sqliteTable(
+  "onsite_sessions",
+  {
+    id: text("id").primaryKey(),
+    activation_id: text("activation_id").notNull(),
+    decision_id: text("decision_id").notNull(),
+    campaign_id: text("campaign_id").notNull(),
+    organization_id: text("organization_id").notNull(),
+    user_id: text("user_id").notNull(),
+    /** SHA-256 hex of the opaque __Host-sm_as cookie value. */
+    session_token_hash: text("session_token_hash").notNull(),
+    /** SHA-256 hex of the bound visitor nonce. */
+    nonce_hash: text("nonce_hash").notNull(),
+    page_key: text("page_key").notNull(),
+    consent_version: text("consent_version"),
+    status: text("status").notNull().default("active"),
+    created_at: ts("created_at").notNull(),
+    /** Hard 24h ceiling. */
+    absolute_expires_at: ts("absolute_expires_at").notNull(),
+    /** Sliding 30m idle anchor; refreshed on each access. */
+    last_seen_at: ts("last_seen_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("onsite_sessions_token_uq").on(t.session_token_hash),
+    index("onsite_sessions_activation_idx").on(t.activation_id),
+    index("onsite_sessions_absolute_idx").on(t.absolute_expires_at),
+  ]
+);
+
+/** Client-posted receipts (impression/click/dismiss); receipt_id is idempotent. */
+export const onsiteReceipts = sqliteTable(
+  "onsite_receipts",
+  {
+    id: text("id").primaryKey(),
+    receipt_id: text("receipt_id").notNull(),
+    activation_id: text("activation_id").notNull(),
+    decision_id: text("decision_id").notNull(),
+    session_id: text("session_id"),
+    campaign_id: text("campaign_id").notNull(),
+    organization_id: text("organization_id").notNull(),
+    user_id: text("user_id").notNull(),
+    type: text("type").notNull(),
+    occurred_at: ts("occurred_at").notNull(),
+    received_at: ts("received_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("onsite_receipts_receipt_uq").on(t.receipt_id),
+    index("onsite_receipts_activation_idx").on(t.activation_id),
+    index("onsite_receipts_campaign_received_idx").on(
+      t.campaign_id,
+      t.received_at
+    ),
+  ]
 );
 
 // ---------------------------------------------------------------------------

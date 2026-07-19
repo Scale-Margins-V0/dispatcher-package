@@ -22,7 +22,9 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
   const daysAgo = (days: number) => new Date(now.getTime() - days * DAY_MS);
 
   const logs = tableFor(dbx, "appLogs");
-  await q.delete(logs).where(lt(logs.ts, daysAgo(intEnv("DISPATCHER_LOG_RETENTION_DAYS", 14))));
+  await q
+    .delete(logs)
+    .where(lt(logs.ts, daysAgo(intEnv("DISPATCHER_LOG_RETENTION_DAYS", 14))));
 
   // Row cap: find the ts/id at the cap boundary and delete everything older.
   const maxRows = intEnv("DISPATCHER_LOG_MAX_ROWS", 200_000);
@@ -47,7 +49,10 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
   await q
     .delete(events)
     .where(
-      lt(events.occurred_at, daysAgo(intEnv("DISPATCHER_CAMPAIGN_EVENTS_RETENTION_DAYS", 90)))
+      lt(
+        events.occurred_at,
+        daysAgo(intEnv("DISPATCHER_CAMPAIGN_EVENTS_RETENTION_DAYS", 90))
+      )
     );
   // Row cap mirrors the app_logs boundary pattern.
   const maxEventRows = intEnv("DISPATCHER_CAMPAIGN_EVENTS_MAX_ROWS", 500_000);
@@ -63,7 +68,10 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
       .where(
         or(
           lt(events.occurred_at, eventBoundary[0].ts),
-          and(eq(events.occurred_at, eventBoundary[0].ts), lte(events.id, eventBoundary[0].id))
+          and(
+            eq(events.occurred_at, eventBoundary[0].ts),
+            lte(events.id, eventBoundary[0].id)
+          )
         )
       );
   }
@@ -78,16 +86,43 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
   const outbox = tableFor(dbx, "eventOutbox");
   await q
     .delete(outbox)
-    .where(and(eq(outbox.status, "delivered"), lt(outbox.created_at, daysAgo(7))));
+    .where(
+      and(eq(outbox.status, "delivered"), lt(outbox.created_at, daysAgo(7)))
+    );
   await q
     .delete(outbox)
-    .where(and(eq(outbox.status, "failed"), lt(outbox.created_at, daysAgo(30))));
+    .where(
+      and(eq(outbox.status, "failed"), lt(outbox.created_at, daysAgo(30)))
+    );
 
   const callbacks = tableFor(dbx, "campaignCallbacks");
   await q.delete(callbacks).where(lt(callbacks.last_used_at, daysAgo(30)));
 
   const devSent = tableFor(dbx, "devSentCampaigns");
   await q.delete(devSent).where(lt(devSent.sent_at, daysAgo(7)));
+
+  // Onsite: drop activations and sessions well past expiry, and age out
+  // receipts. Decisions are frozen snapshots reused across channels, so keep
+  // them the longest.
+  const onsiteRetentionDays = intEnv("DISPATCHER_ONSITE_RETENTION_DAYS", 30);
+  const onsiteActivations = tableFor(dbx, "onsiteActivations");
+  await q
+    .delete(onsiteActivations)
+    .where(lt(onsiteActivations.expires_at, daysAgo(onsiteRetentionDays)));
+  const onsiteSessions = tableFor(dbx, "onsiteSessions");
+  await q
+    .delete(onsiteSessions)
+    .where(
+      lt(onsiteSessions.absolute_expires_at, daysAgo(onsiteRetentionDays))
+    );
+  const onsiteReceipts = tableFor(dbx, "onsiteReceipts");
+  await q
+    .delete(onsiteReceipts)
+    .where(lt(onsiteReceipts.received_at, daysAgo(90)));
+  const onsiteDecisions = tableFor(dbx, "onsiteDecisions");
+  await q
+    .delete(onsiteDecisions)
+    .where(lt(onsiteDecisions.updated_at, daysAgo(90)));
 }
 
 let retentionTimer: NodeJS.Timeout | null = null;

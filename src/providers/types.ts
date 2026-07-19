@@ -79,6 +79,9 @@ export type AnalyticsEventType =
   | "read"
   | "deferred"
   | "expired"
+  | "onsite_impression"
+  | "onsite_click"
+  | "onsite_dismiss"
   /** Recipient saved the preference-center screen — logged only, never suppresses. */
   | "preference_update";
 

@@ -47,6 +47,7 @@ import { bindCampaignId } from "./logging/context.js";
 import { componentLogger } from "./logging/logger.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
 import { registerInboundWebhookRoutes } from "./routes/inbound-webhooks.js";
+import { registerOnsiteRoutes } from "./onsite/routes.js";
 import { startServer } from "./server-start.js";
 
 if (process.env.VITEST !== "true") {
@@ -386,6 +387,10 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   });
 });
 registerInboundWebhookRoutes(app);
+
+// Public onsite activation endpoints (redeem/session/receipt). Absent (404)
+// unless ONSITE_STATE_ENCRYPTION_KEY is configured. Mounts its own JSON parser.
+registerOnsiteRoutes(app);
 
 if (process.env.VITEST !== "true") {
   startServer(app, PORT);

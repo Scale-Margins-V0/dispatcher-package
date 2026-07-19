@@ -29,7 +29,7 @@ vi.mock("./providers/index.js", () => ({
 }));
 
 const fetchMock = vi.hoisted(() =>
-  vi.fn(() =>
+  vi.fn((_input: string | URL | Request, _init?: RequestInit) =>
     Promise.resolve({
       ok: true,
       status: 200,
@@ -72,7 +72,14 @@ describe("POST /api/scalemargin/dispatch (integration)", () => {
       `INSERT INTO users_internal (user_id, first_name, last_name, email, company_name, phone_no)
        VALUES (?, ?, ?, ?, ?, ?)`
     );
-    ins.run("u1", "Ada", "Lovelace", "ada@example.com", "Analytical Engines", null);
+    ins.run(
+      "u1",
+      "Ada",
+      "Lovelace",
+      "ada@example.com",
+      "Analytical Engines",
+      null
+    );
     ins.run(
       "u2",
       "Grace",
@@ -119,6 +126,8 @@ placeholders:
 
     process.env.USER_LOOKUP_CONFIG_PATH = yamlPath;
     process.env.UNSUBSCRIBE_URL_BASE = "https://example.com";
+    process.env.ONSITE_STATE_ENCRYPTION_KEY =
+      "dispatch-e2e-onsite-key-0123456789abcd";
 
     vi.resetModules();
     sendMock.mockClear();
@@ -142,6 +151,7 @@ placeholders:
     }
     delete process.env.USER_LOOKUP_CONFIG_PATH;
     delete process.env.UNSUBSCRIBE_URL_BASE;
+    delete process.env.ONSITE_STATE_ENCRYPTION_KEY;
     delete process.env.EVENT_FORWARD_MODE;
     delete process.env.EVENT_DELIVERY_MODE;
     delete process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL;
@@ -149,7 +159,9 @@ placeholders:
     delete process.env.IMAGE_LOCAL_DIR;
     delete process.env.IMAGE_LOCAL_BASE_URL;
     vi.unstubAllGlobals();
-    const { shutdownEventPipeline, resetEventPipelineForTests } = await import("./events/index.js");
+    const { shutdownEventPipeline, resetEventPipelineForTests } = await import(
+      "./events/index.js"
+    );
     shutdownEventPipeline();
     resetEventPipelineForTests();
   });
@@ -190,9 +202,10 @@ placeholders:
     expect(msg.subject).toBe("Hi Ada");
     expect(msg.html).toContain("Ada Lovelace");
     expect(msg.html).toContain("ada@example.com");
-    expect((sendMock.mock.calls[0]![0] as { context?: { user_id: string } }).context?.user_id).toBe(
-      "u1"
-    );
+    expect(
+      (sendMock.mock.calls[0]![0] as { context?: { user_id: string } }).context
+        ?.user_id
+    ).toBe("u1");
     expect(fetchMock).toHaveBeenCalled();
   });
 
@@ -302,9 +315,11 @@ placeholders:
     process.env.LOGO_URL = "https://cdn.example.com/brand-logo.png";
     fetchMock.mockClear();
 
-    const res = await request(app)
-      .get("/api/unsubscribe")
-      .query({ uid: "u1", campaign_id: "camp-unsub", organization_id: "org-1" });
+    const res = await request(app).get("/api/unsubscribe").query({
+      uid: "u1",
+      campaign_id: "camp-unsub",
+      organization_id: "org-1",
+    });
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("text/html");
@@ -409,16 +424,13 @@ placeholders:
       "http://127.0.0.1:9/api/webhooks/campaign-analytics/prefs-link";
     fetchMock.mockClear();
 
-    const res = await request(app)
-      .post("/api/preferences")
-      .type("form")
-      .send({
-        uid: "u1",
-        campaign_id: "camp-pref",
-        organization_id: "org-1",
-        category_newsletter: "1",
-        // category_promotional omitted → unchecked → stop only promotional
-      });
+    const res = await request(app).post("/api/preferences").type("form").send({
+      uid: "u1",
+      campaign_id: "camp-pref",
+      organization_id: "org-1",
+      category_newsletter: "1",
+      // category_promotional omitted → unchecked → stop only promotional
+    });
 
     expect(res.status).toBe(200);
     expect(res.text).toContain("promotional");
@@ -448,7 +460,9 @@ placeholders:
     expect(unsub?.metadata?.source).toBe("preferences_link_click");
     expect(unsub?.metadata?.campaignType).toBe("promotional");
 
-    const prefUpdate = body.events?.find((e) => e.event === "preference_update");
+    const prefUpdate = body.events?.find(
+      (e) => e.event === "preference_update"
+    );
     expect(prefUpdate?.user_id).toBe("u1");
     expect(prefUpdate?.metadata?.stopped).toEqual(["promotional"]);
     expect(prefUpdate?.metadata?.kept).toEqual(["newsletter"]);
@@ -462,15 +476,12 @@ placeholders:
       "http://127.0.0.1:9/api/webhooks/campaign-analytics/prefs-link-all";
     fetchMock.mockClear();
 
-    const res = await request(app)
-      .post("/api/preferences")
-      .type("form")
-      .send({
-        uid: "u1",
-        campaign_id: "camp-pref",
-        organization_id: "org-1",
-        unsubscribe_all: "1",
-      });
+    const res = await request(app).post("/api/preferences").type("form").send({
+      uid: "u1",
+      campaign_id: "camp-pref",
+      organization_id: "org-1",
+      unsubscribe_all: "1",
+    });
 
     expect(res.status).toBe(200);
     expect(res.text).toContain("unsubscribed from all");
@@ -493,7 +504,9 @@ placeholders:
     // for the backend to infer from the campaign's own type.
     expect(unsub?.metadata?.campaignType).toBe("all");
 
-    const prefUpdate = body.events?.find((e) => e.event === "preference_update");
+    const prefUpdate = body.events?.find(
+      (e) => e.event === "preference_update"
+    );
     expect(prefUpdate?.metadata?.unsubscribed_all).toBe(true);
 
     delete process.env.UNSUBSCRIBE_LINK_ANALYTICS_URL;
@@ -547,11 +560,175 @@ placeholders:
     expect(sendMock).toHaveBeenCalledTimes(1);
     const msg = sendMock.mock.calls[0]![0] as { html: string };
     expect(msg.html).toContain("http://test.local/images/camp-images/logo.png");
-    expect(msg.html).not.toContain("https://cdn.scalemargin.test/original/logo.png");
+    expect(msg.html).not.toContain(
+      "https://cdn.scalemargin.test/original/logo.png"
+    );
     expect(existsSync(join(imageDir, "camp-images", "logo.png"))).toBe(true);
 
     delete process.env.IMAGE_STORAGE_PROVIDER;
     delete process.env.IMAGE_LOCAL_DIR;
     delete process.env.IMAGE_LOCAL_BASE_URL;
+  });
+
+  it("issues a per-recipient onsite activation, substitutes {{onsite_url}}, and the token redeems", async () => {
+    const payload = {
+      campaign_id: "camp-onsite",
+      channel: "email",
+      dispatch_ids: { u1: "dispatch-u1" },
+      user_ids: ["u1"],
+      content: {
+        subject: "Hi {{first_name}}",
+        html_body: '<p>{{full_name}}</p><a href="{{onsite_url}}">Activate</a>',
+      },
+      metadata: {
+        organization_id: "org-1",
+        analytics_callback_url:
+          "http://127.0.0.1:9/api/webhooks/campaign-analytics/test",
+        onsite: {
+          schema_version: 1,
+          site_key: `onsite_pk_${"a".repeat(32)}`,
+          landing_url: "https://go.example/o",
+          template_id: "tpl_1",
+          template_revision: 3,
+          placement: "corner",
+          offer_fields: ["first_name"],
+          attribution: {
+            source: "sm",
+            medium: "email",
+            campaign: "cmp-onsite",
+            content: "dispatch-u1",
+          },
+          template: {
+            content: {
+              title: "Reward for {{first_name}}",
+              body: "Enjoy",
+              cta: {
+                label: "Claim",
+                url: "https://shop.example/{{first_name}}",
+              },
+            },
+            theme: {
+              preset: "light",
+              accent: "#ff0000",
+              surface: "#ffffff",
+              text: "#111111",
+              radius: "md",
+            },
+          },
+          assignments: {
+            u1: {
+              decision_id: "dec_u1",
+              offer_ref: "offer_a",
+              offer_version: "2",
+              analytics_token: `osa_${"a".repeat(43)}`,
+              starts_at: "2026-07-01T00:00:00.000Z",
+              expires_at: "2099-01-01T00:00:00.000Z",
+            },
+          },
+        },
+      },
+    };
+    const raw = JSON.stringify(payload);
+    const sig =
+      "sha256=" +
+      createHmac("sha256", "dispatch-secret").update(raw).digest("hex");
+
+    const res = await request(app)
+      .post("/api/scalemargin/dispatch")
+      .set("Content-Type", "application/json")
+      .set("X-ScaleMargin-Signature", sig)
+      .send(raw);
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(sendMock).toHaveBeenCalledTimes(1);
+
+    const msg = sendMock.mock.calls[0]![0] as { html: string };
+    // Ordinary personalization still applies, and the reserved placeholder is
+    // replaced by the landing_url with UTM + #sm_t=<token> (never shipped literally).
+    expect(msg.html).toContain("Ada Lovelace");
+    expect(msg.html).not.toContain("{{onsite_url}}");
+    const href = msg.html.match(/href="([^"]+)"/)![1]!;
+    const url = new URL(href);
+    expect(`${url.origin}${url.pathname}`).toBe("https://go.example/o");
+    expect(url.searchParams.get("utm_source")).toBe("sm");
+    const token = url.hash.replace(/^#sm_t=/, "");
+    expect(token.length).toBeGreaterThan(20);
+
+    // The token redeems through the real /api/onsite endpoints and returns the
+    // typed ScaleMargin envelope with the frozen, personalized template.
+    const redeem = await request(app)
+      .post("/api/onsite/redeem")
+      .send({
+        activation_token: token,
+        visitor_nonce: "browser-nonce-01",
+        page_key: "hero",
+        consent_version: "v1",
+      })
+      .expect(200);
+    expect(redeem.body.decision_id).toBe("dec_u1");
+    expect(redeem.body.analytics_token).toBe(`osa_${"a".repeat(43)}`);
+    expect(redeem.body.touch_id).toBe("dispatch-u1");
+    expect(redeem.body.template.content.title).toBe("Reward for Ada");
+    expect(redeem.body.template.content.cta.url).toBe(
+      "https://shop.example/Ada"
+    );
+
+    const cookie = (
+      redeem.headers["set-cookie"] as unknown as string[]
+    )[0]!.split(";")[0]!;
+    await request(app)
+      .post("/api/onsite/receipt")
+      .set("Cookie", cookie)
+      .send({
+        activation_id: redeem.body.activation_id,
+        occurred_at: "2026-07-19T10:00:00.000Z",
+        receipt_id: "receipt-dispatch-u1",
+        type: "impression",
+      })
+      .expect(201);
+    const forwardedBodies = fetchMock.mock.calls.flatMap((call) => {
+      const body = (call[1] as RequestInit | undefined)?.body;
+      return typeof body === "string" ? [JSON.parse(body)] : [];
+    });
+    expect(
+      forwardedBodies.some(
+        (body) => body.events?.[0]?.event === "onsite_impression"
+      )
+    ).toBe(true);
+  });
+
+  it("leaves an ordinary dispatch (no metadata.onsite) completely unaffected", async () => {
+    const payload = {
+      campaign_id: "camp-no-onsite",
+      channel: "email",
+      user_ids: ["u1"],
+      content: {
+        subject: "Plain {{first_name}}",
+        html_body: "<p>{{full_name}}</p>",
+      },
+      metadata: {
+        organization_id: "org-1",
+        analytics_callback_url:
+          "http://127.0.0.1:9/api/webhooks/campaign-analytics/test",
+      },
+    };
+    const raw = JSON.stringify(payload);
+    const sig =
+      "sha256=" +
+      createHmac("sha256", "dispatch-secret").update(raw).digest("hex");
+
+    const res = await request(app)
+      .post("/api/scalemargin/dispatch")
+      .set("Content-Type", "application/json")
+      .set("X-ScaleMargin-Signature", sig)
+      .send(raw);
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 250));
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const msg = sendMock.mock.calls[0]![0] as { html: string; subject: string };
+    expect(msg.subject).toBe("Plain Ada");
+    expect(msg.html).toBe("<p>Ada Lovelace</p>");
   });
 });

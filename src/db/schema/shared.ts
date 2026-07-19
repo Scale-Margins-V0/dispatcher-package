@@ -4,7 +4,12 @@
  * must stay column-compatible with them (same names, same JS-side types).
  */
 
-export type VariableSource = "field" | "computed" | "constant" | "query" | "api";
+export type VariableSource =
+  | "field"
+  | "computed"
+  | "constant"
+  | "query"
+  | "api";
 
 /** source=constant */
 export type ConstantConfig = { value: string };
@@ -204,6 +209,100 @@ export type ApiKeyRow = {
   updated_at: Date;
   last_used_at: Date | null;
   revoked_at: Date | null;
+};
+
+// ---------------------------------------------------------------------------
+// Onsite activation subsystem row types (ScaleMargin cross-repo contract).
+// Decision snapshots are AES-256-GCM ciphertext strings; sm_t tokens, visitor
+// nonces and session cookies are stored only as SHA-256 hex hashes.
+// ---------------------------------------------------------------------------
+
+export type OnsiteDecisionRow = {
+  decision_id: string;
+  campaign_id: string;
+  program_id: string;
+  program_kind: ProgramKind;
+  step_id: string | null;
+  organization_id: string;
+  site_key: string;
+  /** AES-256-GCM ciphertext of the frozen, resolved envelope core. */
+  snapshot_ciphertext: string;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type OnsiteActivationStatus = "issued" | "bound" | "expired";
+
+export type OnsiteActivationRow = {
+  id: string;
+  /** Per-touch identifier surfaced in the envelope; distinct from id. */
+  touch_id: string;
+  decision_id: string;
+  campaign_id: string;
+  program_id: string;
+  program_kind: ProgramKind;
+  step_id: string | null;
+  organization_id: string;
+  /** Opaque client user id — never PII. */
+  user_id: string;
+  channel: string;
+  site_key: string;
+  placement: string;
+  analytics_token: string;
+  offer_ref: string;
+  offer_version: string;
+  /** SHA-256 hex of the 256-bit sm_t token; plaintext only ever in the URL fragment. */
+  token_hash: string;
+  /** SHA-256 hex of the first visitor nonce bound at redeem; null until bound. */
+  visitor_nonce_hash: string | null;
+  status: OnsiteActivationStatus;
+  starts_at: Date;
+  expires_at: Date;
+  issued_at: Date;
+  bound_at: Date | null;
+  created_at: Date;
+};
+
+export type OnsiteSessionStatus = "active" | "expired" | "revoked";
+
+export type OnsiteSessionRow = {
+  id: string;
+  activation_id: string;
+  decision_id: string;
+  campaign_id: string;
+  organization_id: string;
+  user_id: string;
+  /** SHA-256 hex of the opaque __Host-sm_as cookie value. */
+  session_token_hash: string;
+  /** SHA-256 hex of the bound visitor nonce. */
+  nonce_hash: string;
+  page_key: string;
+  consent_version: string | null;
+  status: OnsiteSessionStatus;
+  created_at: Date;
+  /** Hard 24h ceiling. */
+  absolute_expires_at: Date;
+  /** Sliding 30m idle anchor; refreshed on each access. */
+  last_seen_at: Date;
+};
+
+export type OnsiteReceiptType = "impression" | "click" | "dismiss";
+
+export type OnsiteReceiptRow = {
+  id: string;
+  /** Client-supplied idempotency id — unique. */
+  receipt_id: string;
+  activation_id: string;
+  decision_id: string;
+  session_id: string | null;
+  campaign_id: string;
+  organization_id: string;
+  user_id: string;
+  type: OnsiteReceiptType;
+  /** Client clock. */
+  occurred_at: Date;
+  /** Server clock at persist time. */
+  received_at: Date;
 };
 
 /** dispatcher_meta keys used by the app. */
