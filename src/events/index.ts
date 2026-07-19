@@ -355,18 +355,6 @@ export function createInboundWebhookHandler(
     log.info(
       `[Events][${adapter.name}] inbound rawCount=${items.length} filtered_wire=${skippedInboundWire} forwarded=${envelopes.length} receipts=${gupshupReceipts.length} dropped_sg_no_correlation=${sendgridUncorrelated} dropped_no_callback_url=${droppedNoCallbackUrl} dropped_unsupported=${droppedUnsupported} dropped_other_no_correlation=${droppedOtherNoCorrelation} dropped_unsigned_receipts=${droppedUnsignedReceipts}`
     );
-    telemetry.capture("dispatcher_provider_webhook_received", {
-      provider: adapter.name,
-      raw_count: items.length,
-      forwarded_count: envelopes.length,
-      receipt_count: gupshupReceipts.length,
-      filtered_wire_count: skippedInboundWire,
-      dropped_no_callback_url_count: droppedNoCallbackUrl,
-      dropped_unsupported_count: droppedUnsupported,
-      dropped_no_correlation_count:
-        sendgridUncorrelated + droppedOtherNoCorrelation,
-      dropped_unsigned_receipt_count: droppedUnsignedReceipts,
-    });
     if (sendgridUncorrelated > 0) {
       log.warn(
         `[Events][sendgrid] Dropped ${sendgridUncorrelated} webhook event(s) — missing correlation. sample_wire_event=${sampleWireEvent || "n/a"} — ` +

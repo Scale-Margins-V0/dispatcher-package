@@ -185,9 +185,8 @@ app.use("/api/preferences", express.urlencoded({ extended: false }));
 app.get("/api/preferences", createPreferencesGetHandler());
 app.post("/api/preferences", createPreferencesPostHandler());
 
-// Health check
+// Health check — no telemetry (K8s probes would flood PostHog).
 app.get("/health", (_req, res) => {
-  telemetry.capture("dispatcher_health_checked");
   res.json({
     status: "ok",
     provider: process.env.EMAIL_PROVIDER || "ses",
@@ -198,15 +197,12 @@ app.get("/health", (_req, res) => {
 
 // Public build identity for support and client-hosted rollout checks.
 app.get("/version", (_req, res) => {
-  telemetry.capture("dispatcher_version_checked");
   res.json(getBuildInfo());
 });
 
 // Public readiness-style status. This does not probe client DB/provider credentials.
 app.get("/status", (_req, res) => {
-  const status = getRuntimeStatus();
-  telemetry.capture("dispatcher_status_checked", { status: status.status });
-  res.json(status);
+  res.json(getRuntimeStatus());
 });
 
 // Signed support report. Returns config shape and dependency modes, never secrets or PII values.
