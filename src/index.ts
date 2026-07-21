@@ -34,10 +34,16 @@ import express, { type Express } from "express";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { initDispatcherDb } from "./db/bootstrap.js";
 import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
+import { registerAdminRoutes } from "./admin/routes.js";
+import { recordDispatchActivity } from "./admin/activity.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
 import { logUnlessVitest } from "./logging.js";
+import { bindCampaignId } from "./logging/context.js";
+import { componentLogger } from "./logging/logger.js";
+import { requestIdMiddleware } from "./middleware/request-id.js";
 import { registerInboundWebhookRoutes } from "./routes/inbound-webhooks.js";
 import { startServer } from "./server-start.js";
 
@@ -47,7 +53,17 @@ if (process.env.VITEST !== "true") {
 import { createEventTestCsvCaptureHandler } from "./devtools/event-test-csv-capture.js";
 import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
 import { verifyHmacSignature } from "./middleware/hmac.js";
-import { createUnsubscribeLinkGetHandler } from "./unsubscribe/link.js";
+import { getBuildInfo } from "./ops/build-info.js";
+import { buildDiagnosticsReport, getRuntimeStatus } from "./ops/diagnostics.js";
+import {
+  createPreferencesGetHandler,
+  createPreferencesPostHandler,
+} from "./preferences/link.js";
+import {
+  createUnsubscribeLinkGetHandler,
+  createUnsubscribeLinkPostHandler,
+} from "./unsubscribe/link.js";
+import { telemetry } from "./telemetry/posthog.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 
@@ -80,6 +96,10 @@ const REQUIRED_ENV = [
 ];
 const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
 if (missing.length > 0) {
+  telemetry.capture("dispatcher_startup_config_failed", {
+    component: "required_env",
+    missing_env_count: missing.length,
+  });
   console.error(`[FATAL] Missing required env vars: ${missing.join(", ")}`);
   console.error("See .env.example for all required variables.");
   process.exit(1);
@@ -88,7 +108,18 @@ if (missing.length > 0) {
 try {
   ensureDispatchConfigLoaded();
 } catch (error) {
+  telemetry.captureException(error, { component: "dispatch_config" });
   console.error("[FATAL] Dispatch configuration invalid:", error);
+  process.exit(1);
+}
+
+// State DB (variables, activity, logs, outbox). SQLite file by default;
+// point DISPATCHER_DB_* at MySQL/Postgres to attach an external DB.
+try {
+  await initDispatcherDb();
+} catch (error) {
+  telemetry.captureException(error, { component: "state_db" });
+  console.error("[FATAL] Dispatcher state DB initialization failed:", error);
   process.exit(1);
 }
 
@@ -96,14 +127,22 @@ if (process.env.VITEST !== "true") {
   try {
     initializeEventPipeline();
   } catch (error) {
+    telemetry.captureException(error, { component: "event_pipeline_config" });
     console.error("[FATAL] Event pipeline configuration invalid:", error);
     process.exit(1);
   }
 }
 
 const app: Express = express();
+app.disable("x-powered-by");
+// Acme and supported deployments terminate TLS at one ingress proxy. This lets
+// Express emit Secure admin cookies when that proxy reports HTTPS.
+app.set("trust proxy", 1);
+app.use(requestIdMiddleware);
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
+
+registerAdminRoutes(app);
 
 if (FROM_EMAIL === "noreply@example.com" && process.env.VITEST !== "true") {
   console.warn(
@@ -125,6 +164,10 @@ app.use(
   "/api/scalemargin/validate-pii",
   express.text({ type: "application/json", limit: "1mb" })
 );
+app.use(
+  "/api/scalemargin/diagnostics",
+  express.text({ type: "application/json", limit: "1mb" })
+);
 
 // Serve locally-stored campaign images (for IMAGE_STORAGE_PROVIDER=local)
 if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
@@ -132,10 +175,17 @@ if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
   app.use("/images", express.static(imgDir));
 }
 
-// GET /api/unsubscribe — public unsubscribe link (no /scalemargin/ in client-facing URLs); PII-free analytics POST
+// GET/POST /api/unsubscribe — reason survey, then PII-free unsubscribed analytics POST
+app.use("/api/unsubscribe", express.urlencoded({ extended: false }));
 app.get("/api/unsubscribe", createUnsubscribeLinkGetHandler());
+app.post("/api/unsubscribe", createUnsubscribeLinkPostHandler());
 
-// Health check
+// GET/POST /api/preferences — public email-preferences screen (per-category opt-out, or unsubscribe from all)
+app.use("/api/preferences", express.urlencoded({ extended: false }));
+app.get("/api/preferences", createPreferencesGetHandler());
+app.post("/api/preferences", createPreferencesPostHandler());
+
+// Health check — no telemetry (K8s probes would flood PostHog).
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
@@ -144,6 +194,31 @@ app.get("/health", (_req, res) => {
     event_test_csv_capture: Boolean(process.env.EVENT_TEST_CSV_PATH),
   });
 });
+
+// Public build identity for support and client-hosted rollout checks.
+app.get("/version", (_req, res) => {
+  res.json(getBuildInfo());
+});
+
+// Public readiness-style status. This does not probe client DB/provider credentials.
+app.get("/status", (_req, res) => {
+  res.json(getRuntimeStatus());
+});
+
+// Signed support report. Returns config shape and dependency modes, never secrets or PII values.
+app.post(
+  "/api/scalemargin/diagnostics",
+  verifyHmacSignature,
+  async (req, res) => {
+    telemetry.capture("dispatcher_diagnostics_requested", {
+      user_lookup_check_requested:
+        Array.isArray(req.body?.sample_user_ids) ||
+        req.body?.checks?.includes("user_lookup"),
+    });
+    const report = await buildDiagnosticsReport(req.body ?? {});
+    res.json(report);
+  }
+);
 
 // Signed lookup smoke test for Atlas. Returns counts and field names only.
 app.post(
@@ -225,8 +300,13 @@ if (process.env.EVENT_TEST_CSV_PATH) {
 // POST /api/scalemargin/dispatch — Campaign Dispatch Handler
 // ---------------------------------------------------------------------------
 
+const dispatchLog = componentLogger("dispatch");
+
 app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   const payload = req.body as DispatchPayload;
+  const activityId = crypto.randomUUID();
+  const startedAt = performance.now();
+  bindCampaignId(String(payload.campaign_id ?? "unknown"));
 
   logUnlessVitest(
     `[Dispatch] Received campaign ${payload.campaign_id} — ` +
@@ -234,14 +314,64 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   );
 
   // Acknowledge immediately
+  telemetry.capture("dispatcher_dispatch_accepted", {
+    channel: payload.channel,
+    recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+    has_images: Boolean(payload.images?.length),
+  });
+  recordDispatchActivity({
+    id: activityId,
+    campaign_id: String(payload.campaign_id ?? "unknown"),
+    organization_id: payload.metadata?.organization_id,
+    channel: String(payload.channel ?? "unknown"),
+    provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
+    status: "accepted",
+    recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+    occurred_at: new Date().toISOString(),
+  });
   res.status(202).json({
     accepted: true,
     message: "Campaign dispatch received",
   });
 
   // Process asynchronously
-  processDispatch(payload, FROM_EMAIL).catch((error) => {
-    console.error(`[Dispatch] Campaign ${payload.campaign_id} failed:`, error);
+  processDispatch(payload, FROM_EMAIL, activityId).then((result) => {
+    recordDispatchActivity({
+      id: activityId,
+      campaign_id: String(payload.campaign_id ?? "unknown"),
+      organization_id: payload.metadata?.organization_id,
+      channel: String(payload.channel ?? "unknown"),
+      provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
+      status: "completed",
+      recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+      sent_count: result?.sent,
+      failed_count: result?.failed,
+      duration_ms: Math.round(performance.now() - startedAt),
+      occurred_at: new Date().toISOString(),
+    });
+  }).catch((error) => {
+    recordDispatchActivity({
+      id: activityId,
+      campaign_id: String(payload.campaign_id ?? "unknown"),
+      organization_id: payload.metadata?.organization_id,
+      channel: String(payload.channel ?? "unknown"),
+      provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
+      status: "failed",
+      recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+      duration_ms: Math.round(performance.now() - startedAt),
+      occurred_at: new Date().toISOString(),
+      error_category: error instanceof Error ? error.name : "processing_error",
+      error_message: error instanceof Error ? error.message : String(error),
+      error_stack: error instanceof Error ? error.stack : undefined,
+    });
+    telemetry.captureException(error, {
+      component: "dispatch_processor",
+      channel: payload.channel,
+    });
+    dispatchLog.error(
+      { err: error instanceof Error ? error : new Error(String(error)) },
+      `Campaign ${payload.campaign_id} failed`
+    );
   });
 });
 registerInboundWebhookRoutes(app);

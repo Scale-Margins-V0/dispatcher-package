@@ -138,7 +138,7 @@ After SNS delivers events to your tunnel, you should see new rows in the CSV (an
 |--------|------|------|
 | `POST` | `/api/scalemargin/dispatch` | Campaign send (tags + configuration set applied for SES). |
 | `POST` | `/api/scalemargin/ses-notifications` | **SNS** → inner SES event → analytics. |
-| `GET` | `/api/unsubscribe` | Optional browser unsubscribe link (see [`sendgrid.readme.md`](sendgrid.readme.md) / dispatch placeholders). |
+| `GET` / `POST` | `/api/unsubscribe` | Optional browser unsubscribe survey + confirm (see [`sendgrid.readme.md`](sendgrid.readme.md) / dispatch placeholders). |
 
 ---
 

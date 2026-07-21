@@ -51,6 +51,40 @@ const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const ENV_KEY = /^env\.([A-Za-z][A-Za-z0-9_]*)$/;
 
 /**
+ * `UNSUBSCRIBE_URL_BASE` env is the dispatch host base (no path). Template
+ * expressions `env.UNSUBSCRIBE_URL_BASE` / `env.PREFERENCES_URL_BASE` resolve to
+ * `${UNSUBSCRIBE_URL_BASE}/api/unsubscribe` and `/api/preferences`. Optional
+ * `UNSUBSCRIBE_LINK_URL` / `PREFERENCES_LINK_URL` override the full endpoint URLs.
+ */
+const LINK_PATH_BY_EXPR: Record<string, string> = {
+  UNSUBSCRIBE_URL_BASE: "/api/unsubscribe",
+  PREFERENCES_URL_BASE: "/api/preferences",
+};
+
+const LINK_URL_OVERRIDE_ENV: Record<string, string> = {
+  UNSUBSCRIBE_URL_BASE: "UNSUBSCRIBE_LINK_URL",
+  PREFERENCES_URL_BASE: "PREFERENCES_LINK_URL",
+};
+
+function trimTrailingSlashes(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function resolveEnvVar(name: string): string {
+  const overrideEnv = LINK_URL_OVERRIDE_ENV[name];
+  if (overrideEnv) {
+    const override = process.env[overrideEnv]?.trim();
+    if (override) return override;
+  }
+  const pathSuffix = LINK_PATH_BY_EXPR[name];
+  const hostBase = process.env.UNSUBSCRIBE_URL_BASE?.trim();
+  if (pathSuffix && hostBase) {
+    return trimTrailingSlashes(hostBase) + pathSuffix;
+  }
+  return process.env[name]?.trim() ?? "";
+}
+
+/**
  * Safe placeholder expression: string concat, `user_id`, `email`, `env.NAME`, field names, 'literals'.
  */
 export function evaluateComputedExpression(
@@ -67,7 +101,7 @@ export function evaluateComputedExpression(
     const p = part.trim();
     const envM = p.match(ENV_KEY);
     if (envM) {
-      out += process.env[envM[1]!] ?? "";
+      out += resolveEnvVar(envM[1]!);
       continue;
     }
     if (p === "user_id") {
@@ -108,6 +142,49 @@ export function evaluateComputedExpression(
     throw new Error(`unsupported expression segment: ${JSON.stringify(p)}`);
   }
   return out;
+}
+
+/** Canned record for admin-side expression validation and previews. */
+export const SAMPLE_PREVIEW_USER: UserRecord = {
+  user_id: "usr_1024",
+  email: "sample.user@example.com",
+  fields: {
+    first_name: "Ada",
+    last_name: "Lovelace",
+    company_name: "Acme Corp",
+    email: "sample.user@example.com",
+    phone: "15550100",
+  },
+};
+
+const SAMPLE_PREVIEW_CTX: PersonalizeDispatchContext = {
+  campaign_id: "cmp_sample",
+  organization_id: "org_sample",
+};
+
+/**
+ * Server-side validation for admin-supplied computed expressions. Runs the
+ * real evaluator against the sample record so anything that passes here also
+ * resolves at dispatch time.
+ */
+export function validateComputedExpression(
+  expr: string
+): { ok: true } | { ok: false; error: string } {
+  if (!expr.trim()) return { ok: false, error: "expression is empty" };
+  try {
+    evaluateComputedExpression(expr, SAMPLE_PREVIEW_USER, SAMPLE_PREVIEW_CTX);
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "invalid expression",
+    };
+  }
+}
+
+/** What a placeholder definition renders to for the sample record. */
+export function renderPlaceholderPreview(def: PlaceholderEntry): string {
+  return resolvePlaceholder(def, SAMPLE_PREVIEW_USER, SAMPLE_PREVIEW_CTX);
 }
 
 function resolvePlaceholder(

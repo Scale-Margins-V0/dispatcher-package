@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1784037549262,
+      "tag": "0000_striped_vampiro",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784045139092,
+      "tag": "0001_foamy_skreet",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784046457956,
+      "tag": "0002_dusty_changeling",
+      "breakpoints": true
+    }
+  ]
+}

@@ -5,6 +5,9 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
+import { componentLogger } from "../logging/logger.js";
+
+const log = componentLogger("middleware.analytics-hmac");
 
 export function verifyAnalyticsHmacSignature(
   req: Request,
@@ -19,7 +22,7 @@ export function verifyAnalyticsHmacSignature(
   }
 
   if (!secret) {
-    console.error("[AnalyticsHMAC] SCALEMARGIN_ANALYTICS_SECRET not configured");
+    log.error("[AnalyticsHMAC] SCALEMARGIN_ANALYTICS_SECRET not configured");
     res.status(500).json({ error: "Server misconfigured: missing analytics secret" });
     return;
   }

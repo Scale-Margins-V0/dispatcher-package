@@ -3,6 +3,7 @@
  */
 
 import { z } from "zod";
+import { componentLogger } from "../../logging/logger.js";
 import type { DispatchConfig } from "../config.js";
 import { getIdType } from "../config.js";
 import {
@@ -12,6 +13,8 @@ import {
   pickByPath,
 } from "../mapper.js";
 import type { UserLookupAdapter, UserRecord } from "../types.js";
+
+const log = componentLogger("user-lookup.http");
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -59,7 +62,7 @@ export class HttpAdapter implements UserLookupAdapter {
       const c = coerceIdForType(w, idType);
       if (c === null) {
         if (process.env.VITEST !== "true") {
-          console.warn(
+          log.warn(
             `[UserLookup][http] Skipping invalid id for id_type=${idType}: ${JSON.stringify(w)}`
           );
         }
@@ -132,7 +135,10 @@ export class HttpAdapter implements UserLookupAdapter {
         const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
         // 4xx: client/auth errors — omit noisy stderr (e.g. Vitest "does not retry on 4xx")
         if (!/^HTTP 4\d\d$/.test(msg)) {
-          console.warn(`[UserLookup][http] chunk failed:`, lastErr);
+          log.warn(
+            { err: lastErr instanceof Error ? lastErr : new Error(String(lastErr)) },
+            `[UserLookup][http] chunk failed`
+          );
         }
       }
     }
@@ -149,14 +155,14 @@ export class HttpAdapter implements UserLookupAdapter {
       );
       if (u) out.set(wire, u);
       else if (process.env.VITEST !== "true") {
-        console.warn(
+        log.warn(
           `[UserLookup][http] Skipping record that failed validation for wire=${JSON.stringify(wire)}`
         );
       }
     }
 
     if (process.env.VITEST !== "true") {
-      console.log(
+      log.info(
         `[UserLookup][http] Resolved ${out.size}/${userIds.length} users`
       );
     }

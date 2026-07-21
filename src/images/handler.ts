@@ -1,4 +1,7 @@
+import { componentLogger } from "../logging/logger.js";
 import { getImageStorage } from "./storage.js";
+
+const log = componentLogger("images");
 
 export interface ImageMapping {
   originalUrl: string;
@@ -21,7 +24,7 @@ export async function processImages(
   const storage = getImageStorage();
 
   if (!storage) {
-    console.warn(
+    log.warn(
       "[Images] No IMAGE_STORAGE_PROVIDER configured — using original ScaleMargin image URLs. " +
         "For full privacy compliance, configure S3 image hosting."
     );
@@ -42,7 +45,7 @@ export async function processImages(
       } else {
         const response = await fetch(img.url);
         if (!response.ok) {
-          console.warn(
+          log.warn(
             `[Images] Failed to download image ${i} from ${img.url}: ${response.status}`
           );
           continue;
@@ -60,18 +63,18 @@ export async function processImages(
         hostedUrl,
       });
 
-      console.log(
+      log.info(
         `[Images] ${img.placeholder}: ${img.url.slice(0, 60)}... → ${hostedUrl}`
       );
     } catch (error) {
-      console.error(
-        `[Images] Failed to process image ${img.placeholder}:`,
-        error instanceof Error ? error.message : error
+      log.error(
+        { err: error instanceof Error ? error : new Error(String(error)) },
+        `[Images] Failed to process image ${img.placeholder}`
       );
     }
   }
 
-  console.log(
+  log.info(
     `[Images] Processed ${mappings.length}/${images.length} images for campaign ${campaignId}`
   );
 

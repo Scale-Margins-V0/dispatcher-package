@@ -7,9 +7,12 @@
  *   3. Set EMAIL_PROVIDER env var to the provider name
  */
 
+import { componentLogger } from "../logging/logger.js";
 import type { EmailProvider } from "./types.js";
 import { SESProvider } from "./ses.js";
 import { SendGridProvider } from "./sendgrid.js";
+
+const log = componentLogger("providers");
 
 export type ProviderName = "ses" | "sendgrid";
 
@@ -38,7 +41,7 @@ export function getProvider(): EmailProvider {
 
   _instance = factory();
   if (process.env.VITEST !== "true") {
-    console.log(`[Provider] Using email provider: ${_instance.name}`);
+    log.info(`[Provider] Using email provider: ${_instance.name}`);
   }
   return _instance;
 }

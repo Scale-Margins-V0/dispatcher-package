@@ -1,0 +1,67 @@
+name: Release dispatcher
+
+on:
+  push:
+    tags:
+      - "dispatcher-v*"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE: ghcr.io/scale-margins-v0/scalemargin-dispatcher
+
+jobs:
+  docker-and-github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#dispatcher-v}"
+          if [[ -z "$version" || "$version" == "$tag" ]]; then
+            echo "Invalid dispatcher release tag: $tag" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg DISPATCHER_VERSION="${{ steps.version.outputs.version }}" \
+            --build-arg DISPATCHER_GIT_SHA="${GITHUB_SHA}" \
+            --build-arg DISPATCHER_BUILD_TIME="${{ steps.version.outputs.build_time }}" \
+            --build-arg DISPATCHER_IMAGE_TAG="${IMAGE}:v${{ steps.version.outputs.version }}" \
+            -t "${IMAGE}:${{ steps.version.outputs.version }}" \
+            -t "${IMAGE}:v${{ steps.version.outputs.version }}" \
+            -t "${IMAGE}:latest" \
+            .
+          docker push "${IMAGE}:${{ steps.version.outputs.version }}"
+          docker push "${IMAGE}:v${{ steps.version.outputs.version }}"
+          docker push "${IMAGE}:latest"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Dispatcher v${{ steps.version.outputs.version }}
+          body_path: CHANGELOG.md

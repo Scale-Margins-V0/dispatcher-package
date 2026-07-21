@@ -7,6 +7,9 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
+import { componentLogger } from "../logging/logger.js";
+
+const log = componentLogger("middleware.hmac");
 
 export function verifyHmacSignature(
   req: Request,
@@ -21,7 +24,7 @@ export function verifyHmacSignature(
   }
 
   if (!dispatchSecret) {
-    console.error("[HMAC] SCALEMARGIN_DISPATCH_SECRET not configured");
+    log.error("[HMAC] SCALEMARGIN_DISPATCH_SECRET not configured");
     res.status(500).json({ error: "Server misconfigured: missing dispatch secret" });
     return;
   }

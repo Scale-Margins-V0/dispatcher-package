@@ -1,0 +1,1 @@
+ALTER TABLE `invitation` ADD `created_at` timestamp(3) NOT NULL;

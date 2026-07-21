@@ -1,3 +1,5 @@
+import { recordRecipientFailure } from "../admin/activity.js";
+import { hasDevSentCampaign, markDevSentCampaign } from "../db/repos/dev-sent.js";
 import { emitEvent } from "../events/index.js";
 import { registerCampaignCallback } from "../events/campaign-callback-registry.js";
 import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callback-url.js";
@@ -7,7 +9,9 @@ import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
 import { personalize } from "../personalize.js";
 import { getProvider } from "../providers/index.js";
 import type { EmailMessage } from "../providers/types.js";
+import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
+import { ensurePlaceholdersFresh } from "../variables/service.js";
 import { processWhatsAppDispatch } from "./whatsapp.js";
 import type { DispatchPayload } from "./types.js";
 
@@ -15,11 +19,16 @@ export type { DispatchPayload } from "./types.js";
 
 export async function processDispatch(
   payload: DispatchPayload,
-  fromEmail: string
-): Promise<void> {
+  fromEmail: string,
+  dispatchRunId?: string
+): Promise<{ sent: number; failed: number } | undefined> {
+  // Pick up variable edits made via the admin API since the last dispatch —
+  // one refresh per campaign so the whole run uses a consistent set.
+  await ensurePlaceholdersFresh();
+
   if (payload.channel === "whatsapp") {
     await processWhatsAppDispatch(payload);
-    return;
+    return undefined;
   }
 
   const { campaign_id, user_ids, content, metadata } = payload;
@@ -54,12 +63,30 @@ export async function processDispatch(
 
   const provider = getProvider();
   const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
+
+  if (devRecipient && (await hasDevSentCampaign(campaign_id))) {
+    logUnlessVitest(
+      `[Dispatch] DEV mode — campaign ${campaign_id} already routed to ${devRecipient} this run, skipping`
+    );
+    return { sent: 0, failed: 0 };
+  }
+
   const messages: Array<{ userId: string; message: EmailMessage }> = [];
 
   for (const userId of user_ids) {
     const user = users.get(userId);
     if (!user) {
       warnUnlessVitest(`[Dispatch] User ${userId} not found in database, skipping`);
+      if (dispatchRunId) {
+        recordRecipientFailure({
+          dispatch_run_id: dispatchRunId,
+          campaign_id,
+          user_id: userId,
+          provider: provider.name,
+          error_category: "user_not_found",
+          error_message: `User ${userId} not found in user lookup — skipped`,
+        });
+      }
       continue;
     }
 
@@ -97,8 +124,9 @@ export async function processDispatch(
     });
 
     if (devRecipient) {
+      await markDevSentCampaign(campaign_id);
       logUnlessVitest(
-        `[Dispatch] DEV mode — routing all ${user_ids.length} recipients to ${devRecipient}`
+        `[Dispatch] DEV mode — routing campaign ${campaign_id} (${user_ids.length} recipients) to ${devRecipient}, one email per campaign`
       );
       break;
     }
@@ -115,6 +143,22 @@ export async function processDispatch(
 
   for (const { userId, message } of messages) {
     const result = await provider.send(message);
+    if (!result.success) {
+      telemetry.capture("dispatcher_provider_send_failed", {
+        provider: provider.name,
+        channel: "email",
+      });
+      if (dispatchRunId) {
+        recordRecipientFailure({
+          dispatch_run_id: dispatchRunId,
+          campaign_id,
+          user_id: userId,
+          provider: provider.name,
+          error_category: "delivery_failure",
+          error_message: result.error ?? "provider send failed",
+        });
+      }
+    }
     sendResults.push({
       userId,
       success: result.success,
@@ -156,4 +200,14 @@ export async function processDispatch(
   logUnlessVitest(
     `[Dispatch] Campaign ${campaign_id}: ${sent} sent, ${failed} failed (events emitted via pipeline)`
   );
+  telemetry.capture("dispatcher_dispatch_completed", {
+    channel: "email",
+    provider: provider.name,
+    requested_count: user_ids.length,
+    resolved_count: messages.length,
+    sent_count: sent,
+    failed_count: failed,
+    image_count: payload.images?.length ?? 0,
+  });
+  return { sent, failed };
 }

@@ -10,7 +10,7 @@ This guide covers **outbound mail** (Mail Send API) and **inbound Event Webhooks
 |------|------------------|
 | **Send mail** | Dispatch handler calls `SendGridProvider` when `EMAIL_PROVIDER=sendgrid`. Outbound messages include **`custom_args`** (`campaign_id`, `user_id`, `organization_id`, `analytics_callback_url`) so webhooks can correlate. |
 | **Receive events** | `POST /api/scalemargin/sendgrid-events` — ECDSA signature verification on the **raw body**, then parsing, PII stripping, and HMAC-signed analytics POSTs to ScaleMargin’s `analytics_callback_url`. |
-| **Unsubscribe link** | `GET /api/unsubscribe` — optional browser path (no `/scalemargin/` in the URL). See [Unsubscribe and links](#unsubscribe-and-links). |
+| **Unsubscribe link** | `GET`/`POST` `/api/unsubscribe` — reason survey then confirm (no `/scalemargin/` in the URL). See [Unsubscribe and links](#unsubscribe-and-links). |
 
 Code touchpoints: `src/providers/sendgrid.ts`, `src/events/adapters/sendgrid.ts`, `src/events/outbound/sendgrid-tagger.ts`, `src/index.ts`.
 
@@ -31,9 +31,12 @@ Set these in `.env` (see also [`.env.example`](../.env.example)).
 | `EVENTS_CONFIG_PATH` | Optional | Path to `events.yaml`; if missing, defaults apply (see `config/events.example.yaml`). |
 | `EVENT_SENDGRID_INBOUND_EVENTS` | Optional | `default` \| `*` \| `all` \| comma list of SendGrid **wire** `event` names. Default minimal set **excludes** `open` / `click` unless you opt in. |
 | `EVENT_PREFERENCE_SIMULATION_LOG` | Optional | Set to `0` to disable `[Events][PreferenceSimulation]` console lines for `unsubscribed` / `complained`. |
-| `UNSUBSCRIBE_URL_BASE` | Mail templates | Base URL for `{{unsubscribe_url}}` in dispatch YAML (often `https://<your-host>/api/unsubscribe`). |
-| `UNSUBSCRIBE_LINK_ANALYTICS_URL` | Unsubscribe GET | If set, link clicks POST signed `unsubscribed` analytics here (typically same URL as `metadata.analytics_callback_url`). |
+| `UNSUBSCRIBE_URL_BASE` | Mail templates | Dispatch host base. Derives `env.UNSUBSCRIBE_URL_BASE` → `${UNSUBSCRIBE_URL_BASE}/api/unsubscribe` and `env.PREFERENCES_URL_BASE` → `${UNSUBSCRIBE_URL_BASE}/api/preferences` in dispatch YAML placeholders. |
+| `UNSUBSCRIBE_LINK_URL` | Optional override | Full unsubscribe endpoint URL when it must differ from `${UNSUBSCRIBE_URL_BASE}/api/unsubscribe`. |
+| `PREFERENCES_LINK_URL` | Optional override | Full preferences endpoint URL when it must differ from `${UNSUBSCRIBE_URL_BASE}/api/preferences`. |
+| `UNSUBSCRIBE_LINK_ANALYTICS_URL` | Unsubscribe/preferences | If set, link clicks and preference-center saves POST signed `unsubscribed` / `preference_update` analytics here (typically same URL as `metadata.analytics_callback_url`). |
 | `UNSUBSCRIBE_LINK_REDIRECT_URL` | Optional | After recording, **302** redirect the browser (e.g. your product “unsubscribed” page). |
+| `PREFERENCES_LINK_REDIRECT_URL` | Optional | After saving preferences, **302** redirect the browser instead of the built-in confirmation page. |
 
 Local smoke test extras: `EVENT_TEST_PUBLIC_BASE_URL`, `EVENT_TEST_CSV_PATH`, `EVENT_TEST_RECIPIENTS`, etc. — documented in [`event-dual-secret-local-test.md`](event-dual-secret-local-test.md).
 
@@ -117,7 +120,9 @@ Full step-by-step: [`event-dual-secret-local-test.md`](event-dual-secret-local-t
 ## Unsubscribe and links
 
 - **Mail template:** `{{unsubscribe_url}}` is built from `dispatch.yaml` placeholders — recommended pattern in [`dispatch.example.yaml`](../config/dispatch.example.yaml) includes `uid`, `campaign_id`, and `organization_id` query parameters (no raw email in the URL).
-- **Public path:** `GET /api/unsubscribe` — client-facing path **without** `/scalemargin/`.
+- **Public path:** `GET /api/unsubscribe` shows a reason survey; `POST /api/unsubscribe` records the unsubscribe (client-facing path **without** `/scalemargin/`).
+- **Reasons:** configure radio options via `UNSUBSCRIBE_REASONS` (see `.env.example`). The selected reason is sent as `metadata.reason` / `metadata.reason_id`.
+- **Logo:** set `LOGO_URL` to show a company logo on unsubscribe and preferences pages.
 - **Double proxy:** Same ngrok host can serve SendGrid webhooks, analytics capture, and `/api/unsubscribe`; `dev:event-test` defaults `UNSUBSCRIBE_URL_BASE` and `UNSUBSCRIBE_LINK_ANALYTICS_URL` accordingly when `EVENT_TEST_PUBLIC_BASE_URL` is set.
 
 ---

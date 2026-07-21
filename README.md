@@ -117,6 +117,59 @@ If `config/events.yaml` is **missing**, built-in defaults apply (see example hea
 
 ---
 
+## State database
+
+The dispatcher keeps its **own** SQL database, separate from the client
+user-lookup database (`DB_*`). It stores the dynamic variables (placeholders),
+dispatch/webhook activity and failures, structured application logs, the
+campaign→analytics-callback registry, and a durable analytics **event outbox**.
+This is what makes variables editable at runtime and keeps operational history
+across restarts.
+
+**Attach any SQL database via `DISPATCHER_DB_*`** (no code changes, migrations
+run automatically at startup):
+
+| Variable | Meaning |
+| --- | --- |
+| `DISPATCHER_DB_DIALECT` | `sqlite` (default), `mysql`, or `postgres` |
+| `DISPATCHER_DB_URL` | connection string (or SQLite file path / `file:` URL) |
+| `DISPATCHER_DB_HOST/PORT/USER/PASSWORD/NAME` | discrete settings if you prefer not to use a URL |
+
+- **Zero-config default:** with nothing set, the dispatcher uses a local SQLite
+  file at `./data/dispatcher.db` — it is stateful out of the box. Mount/persist
+  `data/` (or attach a networked DB) to keep state across container restarts.
+- **Production:** point `DISPATCHER_DB_*` at a MySQL or Postgres instance. A
+  dedicated database/schema (e.g. `dispatcher_state`) is recommended.
+- Single-replica model: the event outbox does not use row-claim locking, so run
+  one dispatcher replica per state database.
+
+Retention (a background sweep prunes on an hourly tick):
+
+| Variable | Default | Applies to |
+| --- | --- | --- |
+| `DISPATCHER_LOG_RETENTION_DAYS` | 14 | `app_logs` age cap |
+| `DISPATCHER_LOG_MAX_ROWS` | 200000 | `app_logs` row cap (oldest deleted) |
+| `DISPATCHER_LOG_LEVEL` | `info` | minimum level written |
+| `DISPATCHER_OUTBOX_MAX_ATTEMPTS` | 10 | delivery attempts before an event is marked failed |
+
+Dispatch/webhook history is kept 90 days; delivered outbox rows 7 days; failed
+outbox rows 30 days; unused callback registrations 30 days.
+
+### Docker Compose
+
+[`docker-compose.yml`](docker-compose.yml) brings up the dispatcher with a MySQL
+state database:
+
+```bash
+docker compose up --build          # dispatcher + MySQL 8
+docker compose --profile postgres up --build   # dispatcher + Postgres 16
+```
+
+Set `DISPATCHER_ADMIN_USER` / `DISPATCHER_ADMIN_PASSWORD` in `.env` to enable the
+admin GUI at `http://localhost:3100/admin`.
+
+---
+
 ## Run the server (development)
 
 **Watch mode** (TypeScript directly via `tsx`). Loads repo-root **`.env`** into the process (same rules as the event-test scripts: last duplicate key in the file wins; non-empty shell exports are not overwritten).
@@ -131,14 +184,138 @@ pnpm run dev
 pnpm run dev:local
 ```
 
-Health check: `GET http://localhost:3100/health` (or your `PORT`).
+Operations checks:
+
+```bash
+curl http://localhost:3100/health
+curl http://localhost:3100/version
+curl http://localhost:3100/status
+```
+
+### Internal operations GUI
+
+The dashboard is served by the same Express process at `/admin`, with real
+multi-user authentication (individual accounts, roles, and invitations) powered
+by [Better Auth](https://better-auth.com). Its tables live in the
+[state database](#state-database) and migrate automatically.
+
+**First-boot default account.** On the first start with an empty database the
+dispatcher seeds a default **owner** in the `ScaleMargin` organization:
+
+- email — `DISPATCHER_ADMIN_EMAIL` (default `admin@scalemargins.tech`)
+- password — `DISPATCHER_ADMIN_PASSWORD` if set (min 12 chars); otherwise a strong
+  random password is generated, **printed once to the logs**, and written to
+  `data/initial-admin-credentials.txt` (chmod 600). Sign in, change it under
+  **Settings → Account**, then delete that file.
+
+Set `BETTER_AUTH_SECRET` to a random 32+ character value in production so
+sessions survive redeploys (otherwise one is generated and persisted to
+`data/.better-auth-secret`). Set `DISPATCHER_PUBLIC_URL` so invitation links and
+secure-cookie behavior use the correct host.
+
+**Members & invitations (Settings pages).** The console is **invite-only** — no
+public self-registration. Under **Settings** an owner/admin can manage members
+and roles (`owner`/`admin`/`member`), invite teammates by email (each invite
+produces a **copyable link**, also emailed automatically when `EMAIL_PROVIDER`
+is configured), and change their own password. A brand-new invitee opens the
+invite link, sets a name and password, and is signed straight into the console.
+
+The dashboard also includes runtime/configuration status, recent dispatches,
+failures (with the real error message and stack trace), analytics webhook
+attempts, a **Logs** viewer over the structured application logs, and a
+read-write **Variables** editor for personalization placeholders
+(create/edit/enable/delete; changes take effect on the next dispatch with no
+restart). Dispatch/webhook activity, failures, logs, and accounts are persisted
+in the [state database](#state-database) and survive restarts (subject to the
+retention windows below). Recipient identifiers and message content are still
+never stored — only opaque `user_id`s.
+
+_(The previous single shared-credential login — `DISPATCHER_ADMIN_USER` /
+`DISPATCHER_ADMIN_SESSION_SECRET` — has been replaced by the account system above.)_
+
+For local development, run the dispatcher and Vite in separate terminals:
+
+```bash
+pnpm run dev
+pnpm run dev:admin
+```
+
+Vite serves `http://localhost:5173/admin/` with hot reload and proxies the admin
+API to the dispatcher on port 3100. `pnpm run build` produces both the server in
+`dist/` and the static dashboard in `admin-dist/`; production still runs one
+Node process and one container.
+
+`/health` stays minimal for container probes. `/version` returns package/build identity, and `/status` returns readiness-style config status without probing client databases or provider credentials.
 
 Main routes:
 
 - `POST /api/scalemargin/dispatch` — ScaleMargin campaign dispatch (HMAC: `X-ScaleMargin-Signature`).
+- `POST /api/scalemargin/diagnostics` — signed redacted support report.
 - `POST /api/scalemargin/sendgrid-events` — SendGrid Event Webhook (when enabled in events config).
 - `POST /api/scalemargin/ses-notifications` — SES via SNS.
 - `POST /api/scalemargin/gupshup-events` — Gupshup (when enabled).
+
+---
+
+## Diagnostics and support reports
+
+`POST /api/scalemargin/diagnostics` uses the same `X-ScaleMargin-Signature` HMAC as dispatch requests and the same raw-body signing rule. It returns version metadata, selected config modes, enabled event providers, env presence booleans, placeholder names, and optional user-lookup counts.
+
+It must never return secret values, provider API keys, DB credentials, raw PII, or full resolved recipient records.
+
+```bash
+SECRET="your-dispatch-secret"
+BODY='{"checks":["user_lookup"],"sample_user_ids":["u_001"]}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')
+
+curl -fsS -X POST http://localhost:3100/api/scalemargin/diagnostics \
+  -H "content-type: application/json" \
+  -H "X-ScaleMargin-Signature: sha256=$SIG" \
+  --data "$BODY"
+```
+
+---
+
+## Anonymous telemetry
+
+Dispatcher telemetry is enabled by default with ScaleMargin's dispatcher PostHog project and sends to `POSTHOG_HOST` (`https://eu.i.posthog.com` by default). `POSTHOG_API_KEY` and `POSTHOG_HOST` can override the built-in project if ScaleMargin rotates telemetry projects. Disable telemetry completely with:
+
+```bash
+DISPATCHER_TELEMETRY_DISABLED=1
+```
+
+Telemetry is anonymous-by-design. It records low-volume operational events such as startup, dispatch accepted/completed, provider send failures, provider webhook auth/config failures, analytics-forward failures, diagnostics requests, shutdown, and sanitized exceptions. It does **not** capture `/health`, `/version`, `/status`, or successful provider webhook receipts (those flooded quota via K8s probes and inbound event volume).
+
+Telemetry must not include user PII, raw request bodies, resolved recipient records, campaign ids, dispatch ids, user ids, provider API responses, database values, raw exception messages, raw stack traces, or secret/env values. Error analytics are sent as sanitized `dispatcher_error` events with category-style metadata plus a stack hash.
+
+Optional:
+
+```bash
+DISPATCHER_TELEMETRY_DISTINCT_ID=<stable-client-deployment-id>
+```
+
+The value is hashed before it is sent.
+
+---
+
+## Release maintenance
+
+Use Changesets for dispatcher release notes and package version bumps:
+
+```bash
+pnpm changeset
+pnpm run version
+```
+
+Commit the generated `package.json`, `pnpm-lock.yaml`, `CHANGELOG.md`, and consumed changeset updates. Push a tag named `dispatcher-v<version>` from that commit to publish Docker images and a GitHub Release:
+
+```bash
+VERSION=$(node -p 'require("./package.json").version')
+git tag "dispatcher-v${VERSION}"
+git push origin "dispatcher-v${VERSION}"
+```
+
+The release workflow publishes `ghcr.io/scale-margins-v0/scalemargin-dispatcher:<version>`, `:v<version>`, and `:latest`. Roll back by redeploying the last known-good version tag in client infrastructure.
 
 ---
 

@@ -2,7 +2,10 @@
  * Deterministic synthetic users (no DB/API) when `user_lookup.backend` is `mock`.
  */
 
+import { componentLogger } from "../../logging/logger.js";
 import type { UserLookupAdapter, UserRecord } from "../types.js";
+
+const log = componentLogger("user-lookup.mock");
 
 export class MockAdapter implements UserLookupAdapter {
   async lookupUsers(userIds: string[]): Promise<Map<string, UserRecord>> {
@@ -26,7 +29,7 @@ export class MockAdapter implements UserLookupAdapter {
       });
     }
     if (process.env.VITEST !== "true") {
-      console.log(
+      log.info(
         `[UserLookup] Resolved ${result.size}/${userIds.length} users (mock mode)`
       );
     }

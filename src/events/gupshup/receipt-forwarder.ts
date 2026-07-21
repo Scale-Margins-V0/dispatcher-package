@@ -14,19 +14,31 @@
  * that org's analytics secret.
  */
 
+import { componentLogger } from "../../logging/logger.js";
 import { signPayload } from "../forwarder.js";
 import type { GupshupReceipt } from "./adapter.js";
+
+const log = componentLogger("events.gupshup");
 
 const MAX_RETRIES = 3;
 
 /**
+ * Backend analytics endpoint used when no dispatch has registered a URL yet (cold start,
+ * before the first WhatsApp send). Receipts can arrive before any dispatch, so fall back
+ * to the known backend rather than dropping them.
+ */
+const DEFAULT_RECEIPTS_URL =
+  "https://dev.scalemargins.tech/api/webhooks/campaign-analytics";
+
+/**
  * Receipts have no campaign, so they cannot use a per-send analytics_callback_url.
- * Use the platform analytics URL (same endpoint as normal events), or an explicit override.
+ * The backend exposes one fixed endpoint for all analytics (`/api/webhooks/campaign-analytics`).
+ * Resolution order:
+ *   1. SCALEMARGIN_ANALYTICS_CALLBACK_URL (platform analytics URL), if set.
+ *   2. DEFAULT_RECEIPTS_URL fallback.
  */
 export function resolveWhatsAppReceiptsUrl(): string | undefined {
-  const explicit = process.env.SCALEMARGIN_WHATSAPP_RECEIPTS_URL?.trim();
-  if (explicit) return explicit;
-  return process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL?.trim() || undefined;
+  return process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL?.trim() || DEFAULT_RECEIPTS_URL;
 }
 
 export async function forwardGupshupReceipts(
@@ -37,13 +49,13 @@ export async function forwardGupshupReceipts(
 
   const url = resolveWhatsAppReceiptsUrl();
   if (!url) {
-    console.warn(
-      `[GupshupReceipts] No receipts URL configured (set SCALEMARGIN_WHATSAPP_RECEIPTS_URL or SCALEMARGIN_ANALYTICS_CALLBACK_URL) — dropping ${receipts.length} receipt(s)`
+    log.warn(
+      `[GupshupReceipts] No backend analytics URL known yet — no WhatsApp message has been dispatched through this process since startup — dropping ${receipts.length} receipt(s)`
     );
     return { success: false, error: "no receipts URL configured" };
   }
   if (!secret) {
-    console.warn(
+    log.warn(
       `[GupshupReceipts] SCALEMARGIN_ANALYTICS_SECRET not configured — dropping ${receipts.length} receipt(s)`
     );
     return { success: false, error: "analytics secret not configured" };
@@ -67,7 +79,7 @@ export async function forwardGupshupReceipts(
         body,
       });
       const elapsed = Math.round(performance.now() - started);
-      console.log(
+      log.info(
         `[GupshupReceipts] POST ${url} attempt=${attempt} status=${response.status} count=${receipts.length} elapsed=${elapsed}ms`
       );
 
@@ -75,7 +87,7 @@ export async function forwardGupshupReceipts(
 
       if (response.status >= 400 && response.status < 500 && response.status !== 429) {
         const errorText = await response.text();
-        console.warn(
+        log.warn(
           `[GupshupReceipts] permanent client error status=${response.status} body_preview=${JSON.stringify(errorText.slice(0, 200))}`
         );
         return { success: false, error: `${response.status}: ${errorText}` };
@@ -85,7 +97,7 @@ export async function forwardGupshupReceipts(
     } catch (error) {
       const elapsed = Math.round(performance.now() - started);
       lastError = error instanceof Error ? error.message : "Unknown error";
-      console.warn(
+      log.warn(
         `[GupshupReceipts] POST ${url} attempt=${attempt} elapsed=${elapsed}ms network_error=${lastError}`
       );
     }
