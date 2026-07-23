@@ -28,6 +28,7 @@ export type WhatsAppTemplateSpec = {
   /** io API (`params`) or enterprise (`attributes`) — may contain {{placeholders}}. */
   params?: string[];
   attributes?: string[];
+  has_cta?: boolean;
 };
 
 export type WhatsAppMediaSpec = {
@@ -36,6 +37,7 @@ export type WhatsAppMediaSpec = {
   media_url?: string;
   msg_type?: string;
   is_template?: boolean;
+  has_cta?: boolean;
 };
 
 export type GupshupWhatsAppMessage = {
@@ -47,6 +49,7 @@ export type GupshupWhatsAppMessage = {
   mediaUrl?: string;
   mediaMsgType?: string;
   isTemplate?: boolean;
+  hasCta?: boolean;
   context?: SendContext;
 };
 
@@ -234,9 +237,19 @@ export function resolveGupshupConfig(): GupshupConfig | null {
   return null;
 }
 
+function parseHasCta(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === "true" || trimmed === "1") return true;
+    if (trimmed === "false" || trimmed === "0") return false;
+  }
+  return undefined;
+}
+
 /** Parse template spec from dispatch content or env fallback. */
 export function parseWhatsAppTemplateSpec(
-  content: { html_body?: string; text_body?: string } | undefined,
+  content: { html_body?: string; text_body?: string; has_cta?: boolean } | undefined,
   envFallback?: string
 ): WhatsAppTemplateSpec | null {
   const raw =
@@ -245,6 +258,8 @@ export function parseWhatsAppTemplateSpec(
     envFallback?.trim() ||
     process.env.GUPSHUP_DEFAULT_TEMPLATE?.trim() ||
     process.env.GUPSHUP_EVENT_TEST_TEMPLATE?.trim();
+
+  let has_cta = parseHasCta(content?.has_cta);
 
   if (!raw) return null;
 
@@ -255,14 +270,25 @@ export function parseWhatsAppTemplateSpec(
       if (typeof obj.caption === "string" && obj.caption.trim()) {
         return null;
       }
-      return parsed as WhatsAppTemplateSpec;
+      if (has_cta === undefined) {
+        has_cta = parseHasCta(obj.has_cta) ?? parseHasCta(obj.hasCTA);
+      }
+      const spec = { ...(parsed as WhatsAppTemplateSpec) };
+      if (has_cta !== undefined) {
+        spec.has_cta = has_cta;
+      }
+      return spec;
     }
   } catch {
     /* plain template id string */
   }
 
   if (raw.length > 0 && !raw.includes("\n")) {
-    return { template_id: raw, params: [] };
+    return {
+      template_id: raw,
+      params: [],
+      ...(has_cta !== undefined ? { has_cta } : {}),
+    };
   }
 
   return null;
@@ -273,6 +299,7 @@ type ContentWithMedia = {
   media_url?: string;
   html_body?: string;
   text_body?: string;
+  has_cta?: boolean;
 };
 
 type DispatchImage = {
@@ -292,6 +319,7 @@ export function parseWhatsAppMediaSpec(
     : undefined;
   let msg_type: string | undefined;
   let is_template: boolean | undefined;
+  let has_cta = parseHasCta(content?.has_cta);
 
   if (!caption) {
     const raw = content?.text_body?.trim() || content?.html_body?.trim();
@@ -311,6 +339,9 @@ export function parseWhatsAppMediaSpec(
           }
           if (typeof parsed.isTemplate === "boolean") {
             is_template = parsed.isTemplate;
+          }
+          if (has_cta === undefined) {
+            has_cta = parseHasCta(parsed.has_cta) ?? parseHasCta(parsed.hasCTA);
           }
         }
       } catch {
@@ -352,6 +383,7 @@ export function parseWhatsAppMediaSpec(
     ...(media_url ? { media_url } : {}),
     ...(msg_type ? { msg_type } : {}),
     ...(is_template !== undefined ? { is_template } : {}),
+    ...(has_cta !== undefined ? { has_cta } : {}),
   };
 }
 
@@ -509,6 +541,9 @@ function buildMediaGatewayRequest(
     media_url: message.mediaUrl!.trim(),
     caption: message.caption!.trim(),
   };
+  if (message.hasCta) {
+    params.isTemplate = "true";
+  }
   if (tagJson) {
     params.extra = escapeGupshupExtra(tagJson);
   }
@@ -541,6 +576,9 @@ function buildTextGatewayRequest(
     send_to: stripPhonePlus(message.to),
     msg: message.caption!.trim(),
   };
+  if (message.hasCta) {
+    params.isTemplate = "true";
+  }
   if (tagJson) {
     params.extra = escapeGupshupExtra(tagJson);
   }
@@ -742,6 +780,7 @@ export function previewGupshupSendRequest(
       "src.name": config.srcName!,
       template: ioTemplate,
     };
+    if (message.hasCta) params.isTemplate = "true";
     if (tagJson) params.tag = tagJson;
     const body = new URLSearchParams(params);
     return {
@@ -768,6 +807,7 @@ export function previewGupshupSendRequest(
     send_to: stripPhonePlus(message.to),
     msg: enterpriseMsg,
   };
+  if (message.hasCta) params.isTemplate = "true";
   if (tagJson) params.extra = tagJson;
   const body = new URLSearchParams(params);
   return {
@@ -867,6 +907,9 @@ async function sendViaApiKey(
   body.set("destination", stripPhonePlus(message.to));
   body.set("src.name", config.srcName);
   body.set("template", templateJson);
+  if (message.hasCta) {
+    body.set("isTemplate", "true");
+  }
   if (tagJson) {
     body.set("tag", tagJson);
   }
@@ -905,6 +948,9 @@ async function sendViaEnterprise(
   body.set("msg_type", config.msgType);
   body.set("send_to", stripPhonePlus(message.to));
   body.set("msg", msgJson);
+  if (message.hasCta) {
+    body.set("isTemplate", "true");
+  }
   if (tagJson) {
     body.set("extra", tagJson);
   }
@@ -1035,6 +1081,7 @@ export function buildWhatsAppMediaMessageForUser(
     mediaUrl: spec.media_url,
     mediaMsgType: spec.msg_type,
     isTemplate: spec.is_template ?? true,
+    ...(spec.has_cta !== undefined ? { hasCta: spec.has_cta } : {}),
     ...(sendContext ? { context: sendContext } : {}),
   };
 }
@@ -1055,6 +1102,7 @@ export function buildWhatsAppMessageForUser(
       params: personalized,
       attributes: personalized,
     },
+    ...(spec.has_cta !== undefined ? { hasCta: spec.has_cta } : {}),
     ...(sendContext ? { context: sendContext } : {}),
   };
 }
