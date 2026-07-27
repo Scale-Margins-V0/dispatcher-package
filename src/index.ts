@@ -61,7 +61,10 @@ import {
   createPreferencesGetHandler,
   createPreferencesPostHandler,
 } from "./preferences/link.js";
-import { createUnsubscribeLinkGetHandler } from "./unsubscribe/link.js";
+import {
+  createUnsubscribeLinkGetHandler,
+  createUnsubscribeLinkPostHandler,
+} from "./unsubscribe/link.js";
 import { telemetry } from "./telemetry/posthog.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
@@ -175,17 +178,18 @@ if (process.env.IMAGE_STORAGE_PROVIDER === "local") {
   app.use("/images", express.static(imgDir));
 }
 
-// GET /api/unsubscribe — public unsubscribe link (no /scalemargin/ in client-facing URLs); PII-free analytics POST
+// GET/POST /api/unsubscribe — reason survey, then PII-free unsubscribed analytics POST
+app.use("/api/unsubscribe", express.urlencoded({ extended: false }));
 app.get("/api/unsubscribe", createUnsubscribeLinkGetHandler());
+app.post("/api/unsubscribe", createUnsubscribeLinkPostHandler());
 
 // GET/POST /api/preferences — public email-preferences screen (per-category opt-out, or unsubscribe from all)
 app.use("/api/preferences", express.urlencoded({ extended: false }));
 app.get("/api/preferences", createPreferencesGetHandler());
 app.post("/api/preferences", createPreferencesPostHandler());
 
-// Health check
+// Health check — no telemetry (K8s probes would flood PostHog).
 app.get("/health", (_req, res) => {
-  telemetry.capture("dispatcher_health_checked");
   res.json({
     status: "ok",
     provider: process.env.EMAIL_PROVIDER || "ses",
@@ -196,15 +200,12 @@ app.get("/health", (_req, res) => {
 
 // Public build identity for support and client-hosted rollout checks.
 app.get("/version", (_req, res) => {
-  telemetry.capture("dispatcher_version_checked");
   res.json(getBuildInfo());
 });
 
 // Public readiness-style status. This does not probe client DB/provider credentials.
 app.get("/status", (_req, res) => {
-  const status = getRuntimeStatus();
-  telemetry.capture("dispatcher_status_checked", { status: status.status });
-  res.json(status);
+  res.json(getRuntimeStatus());
 });
 
 // Signed support report. Returns config shape and dependency modes, never secrets or PII values.

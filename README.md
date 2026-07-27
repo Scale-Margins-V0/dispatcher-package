@@ -334,7 +334,7 @@ Dispatcher telemetry is enabled by default with ScaleMargin's dispatcher PostHog
 DISPATCHER_TELEMETRY_DISABLED=1
 ```
 
-Telemetry is anonymous-by-design. It records operational events such as startup, health/version/status checks, dispatch accepted/completed, provider send failures, provider webhook summaries, analytics-forward failures, diagnostics requests, shutdown, and sanitized exceptions.
+Telemetry is anonymous-by-design. It records low-volume operational events such as startup, dispatch accepted/completed, provider send failures, provider webhook auth/config failures, analytics-forward failures, diagnostics requests, shutdown, and sanitized exceptions. It does **not** capture `/health`, `/version`, `/status`, or successful provider webhook receipts (those flooded quota via K8s probes and inbound event volume).
 
 Telemetry must not include user PII, raw request bodies, resolved recipient records, campaign ids, dispatch ids, user ids, provider API responses, database values, raw exception messages, raw stack traces, or secret/env values. Error analytics are sent as sanitized `dispatcher_error` events with category-style metadata plus a stack hash.
 

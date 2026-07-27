@@ -10,7 +10,7 @@ This guide covers **outbound mail** (Mail Send API) and **inbound Event Webhooks
 |------|------------------|
 | **Send mail** | Dispatch handler calls `SendGridProvider` when `EMAIL_PROVIDER=sendgrid`. Outbound messages include **`custom_args`** (`campaign_id`, `user_id`, `organization_id`, `analytics_callback_url`) so webhooks can correlate. |
 | **Receive events** | `POST /api/scalemargin/sendgrid-events` — ECDSA signature verification on the **raw body**, then parsing, PII stripping, and HMAC-signed analytics POSTs to ScaleMargin’s `analytics_callback_url`. |
-| **Unsubscribe link** | `GET /api/unsubscribe` — optional browser path (no `/scalemargin/` in the URL). See [Unsubscribe and links](#unsubscribe-and-links). |
+| **Unsubscribe link** | `GET`/`POST` `/api/unsubscribe` — reason survey then confirm (no `/scalemargin/` in the URL). See [Unsubscribe and links](#unsubscribe-and-links). |
 
 Code touchpoints: `src/providers/sendgrid.ts`, `src/events/adapters/sendgrid.ts`, `src/events/outbound/sendgrid-tagger.ts`, `src/index.ts`.
 
@@ -120,7 +120,9 @@ Full step-by-step: [`event-dual-secret-local-test.md`](event-dual-secret-local-t
 ## Unsubscribe and links
 
 - **Mail template:** `{{unsubscribe_url}}` is built from `dispatch.yaml` placeholders — recommended pattern in [`dispatch.example.yaml`](../config/dispatch.example.yaml) includes `uid`, `campaign_id`, and `organization_id` query parameters (no raw email in the URL).
-- **Public path:** `GET /api/unsubscribe` — client-facing path **without** `/scalemargin/`.
+- **Public path:** `GET /api/unsubscribe` shows a reason survey; `POST /api/unsubscribe` records the unsubscribe (client-facing path **without** `/scalemargin/`).
+- **Reasons:** configure radio options via `UNSUBSCRIBE_REASONS` (see `.env.example`). The selected reason is sent as `metadata.reason` / `metadata.reason_id`.
+- **Logo:** set `LOGO_URL` to show a company logo on unsubscribe and preferences pages.
 - **Double proxy:** Same ngrok host can serve SendGrid webhooks, analytics capture, and `/api/unsubscribe`; `dev:event-test` defaults `UNSUBSCRIBE_URL_BASE` and `UNSUBSCRIBE_LINK_ANALYTICS_URL` accordingly when `EVENT_TEST_PUBLIC_BASE_URL` is set.
 
 ---

@@ -11,6 +11,8 @@ export type DispatchPayload = {
     caption?: string;
     /** Public HTTPS URL for the WhatsApp media asset (image, etc.). */
     media_url?: string;
+    /** Indicates if WhatsApp template/message contains Call-To-Action buttons. */
+    has_cta?: boolean;
   };
   personalization_fields?: string[];
   images?: Array<{
