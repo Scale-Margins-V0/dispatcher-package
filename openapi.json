@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ScaleMargin Dispatch Handler API",
-    "version": "0.2.3",
+    "version": "0.3.0",
     "description": "Reference implementation for the ScaleMargin Atlas dispatch handler.\n\nThe service has two halves:\n\n1. **Inbound dispatch** — Atlas POSTs HMAC-signed campaign dispatches to `/api/scalemargin/dispatch`. The handler resolves `user_ids` to PII, personalizes content, and sends via AWS SES or SendGrid.\n2. **Provider event ingest + analytics forwarding** — provider webhooks (SendGrid, SES via SNS, Gupshup) land on the `/api/scalemargin/*-events` routes, are standardized and PII-scrubbed, then forwarded as HMAC-signed analytics batches to the campaign's `analytics_callback_url`.\n\n**Authentication model.** There is no session/token auth. Each route is protected by a payload signature:\n- `/api/scalemargin/dispatch`, `/api/scalemargin/validate-pii`, and `/api/scalemargin/diagnostics` — HMAC-SHA256 of the raw request body using `SCALEMARGIN_DISPATCH_SECRET`, sent as `X-ScaleMargin-Signature: sha256=<hex>` (timing-safe compared).\n- `/api/scalemargin/sendgrid-events` — SendGrid Event Webhook ECDSA signature headers.\n- `/api/scalemargin/gupshup-events` — Gupshup HMAC header.\n- `/api/scalemargin/ses-notifications` — Amazon SNS message signature (verified against the SNS signing certificate; the signature travels inside the JSON body, not a header).\n- `/api/webhooks/campaign-analytics/capture` (dev-only) — HMAC-SHA256 using `SCALEMARGIN_ANALYTICS_SECRET`.",
     "license": {
       "name": "Reference implementation — adjust before production use"
@@ -43,6 +43,10 @@
     {
       "name": "Dev tools",
       "description": "Endpoints only mounted under specific env flags; not part of the production contract."
+    },
+    {
+      "name": "Logs",
+      "description": "Bearer-authenticated query API over the dispatcher's persisted structured logs."
     }
   ],
   "paths": {
@@ -525,8 +529,8 @@
         "tags": [
           "Unsubscribe"
         ],
-        "summary": "Public unsubscribe link",
-        "description": "Client-facing unsubscribe endpoint embedded in emails (note: no `/scalemargin/` in the path). When `UNSUBSCRIBE_LINK_ANALYTICS_URL` is configured and the link carries `campaign_id` + `organization_id`, a PII-free `unsubscribed` analytics event is signed and POSTed to ScaleMargin. If `UNSUBSCRIBE_LINK_REDIRECT_URL` is set the response is a 302 redirect; otherwise a plain-text confirmation.",
+        "summary": "Public unsubscribe link (reason survey)",
+        "description": "Client-facing unsubscribe endpoint embedded in emails (note: no `/scalemargin/` in the path). Renders an HTML survey asking why the recipient is unsubscribing; it does **not** record the unsubscribe, so email scanners and link prefetchers that follow the link do not opt the recipient out. Submitting the form issues `POST /api/unsubscribe`, which is what records the choice.\n\nSurvey options come from `UNSUBSCRIBE_REASONS` (pipe-separated labels, `id=label` pairs, or a JSON array of `{ id, label, allowCustom }`); an `other` option opens a free-text field. Five common reasons are used when it is unset.",
         "operationId": "getUnsubscribe",
         "parameters": [
           {
@@ -559,13 +563,85 @@
         ],
         "responses": {
           "200": {
-            "description": "Unsubscribe recorded (or received but not forwarded due to missing config).",
+            "description": "The unsubscribe reason survey page.",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required `uid` query parameter.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "Unsubscribe recorded."
+                "example": "Missing uid"
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Unsubscribe"
+        ],
+        "summary": "Record an unsubscribe with its reason",
+        "description": "Records the unsubscribe chosen on the survey page. When the link carries `campaign_id` and `organization_id`, a PII-free `unsubscribed` analytics event is built with `reason_id` / `reason` metadata and persisted to the campaign console — this happens whether or not analytics forwarding is configured. Forwarding to ScaleMargin additionally requires `UNSUBSCRIBE_LINK_ANALYTICS_URL` and `SCALEMARGIN_ANALYTICS_SECRET`.\n\nIf `UNSUBSCRIBE_LINK_REDIRECT_URL` is set the response is a 302 redirect; otherwise an HTML confirmation.",
+        "operationId": "postUnsubscribe",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "uid",
+                  "reason"
+                ],
+                "properties": {
+                  "uid": {
+                    "type": "string",
+                    "description": "Recipient user id. Carried through from the emailed link."
+                  },
+                  "campaign_id": {
+                    "type": "string",
+                    "description": "Campaign id. Required (with `organization_id`) to record the event to the campaign console and to forward it to analytics."
+                  },
+                  "organization_id": {
+                    "type": "string",
+                    "description": "Organization id. Required (with `campaign_id`) to record the event to the campaign console and to forward it to analytics."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "description": "Id of the selected reason, from the options rendered by `GET /api/unsubscribe`."
+                  },
+                  "reason_other": {
+                    "type": "string",
+                    "description": "Free-text reason. Used as the recorded reason when the selected option allows custom text (the `other` option)."
+                  }
+                }
+              },
+              "example": {
+                "uid": "user_8842",
+                "campaign_id": "drip_8842_3",
+                "organization_id": "org_17",
+                "reason": "too_frequent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Unsubscribe recorded; HTML confirmation page.",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -582,13 +658,18 @@
             }
           },
           "400": {
-            "description": "Missing required `uid` query parameter.",
+            "description": "Missing `uid` (plain text), or no reason selected — the survey is re-rendered as HTML with an inline error.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
                 "example": "Missing uid"
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -709,10 +790,10 @@
                 },
                 "example": {
                   "name": "scalemargin-dispatch-handler",
-                  "version": "0.2.3",
+                  "version": "0.3.0",
                   "git_sha": "abc123",
                   "build_time": "2026-07-08T00:00:00Z",
-                  "image_tag": "ghcr.io/scale-margins-v0/scalemargin-dispatcher:v0.2.3",
+                  "image_tag": "ghcr.io/scale-margins-v0/scalemargin-dispatcher:v0.3.0",
                   "node_version": "v22.0.0",
                   "uptime_seconds": 120,
                   "environment": "production"
@@ -741,7 +822,7 @@
                 },
                 "example": {
                   "status": "ok",
-                  "version": "0.2.3",
+                  "version": "0.3.0",
                   "checks": {
                     "required_env": {
                       "ok": true
@@ -830,6 +911,232 @@
           }
         }
       }
+    },
+    "/logs": {
+      "get": {
+        "tags": [
+          "Logs"
+        ],
+        "summary": "Query persisted structured logs",
+        "description": "Bearer-authenticated read API over the dispatcher's log store, for external log tooling.\n\nRequires the state database (`DISPATCHER_DB_*`); returns 503 until it is ready. Results are keyset-paginated: follow `next_cursor` until it is `null`.\n\n`level` matches exactly and takes precedence over `min_level`, which matches that level and above. `from`/`to` bound an absolute window; `since` is a relative shorthand (`30s`, `15m`, `2h`, `7d`) used only when `from` is absent.",
+        "operationId": "getLogs",
+        "security": [
+          {
+            "LogsBearerToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive lower bound on `ts` (ISO-8601). Overrides `since`.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive upper bound on `ts` (ISO-8601).",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "Relative window back from now, e.g. `15m`, `2h`, `7d`. Ignored when `from` is set.",
+            "schema": {
+              "type": "string",
+              "maxLength": 16,
+              "pattern": "^\\d+\\s*[smhd]$"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "description": "Exact level match. Takes precedence over `min_level`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "trace",
+                "debug",
+                "info",
+                "warn",
+                "error",
+                "fatal"
+              ]
+            }
+          },
+          {
+            "name": "min_level",
+            "in": "query",
+            "required": false,
+            "description": "Match this level and everything above it.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "trace",
+                "debug",
+                "info",
+                "warn",
+                "error",
+                "fatal"
+              ]
+            }
+          },
+          {
+            "name": "component",
+            "in": "query",
+            "required": false,
+            "description": "Filter by emitting subsystem.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "campaign_id",
+            "in": "query",
+            "required": false,
+            "description": "Filter to one campaign.",
+            "schema": {
+              "type": "string",
+              "maxLength": 191
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "required": false,
+            "description": "Filter to one request correlation id.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Substring search over the log message.",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Sort direction on `ts`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque `next_cursor` from the previous page (`<epochMillis>:<id>`).",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d+:[0-9a-f-]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of log entries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogsResponse"
+                },
+                "example": {
+                  "generated_at": "2026-07-28T00:00:00.000Z",
+                  "count": 1,
+                  "logs": [
+                    {
+                      "id": "0c9f1e2a-77b1-4f6e-9f0a-2b3c4d5e6f70",
+                      "ts": "2026-07-27T23:59:58.412Z",
+                      "level": "warn",
+                      "component": "events",
+                      "message": "[Events][sendgrid] Dropped 2 webhook event(s) — missing correlation.",
+                      "campaign_id": "drip_8842_3",
+                      "request_id": "3f7a1c9e",
+                      "stack": null,
+                      "context": {
+                        "dropped": 2
+                      }
+                    }
+                  ],
+                  "next_cursor": "1769558398412:0c9f1e2a-77b1-4f6e-9f0a-2b3c4d5e6f70"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": "Invalid log query",
+                  "details": [
+                    {
+                      "path": "limit",
+                      "message": "Number must be less than or equal to 1000"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": "Unauthorized — provide a valid Bearer token"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Log store not initialized.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": "Log store not ready"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -857,6 +1164,11 @@
         "in": "header",
         "name": "x-gupshup-signature",
         "description": "HMAC signature of the request body keyed by `GUPSHUP_WEBHOOK_SECRET`."
+      },
+      "LogsBearerToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An admin API key or the dedicated `/logs` token (Settings → Observability). Tokens are stored hashed. A valid admin session cookie is also accepted for console/curl convenience."
       }
     },
     "schemas": {
@@ -1647,6 +1959,94 @@
                 "$ref": "#/components/schemas/UserLookupDiagnostic"
               }
             }
+          }
+        }
+      },
+      "LogEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "ts",
+          "level",
+          "message"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable log row id (also the pagination tiebreaker)."
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Emission time, ISO-8601 UTC."
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "trace",
+              "debug",
+              "info",
+              "warn",
+              "error",
+              "fatal"
+            ]
+          },
+          "component": {
+            "type": "string",
+            "nullable": true,
+            "description": "Emitting subsystem, e.g. `dispatch`, `events`, `unsubscribe`."
+          },
+          "message": {
+            "type": "string"
+          },
+          "campaign_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "request_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "stack": {
+            "type": "string",
+            "nullable": true,
+            "description": "Stack trace when the entry originated from an error."
+          },
+          "context": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true,
+            "description": "Structured context bag attached to the entry."
+          }
+        }
+      },
+      "LogsResponse": {
+        "type": "object",
+        "required": [
+          "generated_at",
+          "count",
+          "logs",
+          "next_cursor"
+        ],
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "count": {
+            "type": "integer",
+            "description": "Number of entries in this page."
+          },
+          "logs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Opaque `<epochMillis>:<id>` cursor for the next page; `null` on the last page."
           }
         }
       }
