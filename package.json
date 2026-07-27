@@ -16,7 +16,7 @@
     "dev:ses-event-test:images": "EVENT_TEST_INCLUDE_IMAGES=1 tsx scripts/ses-dual-secret-test-server.ts",
     "dev:gupshup-event-test": "tsx scripts/gupshup-dual-secret-test-server.ts",
     "dev:scalemargin": "./scripts/dev-scalemargin.sh",
-    "dev:mock-user-lookup": "tsx scripts/mock-user-lookup.ts",
+    "dev:onsite-demo": "tsx scripts/onsite-browser-demo.ts",
     "build": "pnpm run build:server && pnpm run build:admin",
     "build:server": "tsc",
     "build:admin": "tsc -p admin/tsconfig.json && vite build --config vite.config.ts",

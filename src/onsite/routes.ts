@@ -50,7 +50,10 @@ function pageKeyFromQuery(req: Request): string | null {
   return null;
 }
 
-export function registerOnsiteRoutes(app: Express): void {
+export function registerOnsiteRoutes(
+  app: Express,
+  basePath: string = "/api/onsite"
+): void {
   const router = express.Router();
 
   // Every onsite route is absent unless the subsystem is configured.
@@ -150,5 +153,5 @@ export function registerOnsiteRoutes(app: Express): void {
     }
   });
 
-  app.use("/api/onsite", router);
+  app.use(basePath, router);
 }
