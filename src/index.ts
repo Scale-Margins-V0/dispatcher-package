@@ -34,6 +34,7 @@ import express, { type Express } from "express";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { registerApiV1Routes } from "./api/v1/router.js";
 import { initDispatcherDb } from "./db/bootstrap.js";
 import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
 import { registerAdminRoutes } from "./admin/routes.js";
@@ -146,6 +147,9 @@ const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
 
 registerAdminRoutes(app);
 registerLogsApiRoutes(app);
+// External (Atlas) + internal ops APIs. Mounts its own JSON parser, scoped to
+// /api/v1 so the raw body the dispatch route signs stays untouched.
+registerApiV1Routes(app);
 
 if (FROM_EMAIL === "noreply@example.com" && process.env.VITEST !== "true") {
   console.warn(

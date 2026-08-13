@@ -442,6 +442,10 @@ See [`docs/testing.md`](docs/testing.md) for paths and env vars.
 | Document | Topic |
 |----------|--------|
 | [`.env.example`](.env.example) | All environment variables (commented). |
+| [`ATLAS_API.md`](ATLAS_API.md) | **API reference for the Atlas integration** — endpoints, auth, response fields, error handling. |
+| [`docs/architecture.md`](docs/architecture.md) | How the service works end to end: boot, dispatch lifecycle, channels, provider config, event pipeline. |
+| [`docs/atlas-api-plan.md`](docs/atlas-api-plan.md) | External/internal API routers consumed by Atlas: endpoints, key auth, response contracts, milestones. |
+| [`docs/multi-sender-design.md`](docs/multi-sender-design.md) | Design + change guide for configuring multiple email senders (selection, failover, edge cases). |
 | [`docs/user-lookup-contract.md`](docs/user-lookup-contract.md) | Dispatch YAML and user lookup backends. |
 | [`docs/event-pipeline-contract.md`](docs/event-pipeline-contract.md) | Standardized events, forwarding, SendGrid allowlist. |
 | [`docs/pii-guarantees.md`](docs/pii-guarantees.md) | What is stripped before analytics POSTs. |
