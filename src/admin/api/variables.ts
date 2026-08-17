@@ -28,12 +28,14 @@ import type { VariableRow } from "../../db/schema/index.js";
 import { renderPlaceholderPreview, validateComputedExpression } from "../../personalize.js";
 import type { PlaceholderEntry } from "../../user-lookup/config.js";
 import { rowToPlaceholderEntry } from "../../variables/mapping.js";
+import { HEADER_MASK, redactConfig } from "../../variables/redaction.js";
 import { testVariableDefinition } from "../../variables/resolver.js";
 import { refreshPlaceholders } from "../../variables/service.js";
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-/** Header values are redacted to this in responses; sending it back means "keep existing". */
-export const HEADER_MASK = "••••••••";
+
+/** Header masking is shared with the Atlas data-plane surface — one mask, one rule. */
+export { HEADER_MASK };
 
 const apiSchema = z.object({
   method: z.enum(["GET", "POST"]).default("GET"),
@@ -130,17 +132,6 @@ function entryToRowFields(e: PlaceholderEntry): {
   }
 }
 
-/** GUI-facing config with api header values redacted. */
-function serializeConfig(row: VariableRow): Record<string, unknown> | null {
-  if (row.source !== "api" || !row.config) return row.config;
-  const cfg = row.config as Record<string, unknown>;
-  const headers = (cfg.headers as Record<string, string> | undefined) ?? undefined;
-  const redacted = headers
-    ? Object.fromEntries(Object.keys(headers).map((k) => [k, headers[k] ? HEADER_MASK : ""]))
-    : undefined;
-  return { ...cfg, ...(redacted ? { headers: redacted } : {}) };
-}
-
 function serialize(row: VariableRow) {
   return {
     name: row.name,
@@ -148,7 +139,7 @@ function serialize(row: VariableRow) {
     field: row.field,
     expr: row.expr,
     fallback: row.fallback,
-    config: serializeConfig(row),
+    config: redactConfig(row.source, row.config),
     enabled: row.enabled,
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString(),

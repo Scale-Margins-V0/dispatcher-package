@@ -17,8 +17,12 @@ import type { NextFunction, Request, RequestHandler, Response } from "express";
 
 export const CORS_ORIGINS_ENV = "DISPATCHER_ATLAS_CORS_ORIGINS";
 
-/** Methods this router actually serves. Preflight is answered for these only. */
-const ALLOWED_METHODS = "GET, OPTIONS";
+/**
+ * Methods this router actually serves. Preflight is answered for these only,
+ * so the write verbs have to be listed or the variable editor cannot save from
+ * a browser — a preflight that omits PATCH fails before the request is sent.
+ */
+const ALLOWED_METHODS = "GET, POST, PATCH, DELETE, OPTIONS";
 const ALLOWED_HEADERS = "authorization, content-type, accept";
 const MAX_AGE_SECONDS = "600";
 

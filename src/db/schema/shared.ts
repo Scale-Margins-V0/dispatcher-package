@@ -28,6 +28,13 @@ export type VariableRow = {
   field: string | null;
   expr: string | null;
   fallback: string | null;
+  /**
+   * Last known preview for the fictional sample record. Rendered on write for
+   * field/computed/constant; for query/api it is whatever the caller's live
+   * test returned, because re-running a SELECT or an HTTP call on every list
+   * would make reading the catalog a side-effecting operation.
+   */
+  sample: string | null;
   /** Type-specific config for constant/query/api (null for field/computed). */
   config: Record<string, unknown> | null;
   enabled: boolean;

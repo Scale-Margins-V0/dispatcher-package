@@ -17,6 +17,7 @@ export const variables = sqliteTable("variables", {
   field: text("field"),
   expr: text("expr"),
   fallback: text("fallback"),
+  sample: text("sample"),
   config: json("config"),
   enabled: bool("enabled").notNull().default(true),
   created_at: ts("created_at").notNull(),

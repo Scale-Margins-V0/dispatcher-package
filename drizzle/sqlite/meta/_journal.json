@@ -50,6 +50,13 @@
       "when": 1784193932158,
       "tag": "0006_ambiguous_the_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786712173589,
+      "tag": "0007_new_supernaut",
+      "breakpoints": true
     }
   ]
 }
