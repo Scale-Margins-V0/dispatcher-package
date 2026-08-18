@@ -86,6 +86,30 @@ router.route("/build").get(asyncApi(DataPlaneController.getBuild));
 router.route("/state").get(asyncApi(DataPlaneController.getState));
 
 /*
+ * Campaigns — the durable rollup and its per-recipient send log. Read-only:
+ * a campaign is something the platform decided, not something authored here.
+ */
+
+router.route("/campaigns").get(asyncApi(DataPlaneController.listCampaignsHandler));
+
+router
+  .route("/campaigns/:programId")
+  .get(asyncApi(DataPlaneController.getCampaignHandler));
+
+router
+  .route("/campaigns/:programId/sends")
+  .get(asyncApi(DataPlaneController.listCampaignSendsHandler));
+
+/*
+ * Logs — the dispatcher's own structured log. Free-form text is PII-scrubbed
+ * on the way out; see the controller.
+ */
+
+router.route("/logs").get(asyncApi(DataPlaneController.listLogsHandler));
+
+router.route("/logs/:id").get(asyncApi(DataPlaneController.getLogHandler));
+
+/*
  * Variables — the authoring surface. Definitions in, definitions out; a
  * resolved customer value has no route through here.
  */

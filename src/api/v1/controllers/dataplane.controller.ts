@@ -22,6 +22,7 @@ import {
   countVariables,
   dispatchWindowStats,
   lastDispatchAt,
+  resolutionStats,
   resolutionWarningCount,
   stateDatabaseReachable,
 } from "../../../db/repos/stats.js";
@@ -33,7 +34,29 @@ import {
   updateVariable,
   type NewVariable,
 } from "../../../db/repos/variables.js";
-import type { VariableRow } from "../../../db/schema/index.js";
+import {
+  countCampaignSummaries,
+  getCampaignSummary,
+  listCampaignSummaries,
+} from "../../../db/repos/campaign-summary.js";
+import {
+  listCampaignChannels,
+  listProgramSteps,
+} from "../../../db/repos/campaign-events.js";
+import { countSendLogs, listSendLogsPage } from "../../../db/repos/send-logs.js";
+import {
+  countLogs,
+  getLogById,
+  queryLogsPage,
+  type LogFilters,
+} from "../../../db/repos/logs.js";
+import { scrubPii } from "../../../events/scrubber.js";
+import type {
+  AppLogRow,
+  CampaignSummaryRollupRow,
+  SendLogRow,
+  VariableRow,
+} from "../../../db/schema/index.js";
 import { getBuildInfo } from "../../../ops/build-info.js";
 import { getRuntimeStatus } from "../../../ops/diagnostics.js";
 import { renderPlaceholderPreview } from "../../../personalize.js";
@@ -42,10 +65,18 @@ import { redactConfig, unmaskHeaders } from "../../../variables/redaction.js";
 import { refreshPlaceholders } from "../../../variables/service.js";
 import { apiError, invalidRequest } from "../errors.js";
 import {
+  LOG_LEVELS,
+  parseRelativeWindow,
   ZCreateVariableSchema,
+  ZListCampaignsQuerySchema,
+  ZListLogsQuerySchema,
+  ZListSendsQuerySchema,
   ZListVariablesQuerySchema,
+  ZLogIdParamSchema,
+  ZProgramIdParamSchema,
   ZUpdateVariableSchema,
   ZVariableNameParamSchema,
+  type ZListLogsQuery,
   type ZVariableDefinition,
 } from "../validators/dataplane.validator.js";
 import { API_VERSION, STATUS_WINDOW_DAYS } from "../version.js";
@@ -107,13 +138,14 @@ export async function getBuild(_req: Request, res: Response): Promise<void> {
 export async function getState(_req: Request, res: Response): Promise<void> {
   const days = STATUS_WINDOW_DAYS;
 
-  const [runtime, dbReachable, dispatch, variables, warnings, lastDispatch] =
+  const [runtime, dbReachable, dispatch, variables, warnings, resolution, lastDispatch] =
     await Promise.all([
       Promise.resolve(getRuntimeStatus()),
       stateDatabaseReachable(),
       dispatchWindowStats(days),
       countVariables(),
       resolutionWarningCount(days),
+      resolutionStats(days),
       lastDispatchAt(),
     ]);
 
@@ -145,9 +177,14 @@ export async function getState(_req: Request, res: Response): Promise<void> {
       by_channel: dispatch?.by_channel ?? null,
     },
     resolution: {
-      // Deliberately null: the resolver cannot produce a true per-recipient
-      // rate yet. See docs/atlas-api-plan.md §8.
-      fallback_rate: null,
+      // Real per-recipient rate, from the counters the dispatch path records.
+      // Null when nothing was resolved in the window — including on a dispatcher
+      // whose runs all predate the instrumentation.
+      fallback_rate: resolution?.rate ?? null,
+      resolutions_total: resolution?.total ?? null,
+      fallbacks_used: resolution?.fallbacks ?? null,
+      // Thrown resolution failures, deduplicated by inputs — a different signal
+      // from the rate above, kept for continuity.
       fallback_events: warnings,
       variables_enabled: variables?.enabled ?? null,
     },
@@ -493,6 +530,240 @@ export async function updateVariableHandler(
     return;
   }
   res.json({ variable: serializeVariable(row) });
+}
+
+/*
+ * Campaigns
+ */
+
+function serializeCampaign(row: CampaignSummaryRollupRow) {
+  return {
+    program_id: row.program_id,
+    program_kind: row.program_kind,
+    organization_id: row.organization_id,
+    channel: row.channel,
+    provider: row.provider,
+    template_ref: row.template_ref,
+    totals: {
+      // Sends, not people — a drip counts one per recipient per step. The
+      // headcount is `unique_recipients`, which comes from the event funnel.
+      recipients: row.total_recipients,
+      unique_recipients: row.unique_recipients,
+      sent: row.sent,
+      failed: row.failed,
+      fallbacks_used: row.fallbacks_used,
+    },
+    engagement: {
+      dispatched: row.dispatched,
+      delivered: row.delivered,
+      opened: row.opened,
+      clicked: row.clicked,
+      bounced: row.bounced,
+      complained: row.complained,
+      unsubscribed: row.unsubscribed,
+    },
+    first_send_at: row.first_send_at ? row.first_send_at.toISOString() : null,
+    last_event_at: row.last_event_at ? row.last_event_at.toISOString() : null,
+    updated_at: row.updated_at.toISOString(),
+  };
+}
+
+/**
+ * A provider's rejection text is free-form and routinely quotes the address it
+ * rejected — "550 5.1.1 <ada@acme.com> does not exist". That would put a
+ * recipient email on the wire to ScaleMargin, which ATLAS_API.md §10 promises
+ * never happens, so every message goes through the same scrubber the event
+ * pipeline uses.
+ */
+function serializeSendLog(row: SendLogRow) {
+  return {
+    id: row.id,
+    dispatch_run_id: row.dispatch_run_id,
+    campaign_id: row.campaign_id,
+    program_id: row.program_id,
+    step_id: row.step_id,
+    user_id: row.user_id,
+    channel: row.channel,
+    provider: row.provider,
+    template_ref: row.template_ref,
+    status: row.status,
+    provider_message_id: row.provider_message_id,
+    latency_ms: row.latency_ms,
+    error_category: row.error_category,
+    error_message: row.error_message ? scrubPii(row.error_message) : null,
+    fallbacks_used: row.fallbacks_used,
+    occurred_at: row.occurred_at.toISOString(),
+  };
+}
+
+/** GET /campaigns — the durable rollup, one row per campaign. */
+export async function listCampaignsHandler(req: Request, res: Response): Promise<void> {
+  if (!requireStateDb(res)) return;
+
+  const query = ZListCampaignsQuerySchema.safeParse(req.query);
+  if (!query.success) return invalidRequest(res, query.error);
+
+  const { page, limit, ...filters } = query.data;
+  const offset = (page - 1) * limit;
+  const [total, rows] = await Promise.all([
+    countCampaignSummaries(filters),
+    listCampaignSummaries(filters, { offset, limit }),
+  ]);
+
+  res.json({
+    generated_at: new Date().toISOString(),
+    meta: pageMeta(total, page, limit),
+    campaigns: rows.map(serializeCampaign),
+  });
+}
+
+/**
+ * GET /campaigns/:programId
+ *
+ * The rollup plus the two things it cannot hold: the full channel/provider set
+ * (a drip may span several, while the summary keeps only the latest) and the
+ * per-step breakdown.
+ */
+export async function getCampaignHandler(req: Request, res: Response): Promise<void> {
+  if (!requireStateDb(res)) return;
+
+  const params = ZProgramIdParamSchema.safeParse(req.params);
+  if (!params.success) return invalidRequest(res, params.error);
+
+  const { programId } = params.data;
+  const summary = await getCampaignSummary(programId);
+  if (!summary) {
+    apiError(res, "not_found", `Campaign "${programId}" does not exist`);
+    return;
+  }
+
+  const [channels, steps] = await Promise.all([
+    listCampaignChannels([programId]),
+    listProgramSteps(programId),
+  ]);
+
+  res.json({
+    campaign: {
+      ...serializeCampaign(summary),
+      // Every channel/provider pair this program has ever used — the summary
+      // itself keeps only the most recent.
+      channels: channels.map(({ channel, provider }) => ({ channel, provider })),
+      steps: steps.map((step) => ({
+        ...step,
+        first_activity: step.first_activity.toISOString(),
+        last_activity: step.last_activity.toISOString(),
+      })),
+    },
+  });
+}
+
+/** GET /campaigns/:programId/sends — one row per recipient per send. */
+export async function listCampaignSendsHandler(req: Request, res: Response): Promise<void> {
+  if (!requireStateDb(res)) return;
+
+  const params = ZProgramIdParamSchema.safeParse(req.params);
+  if (!params.success) return invalidRequest(res, params.error);
+
+  const query = ZListSendsQuerySchema.safeParse(req.query);
+  if (!query.success) return invalidRequest(res, query.error);
+
+  const { page, limit, ...filters } = query.data;
+  const scoped = { ...filters, program_id: params.data.programId };
+  const offset = (page - 1) * limit;
+  const [total, rows] = await Promise.all([
+    countSendLogs(scoped),
+    listSendLogsPage(scoped, { offset, limit }),
+  ]);
+
+  res.json({
+    generated_at: new Date().toISOString(),
+    meta: pageMeta(total, page, limit),
+    sends: rows.map(serializeSendLog),
+  });
+}
+
+/*
+ * Logs
+ */
+
+/**
+ * Log lines are the least structured thing on this surface: `message`, `stack`
+ * and `context` are free-form developer output, written by code that was not
+ * thinking about a trust boundary. A lookup warning naming the address it could
+ * not resolve is an ordinary, useful log line — and a PII leak the moment it
+ * crosses to ScaleMargin.
+ *
+ * So everything a human wrote is scrubbed. Structured fields the dispatcher
+ * controls — level, component, ids, timestamps — pass through untouched.
+ */
+function serializeLog(row: AppLogRow) {
+  return {
+    id: row.id,
+    ts: row.ts.toISOString(),
+    level: row.level,
+    component: row.component,
+    request_id: row.request_id,
+    campaign_id: row.campaign_id,
+    message: scrubPii(row.message),
+    stack: row.stack ? scrubPii(row.stack) : null,
+    context: row.context ? scrubPii(row.context) : null,
+  };
+}
+
+/** Turn the validated query into repo filters, resolving `since` into `from`. */
+function logFilters(query: ZListLogsQuery): LogFilters {
+  // Absolute bounds win over the relative window when both are supplied.
+  const from = query.from ?? (query.since ? (parseRelativeWindow(query.since) ?? undefined) : undefined);
+  const levels = query.min_level
+    ? LOG_LEVELS.slice(LOG_LEVELS.indexOf(query.min_level))
+    : undefined;
+  return {
+    // `min_level` expands to a set and takes precedence over an exact `level`.
+    ...(levels ? { levels: [...levels] } : query.level ? { level: query.level } : {}),
+    ...(from ? { from } : {}),
+    ...(query.to ? { to: query.to } : {}),
+    ...(query.component ? { component: query.component } : {}),
+    ...(query.campaign_id ? { campaign_id: query.campaign_id } : {}),
+    ...(query.request_id ? { request_id: query.request_id } : {}),
+    ...(query.q ? { q: query.q } : {}),
+  };
+}
+
+/** GET /logs — the dispatcher's own structured log, filtered and paginated. */
+export async function listLogsHandler(req: Request, res: Response): Promise<void> {
+  if (!requireStateDb(res)) return;
+
+  const query = ZListLogsQuerySchema.safeParse(req.query);
+  if (!query.success) return invalidRequest(res, query.error);
+
+  const { page, limit, order } = query.data;
+  const filters = logFilters(query.data);
+  const offset = (page - 1) * limit;
+  const [total, rows] = await Promise.all([
+    countLogs(filters),
+    queryLogsPage(filters, { offset, limit, order }),
+  ]);
+
+  res.json({
+    generated_at: new Date().toISOString(),
+    meta: pageMeta(total, page, limit),
+    logs: rows.map(serializeLog),
+  });
+}
+
+/** GET /logs/:id — one line, including its stack and context. */
+export async function getLogHandler(req: Request, res: Response): Promise<void> {
+  if (!requireStateDb(res)) return;
+
+  const params = ZLogIdParamSchema.safeParse(req.params);
+  if (!params.success) return invalidRequest(res, params.error);
+
+  const row = await getLogById(params.data.id);
+  if (!row) {
+    apiError(res, "not_found", `Log "${params.data.id}" does not exist`);
+    return;
+  }
+  res.json({ log: serializeLog(row) });
 }
 
 /** DELETE /variables/:name */

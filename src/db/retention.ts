@@ -68,6 +68,34 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
       );
   }
 
+  // Highest-volume table in the state DB — one row per recipient per send, so a
+  // 50,000-recipient campaign writes 50,000 rows. Shorter window and its own cap.
+  // campaign_summary keeps the totals after these rows are gone.
+  const sendLogs = tableFor(dbx, "dispatchSendLogs");
+  await q
+    .delete(sendLogs)
+    .where(lt(sendLogs.occurred_at, daysAgo(intEnv("DISPATCHER_SEND_LOG_RETENTION_DAYS", 30))));
+  const maxSendLogRows = intEnv("DISPATCHER_SEND_LOG_MAX_ROWS", 1_000_000);
+  const sendLogBoundary: Array<{ ts: Date; id: string }> = await q
+    .select({ ts: sendLogs.occurred_at, id: sendLogs.id })
+    .from(sendLogs)
+    .orderBy(desc(sendLogs.occurred_at), desc(sendLogs.id))
+    .offset(maxSendLogRows)
+    .limit(1);
+  if (sendLogBoundary[0]) {
+    await q
+      .delete(sendLogs)
+      .where(
+        or(
+          lt(sendLogs.occurred_at, sendLogBoundary[0].ts),
+          and(eq(sendLogs.occurred_at, sendLogBoundary[0].ts), lte(sendLogs.id, sendLogBoundary[0].id))
+        )
+      );
+  }
+
+  // campaign_summary is deliberately absent from this sweep. Outliving the rows
+  // it was computed from is the entire reason it exists.
+
   const runs = tableFor(dbx, "dispatchRuns");
   await q.delete(runs).where(lt(runs.occurred_at, daysAgo(90)));
   const failures = tableFor(dbx, "dispatchRecipientFailures");

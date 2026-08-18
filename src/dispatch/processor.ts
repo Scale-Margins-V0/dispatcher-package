@@ -1,4 +1,3 @@
-import { recordRecipientFailure } from "../admin/activity.js";
 import { hasDevSentCampaign, markDevSentCampaign } from "../db/repos/dev-sent.js";
 import { emitEvent } from "../events/index.js";
 import { registerCampaignCallback } from "../events/campaign-callback-registry.js";
@@ -6,30 +5,41 @@ import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callbac
 import { processImages, type ImageMapping } from "../images/handler.js";
 import { rewriteImageUrls } from "../images/rewriter.js";
 import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
-import { personalize } from "../personalize.js";
+import { countFallbacks, personalize, resolvableTokens } from "../personalize.js";
 import { getProvider } from "../providers/index.js";
 import type { EmailMessage } from "../providers/types.js";
 import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
 import { resolveDynamicValues } from "../variables/resolver.js";
+import { programOf } from "../db/repos/dispatch-programs.js";
+import { SendLogRecorder } from "./send-log-recorder.js";
+import { deriveTemplateRef } from "./template-ref.js";
 import { ensurePlaceholdersFresh } from "../variables/service.js";
 import { processWhatsAppDispatch } from "./whatsapp.js";
 import type { DispatchPayload } from "./types.js";
 
 export type { DispatchPayload } from "./types.js";
 
+/** What a completed run reports back so the dispatch_runs row can be finished. */
+export type DispatchOutcome = {
+  sent: number;
+  failed: number;
+  /** Variable resolutions attempted: recipients x tokens the template uses. */
+  resolution_total?: number;
+  resolution_fallbacks?: number;
+};
+
 export async function processDispatch(
   payload: DispatchPayload,
   fromEmail: string,
   dispatchRunId?: string
-): Promise<{ sent: number; failed: number } | undefined> {
+): Promise<DispatchOutcome> {
   // Pick up variable edits made via the admin API since the last dispatch —
   // one refresh per campaign so the whole run uses a consistent set.
   await ensurePlaceholdersFresh();
 
   if (payload.channel === "whatsapp") {
-    await processWhatsAppDispatch(payload);
-    return undefined;
+    return processWhatsAppDispatch(payload, dispatchRunId);
   }
 
   const { campaign_id, user_ids, content, metadata } = payload;
@@ -61,6 +71,16 @@ export async function processDispatch(
   // the sync personalize pass. Sync sources (field/computed/constant) skip this.
   const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx);
 
+  // The variables this message actually references — computed once for the run,
+  // because the template is the same for every recipient. This is the
+  // denominator for the fallback rate; counting the whole registry would inflate
+  // it with variables no template mentions.
+  const usedTokens = resolvableTokens([
+    content.subject,
+    content.html_body,
+    content.text_body,
+  ]);
+
   let imageMappings: ImageMapping[] = [];
   if (payload.images && payload.images.length > 0) {
     imageMappings = await processImages(payload.images, campaign_id);
@@ -68,6 +88,20 @@ export async function processDispatch(
 
   const provider = getProvider();
   const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
+
+  const program = programOf(payload);
+  const sendLogs = new SendLogRecorder({
+    dispatch_run_id: dispatchRunId,
+    campaign_id,
+    program_id: program.program_id,
+    step_id: program.step_id,
+    organization_id: metadata.organization_id ?? null,
+    channel: "email",
+    provider: provider.name,
+    template_ref: deriveTemplateRef(payload),
+  });
+  /** Per recipient, how many referenced variables fell back. Keyed by user id. */
+  const fallbackCounts = new Map<string, number>();
 
   if (devRecipient && (await hasDevSentCampaign(campaign_id))) {
     logUnlessVitest(
@@ -82,20 +116,28 @@ export async function processDispatch(
     const user = users.get(userId);
     if (!user) {
       warnUnlessVitest(`[Dispatch] User ${userId} not found in database, skipping`);
-      if (dispatchRunId) {
-        recordRecipientFailure({
-          dispatch_run_id: dispatchRunId,
-          campaign_id,
-          user_id: userId,
-          provider: provider.name,
-          error_category: "user_not_found",
-          error_message: `User ${userId} not found in user lookup — skipped`,
-        });
-      }
+      sendLogs.add({
+        user_id: userId,
+        status: "failed",
+        error_category: "user_not_found",
+        error_message: `User ${userId} not found in user lookup — skipped`,
+      });
       continue;
     }
 
-    const resolved = resolvedVars.get(user.user_id);
+    const resolution = resolvedVars.get(user.user_id);
+    const resolved = resolution?.values;
+    fallbackCounts.set(
+      userId,
+      countFallbacks(
+        usedTokens,
+        user,
+        personalizeCtx,
+        resolved,
+        new Set(resolution?.fallbacks ?? [])
+      )
+    );
+
     const subject = content.subject
       ? personalize(content.subject, user, personalizeCtx, resolved)
       : "No Subject";
@@ -148,23 +190,32 @@ export async function processDispatch(
   }> = [];
 
   for (const { userId, message } of messages) {
+    // Times the provider call alone. dispatch_runs.duration_ms measures the whole
+    // request, including lookup and personalization, so it cannot answer
+    // "is the provider slow?".
+    const sendStartedAt = performance.now();
     const result = await provider.send(message);
+    const latencyMs = Math.round(performance.now() - sendStartedAt);
+
     if (!result.success) {
       telemetry.capture("dispatcher_provider_send_failed", {
         provider: provider.name,
         channel: "email",
       });
-      if (dispatchRunId) {
-        recordRecipientFailure({
-          dispatch_run_id: dispatchRunId,
-          campaign_id,
-          user_id: userId,
-          provider: provider.name,
-          error_category: "delivery_failure",
-          error_message: result.error ?? "provider send failed",
-        });
-      }
     }
+    sendLogs.add({
+      user_id: userId,
+      status: result.success ? "sent" : "failed",
+      provider_message_id: result.messageId ?? null,
+      latency_ms: latencyMs,
+      ...(result.success
+        ? {}
+        : {
+            error_category: "delivery_failure",
+            error_message: result.error ?? "provider send failed",
+          }),
+      fallbacks_used: fallbackCounts.get(userId) ?? 0,
+    });
     sendResults.push({
       userId,
       success: result.success,
@@ -200,6 +251,8 @@ export async function processDispatch(
     );
   }
 
+  sendLogs.flush();
+
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;
 
@@ -215,5 +268,12 @@ export async function processDispatch(
     failed_count: failed,
     image_count: payload.images?.length ?? 0,
   });
-  return { sent, failed };
+  return {
+    sent,
+    failed,
+    // Only recipients that produced a message were resolved at all — a
+    // user_not_found recipient never reached personalize().
+    resolution_total: messages.length * usedTokens.length,
+    resolution_fallbacks: [...fallbackCounts.values()].reduce((a, b) => a + b, 0),
+  };
 }

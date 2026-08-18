@@ -41,6 +41,7 @@ import { registerAdminRoutes } from "./admin/routes.js";
 import { registerLogsApiRoutes } from "./logs-api.js";
 import { recordDispatchActivity } from "./admin/activity.js";
 import { programOf, recordDispatchProgramForPayload } from "./db/repos/dispatch-programs.js";
+import { refreshCampaignSummarySafe } from "./db/repos/campaign-summary.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
 import { logUnlessVitest } from "./logging.js";
@@ -143,7 +144,9 @@ app.disable("x-powered-by");
 app.set("trust proxy", 1);
 app.use(requestIdMiddleware);
 const PORT = parseInt(process.env.PORT || "3100", 10);
-const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
+/** Placeholder sender. No provider can verify it — example.com is IANA-reserved. */
+const DEFAULT_FROM_EMAIL = "noreply@example.com";
+const FROM_EMAIL = process.env.FROM_EMAIL || DEFAULT_FROM_EMAIL;
 
 registerAdminRoutes(app);
 registerLogsApiRoutes(app);
@@ -151,9 +154,16 @@ registerLogsApiRoutes(app);
 // /api/v1 so the raw body the dispatch route signs stays untouched.
 registerApiV1Routes(app);
 
-if (FROM_EMAIL === "noreply@example.com" && process.env.VITEST !== "true") {
-  console.warn(
-    "[WARN] FROM_EMAIL not set — using default noreply@example.com. Emails will likely bounce."
+// Through the logger, not console.warn: this runs after initDispatcherDb(), so
+// it reaches app_logs, the /logs API and the Atlas console. As a bare
+// console.warn it only ever appeared in the terminal that started the process —
+// which is how a dispatcher can sit for weeks sending from an unverifiable
+// address while every send fails with an unexplained provider rejection.
+if (FROM_EMAIL === DEFAULT_FROM_EMAIL && process.env.VITEST !== "true") {
+  componentLogger("server").warn(
+    `FROM_EMAIL is not set — sending as ${DEFAULT_FROM_EMAIL}. ` +
+      "That address cannot be verified with any provider (example.com is reserved), " +
+      "so every send will be rejected. Set FROM_EMAIL to a verified sender."
   );
 }
 
@@ -360,9 +370,12 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
       recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
       sent_count: result?.sent,
       failed_count: result?.failed,
+      resolution_total: result?.resolution_total,
+      resolution_fallbacks: result?.resolution_fallbacks,
       duration_ms: Math.round(performance.now() - startedAt),
       occurred_at: new Date().toISOString(),
     });
+    refreshCampaignSummarySafe(programOf(payload).program_id);
   }).catch((error) => {
     recordDispatchActivity({
       id: activityId,
@@ -379,6 +392,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
       error_message: error instanceof Error ? error.message : String(error),
       error_stack: error instanceof Error ? error.stack : undefined,
     });
+    refreshCampaignSummarySafe(programOf(payload).program_id);
     telemetry.captureException(error, {
       component: "dispatch_processor",
       channel: payload.channel,

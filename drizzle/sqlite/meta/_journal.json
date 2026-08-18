@@ -57,6 +57,13 @@
       "when": 1786712173589,
       "tag": "0007_new_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786949215849,
+      "tag": "0008_chief_titanium_man",
+      "breakpoints": true
     }
   ]
 }

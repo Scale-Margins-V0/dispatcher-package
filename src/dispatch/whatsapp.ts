@@ -11,14 +11,24 @@ import {
   parseWhatsAppTemplateSpec,
   resolveDevTestRecipient,
   resolveRecipientPhone,
+  resolveTemplateId,
 } from "../providers/gupshup-whatsapp.js";
 import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
+import { programOf } from "../db/repos/dispatch-programs.js";
+import { SendLogRecorder } from "./send-log-recorder.js";
+import { deriveTemplateRef } from "./template-ref.js";
 import type { DispatchPayload } from "./types.js";
 
+/**
+ * Returns the same `{ sent, failed }` shape as the email path so the caller can
+ * complete the dispatch run with real counts. Before this, WhatsApp runs stored
+ * NULL for both and were invisible in every rollup.
+ */
 export async function processWhatsAppDispatch(
-  payload: DispatchPayload
-): Promise<void> {
+  payload: DispatchPayload,
+  dispatchRunId?: string
+): Promise<{ sent: number; failed: number }> {
   const { campaign_id, user_ids, content, metadata } = payload;
 
   logUnlessVitest(
@@ -57,6 +67,22 @@ export async function processWhatsAppDispatch(
   const provider = new GupshupWhatsAppProvider();
   const devRecipient = resolveDevTestRecipient();
 
+  const program = programOf(payload);
+  const sendLogs = new SendLogRecorder({
+    dispatch_run_id: dispatchRunId,
+    campaign_id,
+    program_id: program.program_id,
+    step_id: program.step_id,
+    organization_id: metadata.organization_id ?? null,
+    channel: "whatsapp",
+    provider: "gupshup",
+    // Unlike email, this is a real provider-registered template id.
+    template_ref: deriveTemplateRef(
+      payload,
+      templateSpec ? resolveTemplateId(templateSpec) : null
+    ),
+  });
+
   const sendResults: Array<{
     userId: string;
     success: boolean;
@@ -68,6 +94,12 @@ export async function processWhatsAppDispatch(
     const user = users.get(userId);
     if (!user) {
       warnUnlessVitest(`[Dispatch] User ${userId} not found in database, skipping`);
+      sendLogs.add({
+        user_id: userId,
+        status: "failed",
+        error_category: "user_not_found",
+        error_message: `User ${userId} not found in user lookup — skipped`,
+      });
       continue;
     }
 
@@ -80,6 +112,12 @@ export async function processWhatsAppDispatch(
         userId,
         success: false,
         error: "missing phone number",
+      });
+      sendLogs.add({
+        user_id: userId,
+        status: "failed",
+        error_category: "missing_phone",
+        error_message: "recipient has no phone number",
       });
       await emitWhatsAppEvent({
         campaign_id,
@@ -123,13 +161,27 @@ export async function processWhatsAppDispatch(
           sendContext
         );
 
+    const sendStartedAt = performance.now();
     const result = await provider.send(message);
+    const latencyMs = Math.round(performance.now() - sendStartedAt);
     if (!result.success) {
       telemetry.capture("dispatcher_provider_send_failed", {
         provider: "gupshup",
         channel: "whatsapp",
       });
     }
+    sendLogs.add({
+      user_id: userId,
+      status: result.success ? "sent" : "failed",
+      provider_message_id: result.messageId ?? null,
+      latency_ms: latencyMs,
+      ...(result.success
+        ? {}
+        : {
+            error_category: "delivery_failure",
+            error_message: result.error ?? "provider send failed",
+          }),
+    });
     sendResults.push({
       userId,
       success: result.success,
@@ -151,6 +203,8 @@ export async function processWhatsAppDispatch(
     if (devRecipient) break;
   }
 
+  sendLogs.flush();
+
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;
 
@@ -165,6 +219,7 @@ export async function processWhatsAppDispatch(
     sent_count: sent,
     failed_count: failed,
   });
+  return { sent, failed };
 }
 
 async function emitWhatsAppEvent(args: {

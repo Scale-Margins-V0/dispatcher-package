@@ -42,6 +42,8 @@ export const dispatchRuns = sqliteTable(
     sent_count: integer("sent_count"),
     failed_count: integer("failed_count"),
     duration_ms: integer("duration_ms"),
+    resolution_total: integer("resolution_total"),
+    resolution_fallbacks: integer("resolution_fallbacks"),
     error_category: text("error_category"),
     error_message: text("error_message"),
     error_stack: text("error_stack"),
@@ -329,4 +331,64 @@ export const invitation = sqliteTable(
     createdAt: ts("created_at").notNull(),
   },
   (t) => [index("invitation_org_idx").on(t.organizationId)]
+);
+
+export const dispatchSendLogs = sqliteTable(
+  "dispatch_send_logs",
+  {
+    id: text("id").primaryKey(),
+    dispatch_run_id: text("dispatch_run_id").notNull(),
+    campaign_id: text("campaign_id").notNull(),
+    program_id: text("program_id").notNull().default(""),
+    step_id: text("step_id"),
+    organization_id: text("organization_id"),
+    user_id: text("user_id").notNull(),
+    channel: text("channel").notNull(),
+    provider: text("provider").notNull(),
+    template_ref: text("template_ref"),
+    status: text("status").notNull(),
+    provider_message_id: text("provider_message_id"),
+    latency_ms: integer("latency_ms"),
+    error_category: text("error_category"),
+    error_message: text("error_message"),
+    fallbacks_used: integer("fallbacks_used"),
+    occurred_at: ts("occurred_at").notNull(),
+  },
+  (t) => [
+    index("send_logs_run_idx").on(t.dispatch_run_id),
+    index("send_logs_program_occurred_idx").on(t.program_id, t.occurred_at),
+    index("send_logs_program_user_idx").on(t.program_id, t.user_id),
+    index("send_logs_occurred_at_idx").on(t.occurred_at),
+  ]
+);
+
+export const campaignSummary = sqliteTable(
+  "campaign_summary",
+  {
+    program_id: text("program_id").primaryKey(),
+    program_kind: text("program_kind").notNull().default("campaign"),
+    organization_id: text("organization_id"),
+    channel: text("channel"),
+    provider: text("provider"),
+    template_ref: text("template_ref"),
+    total_recipients: integer("total_recipients").notNull().default(0),
+    sent: integer("sent").notNull().default(0),
+    failed: integer("failed").notNull().default(0),
+    fallbacks_used: integer("fallbacks_used"),
+    unique_recipients: integer("unique_recipients").notNull().default(0),
+    dispatched: integer("dispatched").notNull().default(0),
+    delivered: integer("delivered").notNull().default(0),
+    opened: integer("opened").notNull().default(0),
+    clicked: integer("clicked").notNull().default(0),
+    bounced: integer("bounced").notNull().default(0),
+    complained: integer("complained").notNull().default(0),
+    unsubscribed: integer("unsubscribed").notNull().default(0),
+    first_send_at: ts("first_send_at"),
+    last_event_at: ts("last_event_at"),
+    updated_at: ts("updated_at").notNull(),
+  },
+  (t) => [
+    index("campaign_summary_org_idx").on(t.organization_id, t.last_event_at),
+    index("campaign_summary_last_event_idx").on(t.last_event_at),
+  ]
 );

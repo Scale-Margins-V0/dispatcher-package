@@ -129,6 +129,49 @@ export async function resolutionWarningCount(days: number): Promise<number | nul
   });
 }
 
+export type ResolutionStats = {
+  /** Variable resolutions attempted in the window: recipients × tokens used. */
+  total: number;
+  fallbacks: number;
+  /** fallbacks / total, or null when nothing was resolved — never a bare 0. */
+  rate: number | null;
+};
+
+/**
+ * Real fallback rate, from the per-run counters the dispatch path now records.
+ *
+ * Distinct from resolutionWarningCount, which counts *thrown* failures,
+ * deduplicated by effective inputs. This counts every recipient's every
+ * referenced variable, so a source that quietly returns empty is included.
+ *
+ * Runs that predate the instrumentation have null counters and contribute
+ * nothing, so an upgraded dispatcher reports the rate for new sends rather than
+ * a rate diluted by history it never measured.
+ */
+export async function resolutionStats(days: number): Promise<ResolutionStats | null> {
+  return safe("resolutionStats", async () => {
+    const dbx = getDb();
+    const runs = tableFor(dbx, "dispatchRuns");
+    const [row]: Array<{ total: unknown; fallbacks: unknown }> = await queryDb(dbx)
+      .select({
+        total: sql`coalesce(sum(${runs.resolution_total}), 0)`,
+        fallbacks: sql`coalesce(sum(${runs.resolution_fallbacks}), 0)`,
+      })
+      .from(runs)
+      .where(gte(runs.occurred_at, windowStart(days)));
+
+    const total = Number(row?.total) || 0;
+    const fallbacks = Number(row?.fallbacks) || 0;
+    return {
+      total,
+      fallbacks,
+      // Null, not 0: "nothing measured" and "nothing fell back" are different
+      // answers and the dashboard renders them differently.
+      rate: total > 0 ? Math.round((fallbacks / total) * 10_000) / 10_000 : null,
+    };
+  });
+}
+
 export async function countVariables(): Promise<{ total: number; enabled: number } | null> {
   return safe("countVariables", async () => {
     const dbx = getDb();

@@ -247,5 +247,127 @@ export const ZListVariablesQuerySchema = z.object({
 
 export type ZListVariablesQuery = z.infer<typeof ZListVariablesQuerySchema>;
 
+/*
+ * Campaigns
+ */
+
+/**
+ * A program id is whatever ScaleMargin put on the wire — a campaign id, or a
+ * drip sequence id. It is opaque here, so this only bounds the length and
+ * refuses the empty string rather than imposing a shape the platform never
+ * promised.
+ */
+const programId = z
+  .string()
+  .trim()
+  .min(1, "Campaign id cannot be empty")
+  .max(191, "Campaign id cannot exceed 191 characters");
+
+export const ZProgramIdParamSchema = z.object({ programId });
+
+export type ZProgramIdParam = z.infer<typeof ZProgramIdParamSchema>;
+
+/** ISO-8601 in, Date out. Rejects "yesterday" and other things Date accepts loosely. */
+const isoDate = z
+  .string()
+  .datetime({ offset: true, message: "Must be an ISO-8601 timestamp, e.g. 2026-08-17T09:00:00Z" })
+  .transform((value) => new Date(value));
+
+export const ZListCampaignsQuerySchema = z
+  .object({
+    organization_id: z.string().trim().max(191).optional(),
+    channel: z.string().trim().max(16).optional(),
+    program_kind: z.enum(["campaign", "drip"]).optional(),
+    /** Case-insensitive substring match on the campaign id. */
+    q: z.string().trim().max(191).optional(),
+    /** Bounds on last activity, not on when the campaign was created. */
+    from: isoDate.optional(),
+    to: isoDate.optional(),
+    page,
+    limit,
+  })
+  .refine(
+    (query) => !query.from || !query.to || query.from <= query.to,
+    { message: "from must be earlier than to", path: ["from"] }
+  );
+
+export type ZListCampaignsQuery = z.infer<typeof ZListCampaignsQuerySchema>;
+
+export const ZListSendsQuerySchema = z.object({
+  status: z.enum(["sent", "failed"]).optional(),
+  user_id: z.string().trim().max(191).optional(),
+  dispatch_run_id: z.string().trim().max(36).optional(),
+  page,
+  limit,
+});
+
+export type ZListSendsQuery = z.infer<typeof ZListSendsQuerySchema>;
+
+/*
+ * Logs
+ */
+
+export const LOG_LEVELS = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
+
+export type LogLevelName = (typeof LOG_LEVELS)[number];
+
+/**
+ * `since=15m` / `2h` / `7d` — a relative window, which is what an operator
+ * actually wants when reading logs. Absolute `from`/`to` are also accepted and
+ * win over `since` when both are given.
+ */
+const RELATIVE_WINDOW_RE = /^(\d+)\s*(s|m|h|d)$/i;
+
+const UNIT_MS: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+
+export function parseRelativeWindow(value: string, now = Date.now()): Date | null {
+  const match = RELATIVE_WINDOW_RE.exec(value.trim());
+  if (!match) return null;
+  const amount = parseInt(match[1]!, 10);
+  const unit = UNIT_MS[match[2]!.toLowerCase()];
+  if (!unit || amount <= 0) return null;
+  return new Date(now - amount * unit);
+}
+
+export const ZListLogsQuerySchema = z
+  .object({
+    /** Exact level. Ignored when `min_level` is also set. */
+    level: z.enum(LOG_LEVELS).optional(),
+    /** This level and everything more severe. */
+    min_level: z.enum(LOG_LEVELS).optional(),
+    component: z.string().trim().max(64).optional(),
+    campaign_id: z.string().trim().max(191).optional(),
+    request_id: z.string().trim().max(64).optional(),
+    /** Case-sensitive substring match on the message. */
+    q: z.string().trim().max(200).optional(),
+    since: z
+      .string()
+      .trim()
+      .max(16)
+      .refine(
+        (value) => parseRelativeWindow(value) !== null,
+        "since must look like 15m, 2h or 7d"
+      )
+      .optional(),
+    from: isoDate.optional(),
+    to: isoDate.optional(),
+    order: z.enum(["asc", "desc"]).default("desc"),
+    page,
+    limit,
+  })
+  .refine(
+    (query) => !query.from || !query.to || query.from <= query.to,
+    { message: "from must be earlier than to", path: ["from"] }
+  );
+
+export type ZListLogsQuery = z.infer<typeof ZListLogsQuerySchema>;
+
+/** Log ids are UUIDs minted by the sink. */
+export const ZLogIdParamSchema = z.object({
+  id: z.string().trim().min(1, "Log id cannot be empty").max(64),
+});
+
+export type ZLogIdParam = z.infer<typeof ZLogIdParamSchema>;
+
 /** Re-exported so the controller and the docs quote one mask, not two. */
 export { HEADER_MASK };
