@@ -63,6 +63,8 @@ import { renderPlaceholderPreview } from "../../../personalize.js";
 import { rowToPlaceholderEntry } from "../../../variables/mapping.js";
 import { redactConfig, unmaskHeaders } from "../../../variables/redaction.js";
 import { refreshPlaceholders } from "../../../variables/service.js";
+import { componentLogger } from "../../../logging/logger.js";
+import { LogComponent, errorFields } from "../../../logging/conventions.js";
 import { apiError, invalidRequest } from "../errors.js";
 import {
   LOG_LEVELS,
@@ -80,6 +82,26 @@ import {
   type ZVariableDefinition,
 } from "../validators/dataplane.validator.js";
 import { API_VERSION, STATUS_WINDOW_DAYS } from "../version.js";
+
+const log = componentLogger(LogComponent.apiDataplane);
+
+/**
+ * Every request already produces method/route/status/duration in the router's
+ * access log, so nothing here repeats that. These helpers record only what the
+ * router cannot see: which rule rejected a payload, and what a write changed.
+ */
+function logRejected(resource: string, error: { issues: Array<{ path: PropertyKey[]; message: string }> }): void {
+  log.warn(
+    {
+      resource,
+      // The failing field paths, not the payload — a rejected variable body can
+      // contain a bearer token, and a rejected filter is not worth storing.
+      invalid_fields: error.issues.map((issue) => issue.path.join(".")),
+      count: error.issues.length,
+    },
+    `Rejected ${resource} request — failed validation`
+  );
+}
 
 /*
  * Observability
@@ -165,6 +187,20 @@ export async function getState(_req: Request, res: Response): Promise<void> {
       ? "error"
       : "degraded";
 
+  if (state !== "healthy") {
+    // The endpoint deliberately answers 200 for a failing dependency, so this
+    // is the only place a degraded dispatcher becomes searchable after the fact.
+    log.warn(
+      {
+        state,
+        failed_checks: Object.entries(checks)
+          .filter(([, check]) => !check.ok)
+          .map(([name]) => name),
+      },
+      `Dispatcher reporting ${state}`
+    );
+  }
+
   res.json({
     generated_at: new Date().toISOString(),
     status: { state, checks },
@@ -212,6 +248,10 @@ export async function getState(_req: Request, res: Response): Promise<void> {
  */
 function requireStateDb(res: Response): boolean {
   if (isDbInitialized()) return true;
+  log.error(
+    { status_code: 503 },
+    "Refused data-plane request — no state database attached"
+  );
   apiError(
     res,
     "unavailable",
@@ -374,7 +414,10 @@ export async function listVariablesHandler(
   if (!requireStateDb(res)) return;
 
   const query = ZListVariablesQuerySchema.safeParse(req.query);
-  if (!query.success) return invalidRequest(res, query.error);
+  if (!query.success) {
+    logRejected("variables.list", query.error);
+    return invalidRequest(res, query.error);
+  }
 
   const { source, enabled, q, page, limit } = query.data;
   const needle = q?.toLowerCase();
@@ -403,10 +446,14 @@ export async function getVariableHandler(
   if (!requireStateDb(res)) return;
 
   const params = ZVariableNameParamSchema.safeParse(req.params);
-  if (!params.success) return invalidRequest(res, params.error);
+  if (!params.success) {
+    logRejected("variables.get", params.error);
+    return invalidRequest(res, params.error);
+  }
 
   const row = await getVariable(params.data.name);
   if (!row) {
+    log.warn({ variable: params.data.name }, "Variable not found");
     apiError(res, "not_found", `Variable "${params.data.name}" does not exist`);
     return;
   }
@@ -421,10 +468,14 @@ export async function createVariableHandler(
   if (!requireStateDb(res)) return;
 
   const parsed = ZCreateVariableSchema.safeParse(req.body);
-  if (!parsed.success) return invalidRequest(res, parsed.error);
+  if (!parsed.success) {
+    logRejected("variables.create", parsed.error);
+    return invalidRequest(res, parsed.error);
+  }
 
   const { name, definition, fallback = null, sample, enabled } = parsed.data;
   if (await getVariable(name)) {
+    log.warn({ variable: name }, "Variable create rejected — name already exists");
     apiError(res, "conflict", `Variable "${name}" already exists`);
     return;
   }
@@ -457,6 +508,10 @@ export async function createVariableHandler(
     updated_by: actor(req),
   });
   await refreshPlaceholders();
+  log.info(
+    { variable: name, source: definition.source, enabled, has_fallback: fallback !== null },
+    "Variable created — applies to the next dispatch"
+  );
   res.status(201).json({ variable: serializeVariable(row) });
 }
 
@@ -473,20 +528,31 @@ export async function updateVariableHandler(
   if (!requireStateDb(res)) return;
 
   const params = ZVariableNameParamSchema.safeParse(req.params);
-  if (!params.success) return invalidRequest(res, params.error);
+  if (!params.success) {
+    logRejected("variables.update", params.error);
+    return invalidRequest(res, params.error);
+  }
 
   const parsed = ZUpdateVariableSchema.safeParse(req.body);
-  if (!parsed.success) return invalidRequest(res, parsed.error);
+  if (!parsed.success) {
+    logRejected("variables.update", parsed.error);
+    return invalidRequest(res, parsed.error);
+  }
 
   const current = params.data.name;
   const existing = await getVariable(current);
   if (!existing) {
+    log.warn({ variable: current }, "Variable update rejected — does not exist");
     apiError(res, "not_found", `Variable "${current}" does not exist`);
     return;
   }
 
   const { name, definition, fallback, sample, enabled } = parsed.data;
   if (name !== undefined && name !== current && (await getVariable(name))) {
+    log.warn(
+      { variable: current, rename_to: name },
+      "Variable rename rejected — target name already exists"
+    );
     apiError(res, "conflict", `Variable "${name}" already exists`);
     return;
   }
@@ -523,6 +589,17 @@ export async function updateVariableHandler(
 
   const row = await updateVariable(current, patch);
   await refreshPlaceholders();
+  log.info(
+    {
+      variable: current,
+      // What changed, not what it changed to: a definition body can carry a
+      // bearer token, and the new value is already readable via GET.
+      changed: Object.keys(parsed.data),
+      ...(definition ? { source: definition.source } : {}),
+      ...(name && name !== current ? { renamed_to: name } : {}),
+    },
+    "Variable updated — applies to the next dispatch"
+  );
   // updateVariable re-reads by the (possibly new) name; a null here means the
   // row vanished between the existence check and the write.
   if (!row) {
@@ -601,7 +678,10 @@ export async function listCampaignsHandler(req: Request, res: Response): Promise
   if (!requireStateDb(res)) return;
 
   const query = ZListCampaignsQuerySchema.safeParse(req.query);
-  if (!query.success) return invalidRequest(res, query.error);
+  if (!query.success) {
+    logRejected("campaigns.list", query.error);
+    return invalidRequest(res, query.error);
+  }
 
   const { page, limit, ...filters } = query.data;
   const offset = (page - 1) * limit;
@@ -628,11 +708,24 @@ export async function getCampaignHandler(req: Request, res: Response): Promise<v
   if (!requireStateDb(res)) return;
 
   const params = ZProgramIdParamSchema.safeParse(req.params);
-  if (!params.success) return invalidRequest(res, params.error);
+  if (!params.success) {
+    logRejected("campaigns.get", params.error);
+    return invalidRequest(res, params.error);
+  }
 
   const { programId } = params.data;
   const summary = await getCampaignSummary(programId);
   if (!summary) {
+    // Overwhelmingly this is a caller passing a drip's WIRE id
+    // (drip_{enrollment}_{step}) where a program_id belongs. Say so, because
+    // the 404 alone sends people looking for missing data that is really there.
+    log.warn(
+      {
+        program_id: programId,
+        looks_like_wire_id: programId.startsWith("drip_"),
+      },
+      "Campaign not found"
+    );
     apiError(res, "not_found", `Campaign "${programId}" does not exist`);
     return;
   }
@@ -662,10 +755,16 @@ export async function listCampaignSendsHandler(req: Request, res: Response): Pro
   if (!requireStateDb(res)) return;
 
   const params = ZProgramIdParamSchema.safeParse(req.params);
-  if (!params.success) return invalidRequest(res, params.error);
+  if (!params.success) {
+    logRejected("campaigns.sends", params.error);
+    return invalidRequest(res, params.error);
+  }
 
   const query = ZListSendsQuerySchema.safeParse(req.query);
-  if (!query.success) return invalidRequest(res, query.error);
+  if (!query.success) {
+    logRejected("campaigns.sends", query.error);
+    return invalidRequest(res, query.error);
+  }
 
   const { page, limit, ...filters } = query.data;
   const scoped = { ...filters, program_id: params.data.programId };
@@ -734,7 +833,14 @@ export async function listLogsHandler(req: Request, res: Response): Promise<void
   if (!requireStateDb(res)) return;
 
   const query = ZListLogsQuerySchema.safeParse(req.query);
-  if (!query.success) return invalidRequest(res, query.error);
+  if (!query.success) {
+    // Note the feedback loop: this handler reads app_logs, and anything it logs
+    // becomes a row the next reader sees. The router's access log already
+    // records the request, so only a rejected query is worth a second line —
+    // never the successful reads, which an operator refreshes constantly.
+    logRejected("logs.list", query.error);
+    return invalidRequest(res, query.error);
+  }
 
   const { page, limit, order } = query.data;
   const filters = logFilters(query.data);
@@ -756,10 +862,14 @@ export async function getLogHandler(req: Request, res: Response): Promise<void> 
   if (!requireStateDb(res)) return;
 
   const params = ZLogIdParamSchema.safeParse(req.params);
-  if (!params.success) return invalidRequest(res, params.error);
+  if (!params.success) {
+    logRejected("logs.get", params.error);
+    return invalidRequest(res, params.error);
+  }
 
   const row = await getLogById(params.data.id);
   if (!row) {
+    // Very often the row was simply pruned — 14 days / 200k rows by default.
     apiError(res, "not_found", `Log "${params.data.id}" does not exist`);
     return;
   }
@@ -774,13 +884,21 @@ export async function deleteVariableHandler(
   if (!requireStateDb(res)) return;
 
   const params = ZVariableNameParamSchema.safeParse(req.params);
-  if (!params.success) return invalidRequest(res, params.error);
+  if (!params.success) {
+    logRejected("variables.delete", params.error);
+    return invalidRequest(res, params.error);
+  }
 
   const deleted = await deleteVariable(params.data.name);
   if (!deleted) {
+    log.warn({ variable: params.data.name }, "Variable delete rejected — does not exist");
     apiError(res, "not_found", `Variable "${params.data.name}" does not exist`);
     return;
   }
   await refreshPlaceholders();
+  log.info(
+    { variable: params.data.name },
+    "Variable deleted — templates referencing it now render empty"
+  );
   res.json({ deleted: true, name: params.data.name });
 }

@@ -2,7 +2,8 @@ import { emitEvent } from "../events/index.js";
 import { computeTagSign } from "../events/tag-sign.js";
 import { registerCampaignCallback } from "../events/campaign-callback-registry.js";
 import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callback-url.js";
-import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
+import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 import {
   buildWhatsAppMediaMessageForUser,
   buildWhatsAppMessageForUser,
@@ -20,6 +21,8 @@ import { SendLogRecorder } from "./send-log-recorder.js";
 import { deriveTemplateRef } from "./template-ref.js";
 import type { DispatchPayload } from "./types.js";
 
+const log = componentLogger(LogComponent.dispatchWhatsapp);
+
 /**
  * Returns the same `{ sent, failed }` shape as the email path so the caller can
  * complete the dispatch run with real counts. Before this, WhatsApp runs stored
@@ -31,8 +34,9 @@ export async function processWhatsAppDispatch(
 ): Promise<{ sent: number; failed: number }> {
   const { campaign_id, user_ids, content, metadata } = payload;
 
-  logUnlessVitest(
-    `[Dispatch] Processing WhatsApp campaign ${campaign_id}: ${user_ids.length} users`
+  log.info(
+    { recipients: user_ids.length, channel: "whatsapp", provider: "gupshup" },
+    "Dispatch started"
   );
 
   const mediaSpec = parseWhatsAppMediaSpec(content, payload.images);
@@ -89,11 +93,15 @@ export async function processWhatsAppDispatch(
     messageId?: string;
     error?: string;
   }> = [];
+  let unresolved = 0;
+  let missingPhone = 0;
+  let failureCount = 0;
 
   for (const userId of user_ids) {
     const user = users.get(userId);
     if (!user) {
-      warnUnlessVitest(`[Dispatch] User ${userId} not found in database, skipping`);
+      unresolved += 1;
+      log.debug({ user_id: userId }, "Recipient not found in user lookup — skipped");
       sendLogs.add({
         user_id: userId,
         status: "failed",
@@ -105,9 +113,8 @@ export async function processWhatsAppDispatch(
 
     const phone = resolveRecipientPhone(user, devRecipient);
     if (!phone) {
-      warnUnlessVitest(
-        `[Dispatch] User ${userId} has no phone number, skipping WhatsApp send`
-      );
+      missingPhone += 1;
+      log.debug({ user_id: userId }, "Recipient has no phone number — skipped");
       sendResults.push({
         userId,
         success: false,
@@ -132,8 +139,9 @@ export async function processWhatsAppDispatch(
     }
 
     if (devRecipient) {
-      logUnlessVitest(
-        `[Dispatch] DEV mode — routing all WhatsApp recipients to ${devRecipient} (GUPSHUP_EVENT_TEST_RECIPIENTS)`
+      log.warn(
+        { dev_mode: true },
+        "DEV mode — routing all WhatsApp recipients to GUPSHUP_EVENT_TEST_RECIPIENTS"
       );
     }
 
@@ -169,6 +177,22 @@ export async function processWhatsAppDispatch(
         provider: "gupshup",
         channel: "whatsapp",
       });
+      // First failure loud, the rest counted — see the same pattern in
+      // processor.ts. The completion line carries the total.
+      const level = failureCount === 0 ? "warn" : "debug";
+      failureCount += 1;
+      log[level](
+        {
+          user_id: userId,
+          provider: "gupshup",
+          error_category: "delivery_failure",
+          error_message: result.error ?? "provider send failed",
+          duration_ms: latencyMs,
+        },
+        failureCount === 1
+          ? "Provider rejected a message — first failure of this run"
+          : "Provider rejected a message"
+      );
     }
     sendLogs.add({
       user_id: userId,
@@ -208,8 +232,23 @@ export async function processWhatsAppDispatch(
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;
 
-  logUnlessVitest(
-    `[Dispatch] WhatsApp campaign ${campaign_id}: ${sent} sent, ${failed} failed (events emitted via pipeline)`
+  if (missingPhone > 0) {
+    log.warn(
+      { channel: "whatsapp", missing_phone: missingPhone, requested: user_ids.length },
+      `${missingPhone} of ${user_ids.length} recipients had no phone number`
+    );
+  }
+  log[failed > 0 ? "warn" : "info"](
+    {
+      provider: "gupshup",
+      channel: "whatsapp",
+      requested: user_ids.length,
+      sent,
+      failed,
+      unresolved,
+      missing_phone: missingPhone,
+    },
+    `Dispatch completed — ${sent} sent, ${failed} failed`
   );
   telemetry.capture("dispatcher_dispatch_completed", {
     channel: "whatsapp",
@@ -248,8 +287,10 @@ async function emitWhatsAppEvent(args: {
   // failed event with an explicit reason instead of an uncorrelatable "dispatched".
   const hasMessageId = typeof messageId === "string" && messageId.length > 0;
   if (success && !hasMessageId) {
-    warnUnlessVitest(
-      `[Dispatch] WhatsApp send for user=${userId} campaign=${campaign_id} succeeded but returned no provider message id — emitting failed (noProviderMessageId)`
+    log.warn(
+      { user_id: userId, provider: "gupshup", error_category: "noProviderMessageId" },
+      "Gupshup accepted the message but returned no message id — recording it as failed, " +
+        "because delivery receipts are keyed on that id and could never be correlated"
     );
   }
   const effectiveSuccess = success && hasMessageId;
@@ -287,7 +328,12 @@ async function emitWhatsAppEvent(args: {
     },
   });
 
-  logUnlessVitest(
-    `[Dispatch] event emitted user=${userId} event=${effectiveSuccess ? "dispatched" : "failed"} messageId=${messageId ?? "unknown"}`
+  log.debug(
+    {
+      user_id: userId,
+      event: effectiveSuccess ? "dispatched" : "failed",
+      provider_message_id: messageId ?? null,
+    },
+    "Send event emitted"
   );
 }

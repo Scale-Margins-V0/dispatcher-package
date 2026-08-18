@@ -44,7 +44,7 @@ import { programOf, recordDispatchProgramForPayload } from "./db/repos/dispatch-
 import { refreshCampaignSummarySafe } from "./db/repos/campaign-summary.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
-import { logUnlessVitest } from "./logging.js";
+import { LogComponent } from "./logging/conventions.js";
 import { bindCampaignId } from "./logging/context.js";
 import { componentLogger } from "./logging/logger.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
@@ -88,8 +88,9 @@ if (
   process.env.SCALEMARGIN_ANALYTICS_SECRET ??=
     "local-dev-placeholder-analytics-secret";
   if (process.env.VITEST !== "true") {
-    console.warn(
-      "[LOCAL_DEV] Placeholder SCALEMARGIN_* secrets in use — set real values for Atlas HMAC. Not for production."
+    componentLogger(LogComponent.config).warn(
+      { local_dev: true },
+      "Placeholder SCALEMARGIN_* secrets in use — set real values for Atlas HMAC. Not for production."
     );
   }
 }
@@ -104,6 +105,9 @@ if (missing.length > 0) {
     component: "required_env",
     missing_env_count: missing.length,
   });
+  // Console, deliberately: every [FATAL] path here exits immediately, and the
+  // log sink batches — a logger call would never reach the database before the
+  // process is gone. Everything that does not exit uses componentLogger.
   console.error(`[FATAL] Missing required env vars: ${missing.join(", ")}`);
   console.error("See .env.example for all required variables.");
   process.exit(1);
@@ -307,8 +311,9 @@ if (process.env.EVENT_TEST_CSV_PATH) {
     csvHandler
   );
   if (process.env.VITEST !== "true") {
-    console.log(
-      `[EventTest] CSV capture enabled → ${process.env.EVENT_TEST_CSV_PATH} (POST /api/webhooks/campaign-analytics/capture)`
+    componentLogger(LogComponent.config).info(
+      { path: process.env.EVENT_TEST_CSV_PATH },
+      "Event-test CSV capture enabled"
     );
   }
 }
@@ -317,7 +322,7 @@ if (process.env.EVENT_TEST_CSV_PATH) {
 // POST /api/scalemargin/dispatch — Campaign Dispatch Handler
 // ---------------------------------------------------------------------------
 
-const dispatchLog = componentLogger("dispatch");
+const dispatchLog = componentLogger(LogComponent.dispatch);
 
 app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   const payload = req.body as DispatchPayload;
@@ -325,9 +330,14 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   const startedAt = performance.now();
   bindCampaignId(String(payload.campaign_id ?? "unknown"));
 
-  logUnlessVitest(
-    `[Dispatch] Received campaign ${payload.campaign_id} — ` +
-      `${payload.user_ids?.length || 0} recipients, channel: ${payload.channel}`
+  dispatchLog.info(
+    {
+      channel: payload.channel,
+      recipients: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+      organization_id: payload.metadata?.organization_id,
+      dispatch_kind: payload.metadata?.dispatch_kind ?? "campaign",
+    },
+    "Dispatch request accepted"
   );
 
   // Record wire id → program before any event is emitted. A drip step's

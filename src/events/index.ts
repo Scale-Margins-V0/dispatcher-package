@@ -296,19 +296,22 @@ export function createInboundWebhookHandler(
             gupshupReceipts.push(receipt);
           } else if (receipt) {
             droppedUnsignedReceipts++;
-            console.warn(
-              `[Events][gupshup] Rejecting receipt externalId=${receipt.external_id} — extra missing or not smsign_ (unauthenticated)`
+            log.warn(
+              { provider: "gupshup", external_id: receipt.external_id, error_category: "unsigned_receipt" },
+              "Rejected receipt — echoed `extra` missing or not smsign_ (unauthenticated)"
             );
           } else {
             droppedOtherNoCorrelation++;
             log.warn(
-              `[Events][gupshup] Dropping event — missing correlation and not a forwardable receipt`
+              { provider: "gupshup", error_category: "no_correlation" },
+              "Dropped event — missing correlation and not a forwardable receipt"
             );
           }
         } else {
           droppedOtherNoCorrelation++;
           log.warn(
-            `[Events][${adapter.name}] Dropping event — missing correlation fields`
+            { provider: adapter.name, error_category: "no_correlation" },
+            "Dropped event — missing correlation fields"
           );
         }
         continue;
@@ -326,8 +329,9 @@ export function createInboundWebhookHandler(
               : typeof stripped.status === "string"
                 ? stripped.status
                 : "unknown";
-          console.warn(
-            `[Events][gupshup] Dropping event — unsupported status mapping: ${status}`
+          log.warn(
+            { provider: "gupshup", provider_status: status, error_category: "unsupported_status" },
+            "Dropped event — provider status has no mapping"
           );
         }
         continue;

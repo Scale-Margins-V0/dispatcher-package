@@ -17,12 +17,13 @@
 
 import express, { Router } from "express";
 import { componentLogger } from "../../../logging/logger.js";
+import { LogComponent } from "../../../logging/conventions.js";
 import { requireApiKey } from "../auth.js";
 import * as DataPlaneController from "../controllers/dataplane.controller.js";
 import { corsMiddleware } from "../cors.js";
 import { apiError, asyncApi } from "../errors.js";
 
-const log = componentLogger("api.external");
+const log = componentLogger(LogComponent.apiDataplane);
 
 const RATE_LIMIT = 60;
 const RATE_WINDOW_MS = 60_000;
@@ -51,19 +52,51 @@ const router = Router();
 // body plus headers) with room to spare, and still refuses a runaway payload.
 router.use(express.json({ limit: "64kb" }));
 
+/**
+ * One access log line per request, structured.
+ *
+ * This is why the handlers below do not each log "request received": every
+ * request already produces `method`, `route`, `status_code` and `duration_ms`
+ * here. Handlers add only what this cannot see — which validation rule failed,
+ * what a write changed, how many rows came back.
+ *
+ * `route` is the matched pattern (`/variables/:name`), not the concrete path,
+ * so "how slow is the variable detail endpoint" is one GROUP BY rather than a
+ * scan over thousands of distinct URLs. The concrete path stays in `path`.
+ *
+ * Only the key's first 12 characters are recorded — enough to tell two
+ * integrations apart, never enough to replay one.
+ */
 router.use((req, res, next) => {
   const started = Date.now();
   const token =
     req.headers.authorization?.replace(/^Bearer\s+/i, "").slice(0, 12) ??
     "none";
+
   res.on("finish", () => {
-    log.info(
-      `[api] ${req.method} ${req.originalUrl} key=${token} status=${
-        res.statusCode
-      } ${Date.now() - started}ms`,
+    const durationMs = Date.now() - started;
+    // A 5xx is ours to fix; a 4xx is the caller's. Only the former is an error.
+    const level =
+      res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info";
+    log[level](
+      {
+        method: req.method,
+        // req.route is only populated once a handler matched — fall back to the path.
+        route: `/api/v1/data-plane${req.route?.path ?? req.path}`,
+        path: req.originalUrl.split("?")[0],
+        status_code: res.statusCode,
+        duration_ms: durationMs,
+        api_key_prefix: token,
+      },
+      `${req.method} ${req.originalUrl.split("?")[0]} → ${res.statusCode}`,
     );
   });
+
   if (rateLimited(token, started)) {
+    log.warn(
+      { api_key_prefix: token, limit: RATE_LIMIT, window_ms: RATE_WINDOW_MS },
+      "Data-plane request rejected — rate limit exceeded",
+    );
     apiError(
       res,
       "rate_limited",

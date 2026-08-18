@@ -4,6 +4,8 @@
  * Disable with EVENT_PREFERENCE_SIMULATION_LOG=0.
  */
 
+import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 import type { StandardizedEvent } from "./common/types.js";
 
 /** Types that typically trigger downstream user-preference updates. */
@@ -28,5 +30,8 @@ export function logPreferenceSideEffectSimulation(event: StandardizedEvent): voi
     ...(event.idempotency_key ? { idempotency_key: event.idempotency_key } : {}),
     ...(event.metadata && Object.keys(event.metadata).length > 0 ? { metadata: event.metadata } : {}),
   };
-  console.log(`[Events][PreferenceSimulation] ${JSON.stringify(line)}`);
+  componentLogger(LogComponent.events).info(
+    { simulated: true, ...line },
+    "Preference side effect simulated — not forwarded"
+  );
 }

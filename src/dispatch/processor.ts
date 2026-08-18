@@ -4,7 +4,8 @@ import { registerCampaignCallback } from "../events/campaign-callback-registry.j
 import { resolveAnalyticsCallbackUrl } from "../events/resolve-analytics-callback-url.js";
 import { processImages, type ImageMapping } from "../images/handler.js";
 import { rewriteImageUrls } from "../images/rewriter.js";
-import { logUnlessVitest, warnUnlessVitest } from "../logging.js";
+import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 import { countFallbacks, personalize, resolvableTokens } from "../personalize.js";
 import { getProvider } from "../providers/index.js";
 import type { EmailMessage } from "../providers/types.js";
@@ -19,6 +20,8 @@ import { processWhatsAppDispatch } from "./whatsapp.js";
 import type { DispatchPayload } from "./types.js";
 
 export type { DispatchPayload } from "./types.js";
+
+const log = componentLogger(LogComponent.dispatchEmail);
 
 /** What a completed run reports back so the dispatch_runs row can be finished. */
 export type DispatchOutcome = {
@@ -44,8 +47,9 @@ export async function processDispatch(
 
   const { campaign_id, user_ids, content, metadata } = payload;
 
-  logUnlessVitest(
-    `[Dispatch] Processing campaign ${campaign_id}: ${user_ids.length} users`
+  log.info(
+    { recipients: user_ids.length, channel: "email", has_images: Boolean(payload.images?.length) },
+    "Dispatch started"
   );
 
   const resolvedAnalyticsUrl =
@@ -102,10 +106,13 @@ export async function processDispatch(
   });
   /** Per recipient, how many referenced variables fell back. Keyed by user id. */
   const fallbackCounts = new Map<string, number>();
+  /** Counted, not derived: DEV mode breaks the loop early, so messages.length lies. */
+  let unresolved = 0;
 
   if (devRecipient && (await hasDevSentCampaign(campaign_id))) {
-    logUnlessVitest(
-      `[Dispatch] DEV mode — campaign ${campaign_id} already routed to ${devRecipient} this run, skipping`
+    log.info(
+      { dev_mode: true },
+      "Dispatch skipped — DEV_RECIPIENT_EMAIL already received this campaign"
     );
     return { sent: 0, failed: 0 };
   }
@@ -115,7 +122,8 @@ export async function processDispatch(
   for (const userId of user_ids) {
     const user = users.get(userId);
     if (!user) {
-      warnUnlessVitest(`[Dispatch] User ${userId} not found in database, skipping`);
+      unresolved += 1;
+      log.debug({ user_id: userId }, "Recipient not found in user lookup — skipped");
       sendLogs.add({
         user_id: userId,
         status: "failed",
@@ -173,14 +181,26 @@ export async function processDispatch(
 
     if (devRecipient) {
       await markDevSentCampaign(campaign_id);
-      logUnlessVitest(
-        `[Dispatch] DEV mode — routing campaign ${campaign_id} (${user_ids.length} recipients) to ${devRecipient}, one email per campaign`
+      log.warn(
+        { dev_mode: true, recipients: user_ids.length },
+        "DEV mode — routing the whole campaign to DEV_RECIPIENT_EMAIL, one message only"
       );
       break;
     }
   }
 
-  logUnlessVitest(`[Dispatch] Sending ${messages.length} emails via ${provider.name}`);
+  if (unresolved > 0) {
+    // Aggregated on purpose: the per-recipient detail is at debug above, and in
+    // dispatch_send_logs with error_category=user_not_found.
+    log.warn(
+      { provider: provider.name, requested: user_ids.length, unresolved },
+      `${unresolved} of ${user_ids.length} recipients could not be resolved`
+    );
+  }
+  log.info(
+    { provider: provider.name, count: messages.length, tokens_used: usedTokens.length },
+    "Personalization complete — handing messages to the provider"
+  );
 
   const sendResults: Array<{
     userId: string;
@@ -188,6 +208,7 @@ export async function processDispatch(
     messageId?: string;
     error?: string;
   }> = [];
+  let failureCount = 0;
 
   for (const { userId, message } of messages) {
     // Times the provider call alone. dispatch_runs.duration_ms measures the whole
@@ -202,6 +223,23 @@ export async function processDispatch(
         provider: provider.name,
         channel: "email",
       });
+      // The first failure carries the provider's reason at warn; the rest go to
+      // debug and are summarised by the completion line. A 50,000-recipient run
+      // that fails entirely should not write 50,000 warn rows to find that out.
+      const level = failureCount === 0 ? "warn" : "debug";
+      failureCount += 1;
+      log[level](
+        {
+          user_id: userId,
+          provider: provider.name,
+          error_category: "delivery_failure",
+          error_message: result.error ?? "provider send failed",
+          duration_ms: latencyMs,
+        },
+        failureCount === 1
+          ? "Provider rejected a message — first failure of this run"
+          : "Provider rejected a message"
+      );
     }
     sendLogs.add({
       user_id: userId,
@@ -246,8 +284,14 @@ export async function processDispatch(
         },
       },
     });
-    logUnlessVitest(
-      `[Dispatch] event emitted user=${userId} event=${result.success ? "dispatched" : "failed"} messageId=${result.messageId ?? "unknown"}`
+    log.debug(
+      {
+        user_id: userId,
+        event: result.success ? "dispatched" : "failed",
+        provider_message_id: result.messageId ?? null,
+        duration_ms: latencyMs,
+      },
+      "Send event emitted"
     );
   }
 
@@ -256,8 +300,22 @@ export async function processDispatch(
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;
 
-  logUnlessVitest(
-    `[Dispatch] Campaign ${campaign_id}: ${sent} sent, ${failed} failed (events emitted via pipeline)`
+  const fallbacksUsed = [...fallbackCounts.values()].reduce((a, b) => a + b, 0);
+  // Completion is the line an operator finds first, so it carries the whole
+  // shape of the run: what was asked for, what happened, and how personalized
+  // it actually was.
+  log[failed > 0 ? "warn" : "info"](
+    {
+      provider: provider.name,
+      channel: "email",
+      requested: user_ids.length,
+      sent,
+      failed,
+      unresolved,
+      fallbacks_used: fallbacksUsed,
+      resolutions_total: messages.length * usedTokens.length,
+    },
+    `Dispatch completed — ${sent} sent, ${failed} failed`
   );
   telemetry.capture("dispatcher_dispatch_completed", {
     channel: "email",
@@ -274,6 +332,6 @@ export async function processDispatch(
     // Only recipients that produced a message were resolved at all — a
     // user_not_found recipient never reached personalize().
     resolution_total: messages.length * usedTokens.length,
-    resolution_fallbacks: [...fallbackCounts.values()].reduce((a, b) => a + b, 0),
+    resolution_fallbacks: fallbacksUsed,
   };
 }
