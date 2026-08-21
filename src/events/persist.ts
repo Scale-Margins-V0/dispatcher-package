@@ -66,6 +66,12 @@ export function campaignEventRowFromStandardized(
     provider_message_id: event.provider_message_id
       ? event.provider_message_id.slice(0, ID_MAX)
       : null,
+    sender_id:
+      typeof event.metadata?.sender_id === "string"
+        ? (event.metadata.sender_id as string).slice(0, ID_MAX)
+        : typeof (event as any).sender_id === "string"
+          ? ((event as any).sender_id as string).slice(0, ID_MAX)
+          : null,
     occurred_at: Number.isNaN(occurred.getTime()) ? receivedAt : occurred,
     received_at: receivedAt,
     metadata: (event.metadata as Record<string, unknown> | undefined) ?? null,

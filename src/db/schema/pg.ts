@@ -175,6 +175,7 @@ export const campaignEvents = pgTable(
     event: varchar("event", { length: 24 }).notNull(),
     provider: varchar("provider", { length: 32 }).notNull(),
     provider_message_id: id191("provider_message_id"),
+    sender_id: id191("sender_id"),
     occurred_at: ts("occurred_at").notNull(),
     received_at: ts("received_at").notNull(),
     metadata: jsonb("metadata"),
