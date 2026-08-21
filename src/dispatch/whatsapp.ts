@@ -7,13 +7,16 @@ import { LogComponent } from "../logging/conventions.js";
 import {
   buildWhatsAppMediaMessageForUser,
   buildWhatsAppMessageForUser,
-  GupshupWhatsAppProvider,
   parseWhatsAppMediaSpec,
   parseWhatsAppTemplateSpec,
   resolveDevTestRecipient,
   resolveRecipientPhone,
   resolveTemplateId,
 } from "../providers/gupshup-whatsapp.js";
+import {
+  resolveSenderChainForRecipient,
+  sendWithFailover,
+} from "../providers/senders.js";
 import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
 import { programOf } from "../db/repos/dispatch-programs.js";
@@ -40,15 +43,7 @@ export async function processWhatsAppDispatch(
   );
 
   const mediaSpec = parseWhatsAppMediaSpec(content, payload.images);
-  const templateSpec = mediaSpec ? null : parseWhatsAppTemplateSpec(content);
-
-  if (!mediaSpec && !templateSpec) {
-    throw new Error(
-      "WhatsApp dispatch requires content.caption (+ media_url), template JSON in content.text_body/html_body, " +
-        "GUPSHUP_DEFAULT_TEMPLATE / GUPSHUP_EVENT_TEST_TEMPLATE env, or " +
-        "GUPSHUP_EVENT_TEST_CAPTION + GUPSHUP_EVENT_TEST_MEDIA_URL for GatewayAPI media send"
-    );
-  }
+  let templateSpec = mediaSpec ? null : parseWhatsAppTemplateSpec(content);
 
   const resolvedAnalyticsUrl =
     resolveAnalyticsCallbackUrl({
@@ -68,7 +63,6 @@ export async function processWhatsAppDispatch(
   };
 
   const users = await lookupUsers(user_ids);
-  const provider = new GupshupWhatsAppProvider();
   const devRecipient = resolveDevTestRecipient();
 
   const program = programOf(payload);
@@ -79,7 +73,7 @@ export async function processWhatsAppDispatch(
     step_id: program.step_id,
     organization_id: metadata.organization_id ?? null,
     channel: "whatsapp",
-    provider: "gupshup",
+    provider: metadata.sender_id || "gupshup",
     // Unlike email, this is a real provider-registered template id.
     template_ref: deriveTemplateRef(
       payload,
@@ -90,6 +84,7 @@ export async function processWhatsAppDispatch(
   const sendResults: Array<{
     userId: string;
     success: boolean;
+    senderId?: string;
     messageId?: string;
     error?: string;
   }> = [];
@@ -138,6 +133,51 @@ export async function processWhatsAppDispatch(
       continue;
     }
 
+    const chain = resolveSenderChainForRecipient(
+      userId,
+      "whatsapp",
+      metadata.organization_id,
+      {
+        sender_id: metadata.sender_id,
+        sender_strict: metadata.sender_strict,
+      }
+    );
+
+    if (chain.length === 0) {
+      unresolved += 1;
+      log.warn(
+        { user_id: userId, organization_id: metadata.organization_id },
+        "No enabled sender found for organization on WhatsApp channel"
+      );
+      sendLogs.add({
+        user_id: userId,
+        status: "failed",
+        error_category: "no_sender_for_organization",
+        error_message: `No WhatsApp sender configured for org ${metadata.organization_id}`,
+      });
+      await emitWhatsAppEvent({
+        campaign_id,
+        userId,
+        metadata,
+        resolvedAnalyticsUrl,
+        payload,
+        success: false,
+        error: "no_sender_for_organization",
+      });
+      continue;
+    }
+
+    if (!mediaSpec && !templateSpec) {
+      const senderDefaultTemplate = chain[0]?.config.gupshup?.default_template;
+      templateSpec = parseWhatsAppTemplateSpec(content, senderDefaultTemplate);
+      if (!templateSpec) {
+        throw new Error(
+          "WhatsApp dispatch requires content.caption (+ media_url), template JSON in content.text_body/html_body, " +
+            "sender default_template, or GUPSHUP_DEFAULT_TEMPLATE env"
+        );
+      }
+    }
+
     if (devRecipient) {
       log.warn(
         { dev_mode: true },
@@ -170,22 +210,22 @@ export async function processWhatsAppDispatch(
         );
 
     const sendStartedAt = performance.now();
-    const result = await provider.send(message);
+    const result = await sendWithFailover(message, chain, "whatsapp");
     const latencyMs = Math.round(performance.now() - sendStartedAt);
+
     if (!result.success) {
       telemetry.capture("dispatcher_provider_send_failed", {
         provider: "gupshup",
         channel: "whatsapp",
       });
-      // First failure loud, the rest counted — see the same pattern in
-      // processor.ts. The completion line carries the total.
       const level = failureCount === 0 ? "warn" : "debug";
       failureCount += 1;
       log[level](
         {
           user_id: userId,
+          sender_id: result.finalSender.config.id,
           provider: "gupshup",
-          error_category: "delivery_failure",
+          error_category: result.error_category || "delivery_failure",
           error_message: result.error ?? "provider send failed",
           duration_ms: latencyMs,
         },
@@ -202,13 +242,15 @@ export async function processWhatsAppDispatch(
       ...(result.success
         ? {}
         : {
-            error_category: "delivery_failure",
+            error_category: result.error_category || "delivery_failure",
             error_message: result.error ?? "provider send failed",
           }),
+      fallbacks_used: result.attempts.length > 1 ? result.attempts.length - 1 : 0,
     });
     sendResults.push({
       userId,
       success: result.success,
+      senderId: result.finalSender.config.id,
       messageId: result.messageId,
       error: result.error,
     });
@@ -219,6 +261,7 @@ export async function processWhatsAppDispatch(
       metadata,
       resolvedAnalyticsUrl,
       payload,
+      senderId: result.finalSender.config.id,
       success: result.success,
       messageId: result.messageId,
       error: result.error,
@@ -267,6 +310,7 @@ async function emitWhatsAppEvent(args: {
   metadata: DispatchPayload["metadata"];
   resolvedAnalyticsUrl: string;
   payload: DispatchPayload;
+  senderId?: string;
   success: boolean;
   messageId?: string;
   error?: string;
@@ -277,6 +321,7 @@ async function emitWhatsAppEvent(args: {
     metadata,
     resolvedAnalyticsUrl,
     payload,
+    senderId,
     success,
     messageId,
     error,
@@ -322,6 +367,7 @@ async function emitWhatsAppEvent(args: {
       occurred_at: new Date().toISOString(),
       metadata: {
         ...(effectiveError ? { bounce_reason: effectiveError } : {}),
+        ...(senderId ? { sender_id: senderId } : {}),
         ...(dispatch_id ? { dispatch_id } : {}),
         ...(sign ? { sign } : {}),
       },

@@ -70,6 +70,8 @@ import {
 import { telemetry } from "./telemetry/posthog.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
+import { ensureEnvYamlValid } from "./env-yaml.js";
+import { resolveSenderPin } from "./providers/senders.js";
 
 // ---------------------------------------------------------------------------
 // Startup validation — fail fast on missing config
@@ -118,6 +120,14 @@ try {
 } catch (error) {
   telemetry.captureException(error, { component: "dispatch_config" });
   console.error("[FATAL] Dispatch configuration invalid:", error);
+  process.exit(1);
+}
+
+try {
+  ensureEnvYamlValid();
+} catch (error) {
+  telemetry.captureException(error, { component: "env_yaml_config" });
+  console.error("[FATAL] Multi-sender .env.yaml invalid:", error);
   process.exit(1);
 }
 
@@ -330,6 +340,24 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   const startedAt = performance.now();
   bindCampaignId(String(payload.campaign_id ?? "unknown"));
 
+  // Synchronous pin / organization validation before accepting
+  const pinResult = resolveSenderPin(payload);
+  if (!pinResult.ok) {
+    dispatchLog.warn(
+      {
+        channel: payload.channel,
+        organization_id: payload.metadata?.organization_id,
+        pin_error: pinResult.error,
+      },
+      "Dispatch request rejected due to invalid sender pin or unauthorized organization"
+    );
+    res.status(400).json({
+      accepted: false,
+      error: pinResult.error,
+    });
+    return;
+  }
+
   dispatchLog.info(
     {
       channel: payload.channel,
@@ -364,6 +392,8 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   });
   res.status(202).json({
     accepted: true,
+    dispatch_id: activityId,
+    dispatchId: activityId,
     message: "Campaign dispatch received",
   });
 

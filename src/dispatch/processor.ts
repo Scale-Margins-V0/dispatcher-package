@@ -7,8 +7,11 @@ import { rewriteImageUrls } from "../images/rewriter.js";
 import { componentLogger } from "../logging/logger.js";
 import { LogComponent } from "../logging/conventions.js";
 import { countFallbacks, personalize, resolvableTokens } from "../personalize.js";
-import { getProvider } from "../providers/index.js";
-import type { EmailMessage } from "../providers/types.js";
+import {
+  resolveSenderChainForRecipient,
+  sendWithFailover,
+} from "../providers/senders.js";
+import type { EmailMessage, Sender } from "../providers/types.js";
 import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
 import { resolveDynamicValues } from "../variables/resolver.js";
@@ -90,7 +93,6 @@ export async function processDispatch(
     imageMappings = await processImages(payload.images, campaign_id);
   }
 
-  const provider = getProvider();
   const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
 
   const program = programOf(payload);
@@ -101,7 +103,7 @@ export async function processDispatch(
     step_id: program.step_id,
     organization_id: metadata.organization_id ?? null,
     channel: "email",
-    provider: provider.name,
+    provider: metadata.sender_id || "multi",
     template_ref: deriveTemplateRef(payload),
   });
   /** Per recipient, how many referenced variables fell back. Keyed by user id. */
@@ -117,7 +119,7 @@ export async function processDispatch(
     return { sent: 0, failed: 0 };
   }
 
-  const messages: Array<{ userId: string; message: EmailMessage }> = [];
+  const messages: Array<{ userId: string; message: EmailMessage; chain: Sender[] }> = [];
 
   for (const userId of user_ids) {
     const user = users.get(userId);
@@ -159,8 +161,55 @@ export async function processDispatch(
 
     const recipientEmail = devRecipient || user.email;
 
+    const chain = resolveSenderChainForRecipient(
+      userId,
+      "email",
+      metadata.organization_id,
+      {
+        sender_id: metadata.sender_id,
+        from_email: metadata.from_email,
+        sender_strict: metadata.sender_strict,
+      }
+    );
+
+    if (chain.length === 0) {
+      unresolved += 1;
+      log.warn(
+        { user_id: userId, organization_id: metadata.organization_id },
+        "No enabled sender found for organization on email channel"
+      );
+      sendLogs.add({
+        user_id: userId,
+        status: "failed",
+        error_category: "no_sender_for_organization",
+        error_message: `No sender configured for org ${metadata.organization_id}`,
+      });
+      await emitEvent({
+        callbackUrl: resolvedAnalyticsUrl,
+        event: {
+          campaign_id,
+          user_id: userId,
+          organization_id: metadata.organization_id,
+          analytics_callback_url: resolvedAnalyticsUrl,
+          channel: "email",
+          event: "failed",
+          provider: "ses",
+          provider_message_id: "unknown",
+          occurred_at: new Date().toISOString(),
+          metadata: {
+            bounce_reason: "no_sender_for_organization",
+            ...(payload.dispatch_ids?.[userId]
+              ? { dispatch_id: payload.dispatch_ids[userId] }
+              : {}),
+          },
+        },
+      });
+      continue;
+    }
+
     messages.push({
       userId,
+      chain,
       message: {
         to: recipientEmail,
         from: fromEmail,
@@ -190,50 +239,46 @@ export async function processDispatch(
   }
 
   if (unresolved > 0) {
-    // Aggregated on purpose: the per-recipient detail is at debug above, and in
-    // dispatch_send_logs with error_category=user_not_found.
     log.warn(
-      { provider: provider.name, requested: user_ids.length, unresolved },
-      `${unresolved} of ${user_ids.length} recipients could not be resolved`
+      { requested: user_ids.length, unresolved },
+      `${unresolved} of ${user_ids.length} recipients could not be resolved or had no sender`
     );
   }
   log.info(
-    { provider: provider.name, count: messages.length, tokens_used: usedTokens.length },
+    { count: messages.length, tokens_used: usedTokens.length },
     "Personalization complete — handing messages to the provider"
   );
 
   const sendResults: Array<{
     userId: string;
     success: boolean;
+    senderId: string;
+    provider: string;
     messageId?: string;
     error?: string;
   }> = [];
   let failureCount = 0;
 
-  for (const { userId, message } of messages) {
-    // Times the provider call alone. dispatch_runs.duration_ms measures the whole
-    // request, including lookup and personalization, so it cannot answer
-    // "is the provider slow?".
+  for (const { userId, message, chain } of messages) {
     const sendStartedAt = performance.now();
-    const result = await provider.send(message);
+    const result = await sendWithFailover(message, chain, "email");
     const latencyMs = Math.round(performance.now() - sendStartedAt);
 
     if (!result.success) {
       telemetry.capture("dispatcher_provider_send_failed", {
-        provider: provider.name,
+        provider: result.finalSender.config.provider,
         channel: "email",
       });
-      // The first failure carries the provider's reason at warn; the rest go to
-      // debug and are summarised by the completion line. A 50,000-recipient run
-      // that fails entirely should not write 50,000 warn rows to find that out.
       const level = failureCount === 0 ? "warn" : "debug";
       failureCount += 1;
       log[level](
         {
           user_id: userId,
-          provider: provider.name,
-          error_category: "delivery_failure",
+          sender_id: result.finalSender.config.id,
+          provider: result.finalSender.config.provider,
+          error_category: result.error_category || "delivery_failure",
           error_message: result.error ?? "provider send failed",
+          attempts: result.attempts.length,
           duration_ms: latencyMs,
         },
         failureCount === 1
@@ -241,6 +286,7 @@ export async function processDispatch(
           : "Provider rejected a message"
       );
     }
+
     sendLogs.add({
       user_id: userId,
       status: result.success ? "sent" : "failed",
@@ -249,20 +295,22 @@ export async function processDispatch(
       ...(result.success
         ? {}
         : {
-            error_category: "delivery_failure",
+            error_category: result.error_category || "delivery_failure",
             error_message: result.error ?? "provider send failed",
           }),
-      fallbacks_used: fallbackCounts.get(userId) ?? 0,
+      fallbacks_used:
+        (fallbackCounts.get(userId) ?? 0) +
+        (result.attempts.length > 1 ? result.attempts.length - 1 : 0),
     });
+
     sendResults.push({
       userId,
       success: result.success,
+      senderId: result.finalSender.config.id,
+      provider: result.finalSender.config.provider,
       messageId: result.messageId,
       error: result.error,
     });
-
-    const emailProvider = (process.env.EMAIL_PROVIDER || "ses").toLowerCase();
-    const inboundProvider = emailProvider === "sendgrid" ? "sendgrid" : "ses";
 
     await emitEvent({
       callbackUrl: resolvedAnalyticsUrl,
@@ -273,11 +321,13 @@ export async function processDispatch(
         analytics_callback_url: resolvedAnalyticsUrl,
         channel: "email",
         event: result.success ? "dispatched" : "failed",
-        provider: inboundProvider,
+        provider: result.finalSender.config.provider,
         provider_message_id: result.messageId ?? "unknown",
         occurred_at: new Date().toISOString(),
         metadata: {
           ...(result.error ? { bounce_reason: result.error } : {}),
+          sender_id: result.finalSender.config.id,
+          attempts: result.attempts.length,
           ...(payload.dispatch_ids?.[userId]
             ? { dispatch_id: payload.dispatch_ids[userId] }
             : {}),
@@ -288,6 +338,7 @@ export async function processDispatch(
       {
         user_id: userId,
         event: result.success ? "dispatched" : "failed",
+        sender_id: result.finalSender.config.id,
         provider_message_id: result.messageId ?? null,
         duration_ms: latencyMs,
       },
@@ -301,12 +352,8 @@ export async function processDispatch(
   const failed = sendResults.filter((r) => !r.success).length;
 
   const fallbacksUsed = [...fallbackCounts.values()].reduce((a, b) => a + b, 0);
-  // Completion is the line an operator finds first, so it carries the whole
-  // shape of the run: what was asked for, what happened, and how personalized
-  // it actually was.
   log[failed > 0 ? "warn" : "info"](
     {
-      provider: provider.name,
       channel: "email",
       requested: user_ids.length,
       sent,
@@ -319,7 +366,6 @@ export async function processDispatch(
   );
   telemetry.capture("dispatcher_dispatch_completed", {
     channel: "email",
-    provider: provider.name,
     requested_count: user_ids.length,
     resolved_count: messages.length,
     sent_count: sent,
@@ -329,8 +375,6 @@ export async function processDispatch(
   return {
     sent,
     failed,
-    // Only recipients that produced a message were resolved at all — a
-    // user_not_found recipient never reached personalize().
     resolution_total: messages.length * usedTokens.length,
     resolution_fallbacks: fallbacksUsed,
   };

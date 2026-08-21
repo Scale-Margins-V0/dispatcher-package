@@ -44,5 +44,8 @@ export type DispatchPayload = {
     campaign_name?: string;
     variant_id?: string;
     scheduled_at?: string | null;
+    sender_id?: string;
+    from_email?: string;
+    sender_strict?: boolean;
   };
 };

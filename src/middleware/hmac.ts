@@ -17,7 +17,8 @@ export function verifyHmacSignature(
   next: NextFunction
 ): void {
   const dispatchSecret = process.env.SCALEMARGIN_DISPATCH_SECRET || "";
-  const signature = req.headers["x-scalemargin-signature"] as string;
+  const signature =
+    (req.headers["x-scalemargin-signature"] || req.headers["x-dispatch-signature"]) as string | undefined;
   if (!signature || !signature.startsWith("sha256=")) {
     res.status(401).json({ error: "Invalid signature" });
     return;
@@ -31,18 +32,28 @@ export function verifyHmacSignature(
 
   // req.body should already be the raw string from express.text() middleware
   const rawBody = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
-
-  const expected = createHmac("sha256", dispatchSecret)
-    .update(rawBody)
-    .digest("hex");
   const provided = signature.slice("sha256=".length);
 
-  if (expected.length !== provided.length) {
-    res.status(401).json({ error: "Invalid signature" });
-    return;
+  const timestamp = (req.headers["x-dispatch-timestamp"] || req.headers["x-scalemargin-timestamp"]) as string | undefined;
+
+  const expectedStandard = createHmac("sha256", dispatchSecret)
+    .update(rawBody)
+    .digest("hex");
+
+  let isValid =
+    expectedStandard.length === provided.length &&
+    timingSafeEqual(Buffer.from(expectedStandard), Buffer.from(provided));
+
+  if (!isValid && timestamp) {
+    const expectedWithTimestamp = createHmac("sha256", dispatchSecret)
+      .update(`${timestamp}.${rawBody}`, "utf8")
+      .digest("hex");
+    isValid =
+      expectedWithTimestamp.length === provided.length &&
+      timingSafeEqual(Buffer.from(expectedWithTimestamp), Buffer.from(provided));
   }
 
-  if (!timingSafeEqual(Buffer.from(expected), Buffer.from(provided))) {
+  if (!isValid) {
     res.status(401).json({ error: "Invalid signature" });
     return;
   }
