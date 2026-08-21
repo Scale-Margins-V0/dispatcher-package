@@ -1,5 +1,5 @@
 user_lookup:
-  backend: sqlite
+  backend: postgres
 
   sqlite:
     file: ./data/dispatch.sqlite

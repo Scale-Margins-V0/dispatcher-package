@@ -1,0 +1,16 @@
+{
+  "campaign_id": "test-campaign-pinned-001",
+  "channel": "email",
+  "user_ids": ["sm-001", "USR004"],
+  "content": {
+    "subject": "Pinned Sender Test for {{first_name}}",
+    "html_body": "<p>Hi {{first_name}}, this message was routed through a pinned sender!</p>",
+    "text_body": "Hi {{first_name}}, this message was routed through a pinned sender!"
+  },
+  "metadata": {
+    "organization_id": "org_test_123",
+    "sender_id": "sendgrid-backup",
+    "sender_strict": false,
+    "analytics_callback_url": "http://127.0.0.1:3200/api/webhooks/campaign-analytics"
+  }
+}

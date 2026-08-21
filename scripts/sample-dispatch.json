@@ -1,0 +1,15 @@
+{
+  "campaign_id": "test-campaign-001",
+  "channel": "email",
+  "user_ids": ["sm-001", "sm-002", "USR004"],
+  "content": {
+    "subject": "Hello {{first_name}} — Testing Multi-Sender Dispatcher",
+    "html_body": "<h2>Welcome {{first_name}}!</h2><p>This is a test message for {{company_name}} sent via ScaleMargin internal dispatcher.</p><p><a href=\"{{unsubscribe_url}}\">Unsubscribe</a></p>",
+    "text_body": "Welcome {{first_name}}! This is a test message for {{company_name}}."
+  },
+  "metadata": {
+    "organization_id": "org_test_123",
+    "dispatch_kind": "campaign",
+    "analytics_callback_url": "http://127.0.0.1:3200/api/webhooks/campaign-analytics"
+  }
+}
