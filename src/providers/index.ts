@@ -46,6 +46,29 @@ export function getProvider(): EmailProvider {
   return _instance;
 }
 
+export function resetProviderForTests(): void {
+  _instance = null;
+}
+
 export { SESProvider } from "./ses.js";
 export { SendGridProvider } from "./sendgrid.js";
-export type { EmailProvider, EmailMessage, SendResult, BulkSendResult } from "./types.js";
+export { GupshupWhatsAppProvider } from "./gupshup-whatsapp.js";
+export {
+  registry,
+  sendWithFailover,
+  resolveSenderPin,
+  resolveSenderChainForRecipient,
+  orderForRecipient,
+  classifyError,
+} from "./senders.js";
+export type {
+  EmailProvider,
+  EmailMessage,
+  SendResult,
+  BulkSendResult,
+  Sender,
+  SenderConfig,
+  SenderChannel,
+  SenderProviderType,
+  SendAttempt,
+} from "./types.js";
