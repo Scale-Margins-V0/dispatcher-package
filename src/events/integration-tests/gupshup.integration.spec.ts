@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearCapturedLogs, findCapturedLogs } from "../../logging/test-capture.js";
 import {
   initializeEventPipeline,
   resetEventPipelineForTests,
@@ -156,8 +157,8 @@ describe("POST /api/scalemargin/gupshup-events (integration)", () => {
   });
 
   it("rejects a GatewayAPI receipt whose extra is missing or not smsign_", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
+    clearCapturedLogs();
+    {
       const raw = JSON.stringify([
         {
           channel: "WHATSAPP",
@@ -176,17 +177,17 @@ describe("POST /api/scalemargin/gupshup-events (integration)", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.receipts).toBe(0);
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("Rejecting receipt externalId=ext-unsigned-1")
+      const [rejected] = findCapturedLogs(
+        (entry) => entry.fields.error_category === "unsigned_receipt"
       );
-    } finally {
-      warn.mockRestore();
+      expect(rejected?.level).toBe("warn");
+      expect(rejected?.fields.external_id).toBe("ext-unsigned-1");
     }
   });
 
   it("warns and drops unknown gupshup status", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
+    clearCapturedLogs();
+    {
       const raw = JSON.stringify({
         type: "message-event",
         msgId: "gup-unknown-1",
@@ -210,11 +211,11 @@ describe("POST /api/scalemargin/gupshup-events (integration)", () => {
       expect(res.status).toBe(200);
       expect(res.body.count).toBe(0);
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(warn).toHaveBeenCalledWith(
-        "[Events][gupshup] Dropping event — unsupported status mapping: queued_elsewhere"
+      const [dropped] = findCapturedLogs(
+        (entry) => entry.fields.error_category === "unsupported_status"
       );
-    } finally {
-      warn.mockRestore();
+      expect(dropped?.level).toBe("warn");
+      expect(dropped?.fields.provider_status).toBe("queued_elsewhere");
     }
   });
 });

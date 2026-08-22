@@ -10,19 +10,72 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { admin, organization } from "better-auth/plugins";
 import type { DispatcherDb } from "../db/client.js";
 import { getDb } from "../db/state.js";
+import { componentLogger } from "../logging/logger.js";
 import { sendInvitationEmail } from "./invitations.js";
 import { resolveAuthSecret } from "./secret.js";
+
+const log = componentLogger("auth");
 
 export type DispatcherAuth = ReturnType<typeof buildAuth>;
 
 let singleton: DispatcherAuth | null = null;
 
-/** Public base URL used for invite links and secure-cookie inference. */
+/** `https://host[:port]` for a parseable absolute URL, else null. */
+function originOf(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    return null;
+  }
+}
+
+let warnedUnsubscribePath = false;
+
+/**
+ * Public base URL used as Better Auth's `baseURL`, for invite links, and for
+ * secure-cookie inference.
+ *
+ * `DISPATCHER_PUBLIC_URL` is taken verbatim (minus trailing slashes) because a
+ * deployment may legitimately mount the dispatcher under a path — see the ngrok
+ * double-proxy note in `.env.example`.
+ *
+ * `UNSUBSCRIBE_URL_BASE` is only a *fallback*, and it routinely carries a path
+ * (`…/unsubscribe`, `…/dispatch`) because that is what it is for. Feeding that
+ * path into Better Auth moves every auth route under it, so `/admin/api/auth/*`
+ * returns a bare 404 and admin sign-in fails with nothing in the logs. Take the
+ * origin only, and say so once at boot.
+ */
 export function authBaseURL(): string {
-  const explicit =
-    process.env.DISPATCHER_PUBLIC_URL?.trim() ||
-    process.env.UNSUBSCRIBE_URL_BASE?.trim();
+  const explicit = process.env.DISPATCHER_PUBLIC_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
+
+  const fallback = process.env.UNSUBSCRIBE_URL_BASE?.trim();
+  if (fallback) {
+    const origin = originOf(fallback);
+    if (origin) {
+      if (
+        origin !== fallback.replace(/\/+$/, "") &&
+        !warnedUnsubscribePath &&
+        process.env.VITEST !== "true"
+      ) {
+        warnedUnsubscribePath = true;
+        log.warn(
+          `UNSUBSCRIBE_URL_BASE ("${fallback}") includes a path; using origin "${origin}" ` +
+            "for the admin console instead. Set DISPATCHER_PUBLIC_URL to control this explicitly."
+        );
+      }
+      return origin;
+    }
+    if (process.env.VITEST !== "true") {
+      log.warn(
+        `UNSUBSCRIBE_URL_BASE ("${fallback}") is not a valid absolute URL — falling back to localhost. ` +
+          "Set DISPATCHER_PUBLIC_URL to the console's public origin."
+      );
+    }
+  }
+
   const port = process.env.PORT || "3100";
   return `http://localhost:${port}`;
 }
@@ -42,10 +95,13 @@ function useSecureCookies(): boolean {
  * which would otherwise be rejected as an invalid origin.
  */
 export function authTrustedOrigins(): string[] {
-  const origins = new Set<string>([authBaseURL()]);
+  // Entries are matched against a request's Origin header, which never carries
+  // a path — so normalize to origins. A configured value with a path silently
+  // matches nothing.
+  const origins = new Set<string>([originOf(authBaseURL()) ?? authBaseURL()]);
   for (const entry of (process.env.DISPATCHER_TRUSTED_ORIGINS ?? "").split(",")) {
     const trimmed = entry.trim().replace(/\/+$/, "");
-    if (trimmed) origins.add(trimmed);
+    if (trimmed) origins.add(originOf(trimmed) ?? trimmed);
   }
   if (process.env.NODE_ENV !== "production") {
     const devPort = process.env.ADMIN_DEV_PORT || "5173";

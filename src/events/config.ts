@@ -2,6 +2,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
+import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 
 const providerBlock = z.object({
   enabled: z.boolean(),
@@ -124,20 +126,27 @@ export function logResolvedEventsConfig(cfg: EventsConfig): void {
   if (!isEventDebug()) {
     return;
   }
-  console.log(
-    "[Events] resolved config:",
-    JSON.stringify({
+  // Env var *names*, never their values — knowing which key is consulted is
+  // useful; the secret itself is not something to write to a log table.
+  componentLogger(LogComponent.config).debug(
+    {
       forward: cfg.forward,
-      delivery: {
-        mode: cfg.delivery.mode,
-        buffer: { kind: cfg.delivery.buffer.kind, max_events_memory: cfg.delivery.buffer.max_events_memory },
-      },
+      delivery_mode: cfg.delivery.mode,
+      buffer_kind: cfg.delivery.buffer.kind,
+      buffer_max_events: cfg.delivery.buffer.max_events_memory,
       providers: {
-        sendgrid: { enabled: cfg.providers.sendgrid.enabled, signing_key_env: cfg.providers.sendgrid.signing_key_env },
+        sendgrid: {
+          enabled: cfg.providers.sendgrid.enabled,
+          signing_key_env: cfg.providers.sendgrid.signing_key_env,
+        },
         ses: { enabled: cfg.providers.ses.enabled },
-        gupshup: { enabled: cfg.providers.gupshup.enabled, secret_env: cfg.providers.gupshup.secret_env },
+        gupshup: {
+          enabled: cfg.providers.gupshup.enabled,
+          secret_env: cfg.providers.gupshup.secret_env,
+        },
       },
-    })
+    },
+    "Resolved events configuration"
   );
 }
 
@@ -215,10 +224,10 @@ export function assertEventsConfigEnv(cfg: EventsConfig): void {
   if (cfg.providers.gupshup.enabled) {
     const s = gupshupSecretEnvName(cfg);
     if (!process.env[s]?.trim()) {
-      console.warn(
-        `[events] Gupshup inbound webhook is OPEN — ${s} is not set, so incoming ` +
-          `signatures are NOT verified. POST /api/scalemargin/gupshup-events accepts ` +
-          `unauthenticated payloads.`
+      componentLogger(LogComponent.config).warn(
+        { provider: "gupshup", secret_env: s, error_category: "unauthenticated_webhook" },
+        "Gupshup inbound webhook is OPEN — the signing secret is unset, so " +
+          "POST /api/scalemargin/gupshup-events accepts unauthenticated payloads"
       );
     }
   }

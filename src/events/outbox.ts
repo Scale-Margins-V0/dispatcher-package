@@ -18,10 +18,21 @@ import {
 } from "../db/repos/outbox.js";
 import type { OutboxRow } from "../db/schema/index.js";
 import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 import type { EventEnvelope, StandardizedEvent } from "./common/types.js";
 import { buildPayloadForGroup, postAnalyticsWithRetry } from "./forwarder.js";
 
-const log = componentLogger("events.outbox");
+const log = componentLogger(LogComponent.eventsOutbox);
+
+/** Origin + path only. A callback URL can carry a token in its query string. */
+function safeUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "invalid destination";
+  }
+}
 
 const BACKOFF_BASE_MS = 30_000;
 const BACKOFF_CAP_MS = 60 * 60 * 1000; // 60 minutes
@@ -136,13 +147,32 @@ export async function deliverDueBatch(
         terminal,
       });
       failed += group.ids.length;
-      if (terminal) {
-        log.warn(
-          { campaign_id: group.campaign_id, attempts },
-          `Outbox events exhausted retries for ${group.callbackUrl}`
-        );
-      }
+      // Every attempt is logged, not only the last. A callback that has been
+      // failing for an hour is the reason analytics went quiet, and waiting for
+      // attempt 10 to say so is nine attempts too late.
+      log[terminal ? "error" : "warn"](
+        {
+          campaign_id: group.campaign_id,
+          organization_id: group.organization_id,
+          destination: safeUrl(group.callbackUrl),
+          count: group.ids.length,
+          attempts,
+          max_attempts: limitAttempts,
+          terminal,
+          error_message: result.error ?? "delivery failed",
+        },
+        terminal
+          ? `Outbox delivery abandoned after ${attempts} attempts — these events are lost`
+          : `Outbox delivery failed (attempt ${attempts}/${limitAttempts}) — will retry`
+      );
     }
+  }
+
+  if (delivered > 0 || failed > 0) {
+    log.info(
+      { delivered, failed, groups: groupDueRows(due).length },
+      `Outbox batch complete — ${delivered} delivered, ${failed} failed`
+    );
   }
 
   return { delivered, failed };

@@ -7,6 +7,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
+import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 import { getPlaceholderSnapshot } from "../variables/service.js";
 import type { IdType } from "./mapper.js";
 
@@ -15,10 +17,7 @@ function isVitest(): boolean {
   return process.env.VITEST === "true";
 }
 
-function warnUnlessVitest(...args: Parameters<typeof console.warn>): void {
-  if (isVitest()) return;
-  console.warn(...args);
-}
+const log = componentLogger(LogComponent.config);
 
 const backendEnum = z.enum(["mysql", "postgres", "sqlite", "http", "mock"]);
 
@@ -220,8 +219,9 @@ function applyBackendEnvOverride(config: DispatchConfig): DispatchConfig {
   if (!override) return config;
   const b = backendEnum.safeParse(override);
   if (!b.success) {
-    warnUnlessVitest(
-      `[Config] Ignoring invalid USER_LOOKUP_BACKEND=${JSON.stringify(override)}`
+    log.warn(
+      { value: override, error_category: "invalid_env" },
+      "Ignoring USER_LOOKUP_BACKEND — not a supported backend"
     );
     return config;
   }
@@ -240,8 +240,10 @@ export function loadDispatchConfigFromDisk(): DispatchConfig {
   cachedPath = path;
 
   if (!existsSync(path)) {
-    warnUnlessVitest(
-      `[Config] No dispatch config at ${path} — using built-in mock user lookup + default placeholders.`
+    log.warn(
+      { path, error_category: "missing_config" },
+      "No dispatch config found — falling back to the built-in MOCK user lookup, " +
+        "which resolves fabricated recipients and never reads a real database"
     );
     cached = DEFAULT_DISPATCH_CONFIG;
     return applyBackendEnvOverride(cached);
@@ -307,8 +309,9 @@ export function ensureDispatchConfigLoaded(): void {
       !existsSync(file) &&
       process.env.VITEST !== "true"
     ) {
-      console.warn(
-        `[Config] SQLite database file does not exist yet (${file}); it will be created on first write if your flow creates it.`
+      log.warn(
+        { path: file, error_category: "missing_database" },
+        "Configured SQLite lookup database does not exist yet — it will be created on first write"
       );
     }
   }
@@ -325,8 +328,10 @@ export function ensureDispatchConfigLoaded(): void {
   }
 
   if (!cfg.user_lookup.fields.email) {
-    warnUnlessVitest(
-      "[Config] user_lookup.fields should include an `email` mapping — outbound mail needs a recipient."
+    log.warn(
+      { error_category: "incomplete_field_map" },
+      "user_lookup.fields has no `email` mapping — every recipient will be unresolvable " +
+        "and no email can be addressed"
     );
   }
 }

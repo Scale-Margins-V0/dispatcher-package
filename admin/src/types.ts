@@ -447,3 +447,26 @@ export interface ApiKeyRecord {
   last_used_at: string | null;
   revoked_at: string | null;
 }
+
+export interface ConnectionEndpoint {
+  method: string;
+  path: string;
+  purpose: string;
+}
+
+/** What an operator copies into Atlas, plus the fixed endpoint contract. */
+export interface ConnectionInfo {
+  base_url: string;
+  api_version: string;
+  configured_public_url: boolean;
+  /** Name of the env var holding the Atlas key — never the value. */
+  atlas_key_env: string;
+  atlas_key_configured: boolean;
+  atlas_key_warning: string | null;
+  /** Origins allowed to call the external API from a browser; empty = disabled. */
+  cors_env: string;
+  cors_origins: string[];
+  cors_warning: string | null;
+  endpoints: ConnectionEndpoint[];
+  internal_endpoints: ConnectionEndpoint[];
+}

@@ -1,8 +1,10 @@
 /**
  * App-wide structured logger: JSON to stdout (pretty in a dev TTY) plus the
  * batched app_logs DB sink. request_id/campaign_id are stamped from
- * AsyncLocalStorage via mixin. Silent under vitest — matching the historical
- * logUnlessVitest behavior.
+ * AsyncLocalStorage via mixin.
+ *
+ * Call sites use componentLogger(name) and the (fields, message) form — see
+ * ./conventions.ts for the field names and the level discipline.
  */
 
 import { createRequire } from "node:module";
@@ -10,6 +12,7 @@ import pino from "pino";
 import { logContext } from "./context.js";
 import { dbLogSink } from "./db-sink.js";
 import { logWebhookSink } from "./webhook-sink.js";
+import { testCaptureStream } from "./test-capture.js";
 
 const isVitest = process.env.VITEST === "true";
 const level = process.env.DISPATCHER_LOG_LEVEL || "info";
@@ -35,8 +38,15 @@ function stdoutStream(): pino.StreamEntry {
   return { stream: process.stdout };
 }
 
+/**
+ * Under vitest the only sink is an in-memory buffer (./test-capture.ts):
+ * nothing reaches stdout or the database, but a spec can still assert that a
+ * path logged what it should. Fully silencing the logger — the previous
+ * behaviour — meant any test covering a warning had to spy on `console`, and
+ * quietly stopped testing anything the moment that call site was modernized.
+ */
 const streams: pino.StreamEntry[] = isVitest
-  ? []
+  ? [{ level: "trace", stream: testCaptureStream }]
   : [
       stdoutStream(),
       { level: "info", stream: dbLogSink },
@@ -46,7 +56,7 @@ const streams: pino.StreamEntry[] = isVitest
 
 export const logger = pino(
   {
-    level: isVitest ? "silent" : level,
+    level: isVitest ? "trace" : level,
     mixin: () => ({ ...logContext.getStore() }),
   },
   pino.multistream(streams)

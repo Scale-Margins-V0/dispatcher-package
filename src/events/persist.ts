@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { isDbInitialized } from "../db/client.js";
 import { insertCampaignEvents } from "../db/repos/campaign-events.js";
+import { refreshCampaignSummarySafe } from "../db/repos/campaign-summary.js";
 import { resolveProgram, type ProgramRef } from "../db/repos/dispatch-programs.js";
 import type { CampaignEventRow } from "../db/schema/index.js";
 import { componentLogger } from "../logging/logger.js";
@@ -79,19 +80,25 @@ export async function persistCampaignEvents(events: StandardizedEvent[]): Promis
     // A drip send's wire id names one recipient-step; resolve it back to the
     // sequence so the console groups by program rather than by send.
     const programs = await resolveProgram(events.map((event) => event.campaign_id));
-    await insertCampaignEvents(
-      events.map((event) =>
-        campaignEventRowFromStandardized(
-          event,
-          now,
-          programs.get(event.campaign_id) ?? {
-            program_id: event.campaign_id,
-            program_kind: "campaign",
-            step_id: null,
-          }
-        )
+    const rows = events.map((event) =>
+      campaignEventRowFromStandardized(
+        event,
+        now,
+        programs.get(event.campaign_id) ?? {
+          program_id: event.campaign_id,
+          program_kind: "campaign",
+          step_id: null,
+        }
       )
     );
+    await insertCampaignEvents(rows);
+
+    // Refresh the durable rollup for every program this batch touched. Coalesced
+    // to one recompute per program per batch — a 500-event webhook for one
+    // campaign costs a single grouped query, not 500.
+    for (const programId of new Set(rows.map((row) => row.program_id))) {
+      refreshCampaignSummarySafe(programId);
+    }
   } catch (error) {
     log.warn(
       `[Events] Could not persist ${events.length} campaign event(s) for the console: ${

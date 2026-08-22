@@ -286,6 +286,17 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .compact-list dd { margin: 0; font: 11.5px var(--mono); }
 .compact-list.spaced { margin-top: 10px; }
 .configuration-secrets { max-width: 560px; }
+/* Server API panels hold endpoint and key tables — full content width, unlike
+   the narrow secrets card above. */
+.server-api-block { display: flex; flex-direction: column; gap: 16px; }
+.server-api-block .panel { padding: 20px; }
+.server-api-block .credential-list { margin-top: 14px; }
+.server-api-block .table-wrap { margin-top: 14px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
+.server-api-block .check-message { margin-top: 8px; color: var(--amber); font-size: 11.5px; }
+.server-api-block .api-key-empty { margin-top: 16px; }
+.server-api-block .invite-result { margin-top: 12px; }
+.code-block { margin: 14px 0 0; padding: 12px 14px; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+.code-block code { color: var(--muted); font: 11.5px/1.7 var(--mono); white-space: pre; }
 .hero-panel { display: flex; align-items: center; gap: 16px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); }
 .hero-mark { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 13px; }
 .hero-mark.green { color: var(--green); background: var(--green-soft); }

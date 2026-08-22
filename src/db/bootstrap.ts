@@ -9,6 +9,7 @@ import { refreshLogWebhookConfig } from "../logging/webhook-config.js";
 import { warmCampaignCallbackCache } from "../events/campaign-callback-registry.js";
 import { importYamlPlaceholdersOnce } from "../variables/import-yaml.js";
 import { backfillCampaignEventsOnce } from "./campaign-events-backfill.js";
+import { backfillCampaignSummariesOnce } from "./campaign-summary-backfill.js";
 import { createDispatcherDb, isDbInitialized, getDb, setDbSingleton, type DispatcherDb } from "./client.js";
 import { runDispatcherMigrations } from "./migrate.js";
 import { startRetentionJob } from "./retention.js";
@@ -22,6 +23,8 @@ export async function initDispatcherDb(): Promise<DispatcherDb> {
   await seedDefaultAdmin();
   await importYamlPlaceholdersOnce();
   await backfillCampaignEventsOnce();
+  // After the event backfill, so historical funnels are already in place.
+  await backfillCampaignSummariesOnce();
   await warmCampaignCallbackCache();
   await refreshLogWebhookConfig();
   startRetentionJob();

@@ -187,37 +187,123 @@ export function renderPlaceholderPreview(def: PlaceholderEntry): string {
   return resolvePlaceholder(def, SAMPLE_PREVIEW_USER, SAMPLE_PREVIEW_CTX);
 }
 
+/** A resolved placeholder, plus whether the source produced it or the fallback did. */
+export type ResolvedPlaceholder = { value: string; usedFallback: boolean };
+
 /**
- * Resolve one placeholder for a user. `resolvedValue` is the pre-computed value
- * for async sources (query/api), produced by src/variables/resolver.ts before
- * the (sync) personalize pass; sync sources ignore it.
+ * Resolve one placeholder for a user, reporting whether the fallback was used.
+ *
+ * Every branch already made that decision internally — this only surfaces it, so
+ * a caller can count fallbacks without re-deriving the rules and drifting from
+ * them. `resolvedValue` is the pre-computed value for async sources (query/api),
+ * produced by src/variables/resolver.ts before the (sync) personalize pass;
+ * sync sources ignore it.
  */
+export function resolvePlaceholderWithMeta(
+  def: PlaceholderEntry,
+  user: UserRecord,
+  dispatchCtx?: PersonalizeDispatchContext,
+  resolvedValue?: string
+): ResolvedPlaceholder {
+  switch (def.source) {
+    case "field": {
+      const raw = user.fields[def.field];
+      return raw !== undefined && raw.length > 0
+        ? { value: raw, usedFallback: false }
+        : { value: def.fallback ?? "", usedFallback: true };
+    }
+    case "computed": {
+      try {
+        const v = evaluateComputedExpression(def.expr, user, dispatchCtx);
+        return v.length === 0 && def.fallback !== undefined
+          ? { value: def.fallback, usedFallback: true }
+          : { value: v, usedFallback: false };
+      } catch {
+        return { value: def.fallback ?? "", usedFallback: true };
+      }
+    }
+    case "constant":
+      return def.value.length > 0
+        ? { value: def.value, usedFallback: false }
+        : { value: def.fallback ?? def.value, usedFallback: true };
+    case "query":
+    case "api":
+      return resolvedValue !== undefined && resolvedValue.length > 0
+        ? { value: resolvedValue, usedFallback: false }
+        : { value: def.fallback ?? "", usedFallback: true };
+  }
+}
+
 function resolvePlaceholder(
   def: PlaceholderEntry,
   user: UserRecord,
   dispatchCtx?: PersonalizeDispatchContext,
   resolvedValue?: string
 ): string {
-  switch (def.source) {
-    case "field": {
-      const raw = user.fields[def.field];
-      return raw !== undefined && raw.length > 0 ? raw : (def.fallback ?? "");
+  return resolvePlaceholderWithMeta(def, user, dispatchCtx, resolvedValue).value;
+}
+
+/**
+ * Matches exactly what personalize() substitutes — `{{name}}`, no inner spaces.
+ * Deliberately stricter than the resolver's SQL/URL token regex, which tolerates
+ * whitespace and dots; a template token that personalize would not replace must
+ * not be counted as one that did.
+ */
+const CONTENT_TOKEN_RE = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g;
+
+/**
+ * The registry entries a message actually references.
+ *
+ * This is the denominator for a fallback rate. Counting the whole registry would
+ * inflate it, because a variable no template mentions "falls back" on every
+ * send; a token with no registry entry is not a variable at all and is left
+ * verbatim in the output, so it is excluded too.
+ */
+export function resolvableTokens(contents: Array<string | undefined>): string[] {
+  const registry = getPlaceholderRegistry();
+  const found = new Set<string>();
+  for (const content of contents) {
+    if (!content) continue;
+    for (const match of content.matchAll(CONTENT_TOKEN_RE)) {
+      const name = match[1]!;
+      if (name in registry) found.add(name);
     }
-    case "computed": {
-      try {
-        const v = evaluateComputedExpression(def.expr, user, dispatchCtx);
-        return v.length === 0 && def.fallback !== undefined ? def.fallback : v;
-      } catch {
-        return def.fallback ?? "";
-      }
-    }
-    case "constant":
-      return def.value.length > 0 ? def.value : (def.fallback ?? def.value);
-    case "query":
-    case "api":
-      if (resolvedValue !== undefined && resolvedValue.length > 0) return resolvedValue;
-      return def.fallback ?? "";
   }
+  return [...found];
+}
+
+/**
+ * How many of `names` resolved to their fallback for this recipient.
+ *
+ * Uses the same resolver as personalize(), so the count can never disagree with
+ * what was actually rendered.
+ *
+ * `asyncFallbacks` names the query/api variables the resolver already fell back
+ * on. They have to be passed in: the resolver substitutes the fallback string
+ * into `resolved` before personalize() ever sees it, so from here a fallback and
+ * a real value are the same string.
+ */
+export function countFallbacks(
+  names: string[],
+  user: UserRecord,
+  dispatchCtx?: PersonalizeDispatchContext,
+  resolved?: Record<string, string>,
+  asyncFallbacks?: ReadonlySet<string>
+): number {
+  if (names.length === 0) return 0;
+  const registry = getPlaceholderRegistry();
+  let count = 0;
+  for (const name of names) {
+    const def = registry[name];
+    if (!def) continue;
+    if (
+      asyncFallbacks?.has(name) ||
+      resolvePlaceholderWithMeta(def, user, dispatchCtx, resolved?.[name]).usedFallback
+    ) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 /**

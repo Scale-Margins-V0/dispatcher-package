@@ -94,6 +94,43 @@ export const revokeApiKey = (id: string) =>
   json<{ revoked: boolean }>(`/admin/api/settings/api-keys/${encodeURIComponent(id)}/revoke`, { method: "POST", ...jsonBody({}) });
 export const fetchPlatformSecrets = () =>
   json<{ secrets: Array<{ name: string; value: string }> }>("/admin/api/settings/platform-secrets");
+
+// --- Server API: what Atlas connects to ---
+export const fetchConnection = () =>
+  json<import("./types").ConnectionInfo>("/admin/api/settings/connection");
+
+/**
+ * Check a key against the real external endpoint, with the same bearer header
+ * Atlas sends — so it exercises the actual router, middleware and credential
+ * rather than an admin-side simulation.
+ *
+ * Uses a SAME-ORIGIN relative path on purpose. The external router serves no
+ * CORS headers (it is server-to-server; a browser must never hold this key), so
+ * an absolute cross-origin URL would fail preflight and report "unreachable"
+ * for a perfectly good key — which is exactly what happens under `dev:admin`,
+ * where the console is on :5173 and the API on :3100.
+ *
+ * What this does NOT prove is that ScaleMargin can reach this host from the
+ * public internet. No browser check can: the operator's browser is not Atlas.
+ * That is what Atlas's own verification step is for.
+ */
+export const verifyServerApiKey = async (
+  key: string
+): Promise<{ ok: boolean; status: number; message?: string }> => {
+  try {
+    const response = await fetch("/api/v1/data-plane/build", {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+    });
+    const body = (await response.json().catch(() => ({}))) as { message?: string };
+    return { ok: response.ok, status: response.status, message: body.message };
+  } catch (reason) {
+    return {
+      ok: false,
+      status: 0,
+      message: reason instanceof Error ? reason.message : "Request failed",
+    };
+  }
+};
 /** Legacy helpers kept for existing clients while named API keys replace the UI. */
 export const fetchLogsTokenStatus = () =>
   json<{ configured: boolean; updated_at: string | null }>("/admin/api/settings/logs-token");

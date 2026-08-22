@@ -1,4 +1,6 @@
 import type { SendEmailCommandInput } from "@aws-sdk/client-ses";
+import { componentLogger } from "../../logging/logger.js";
+import { LogComponent } from "../../logging/conventions.js";
 import type { SendContext } from "../../providers/types.js";
 
 let warnedMissingConfigSet = false;
@@ -15,8 +17,10 @@ export function applySesMessageTags(
     process.env.SES_EVENT_CONFIG_SET || process.env.SES_CONFIGURATION_SET || undefined;
   if (!configurationSetName && !warnedMissingConfigSet) {
     warnedMissingConfigSet = true;
-    console.warn(
-      "[SES-Events] SES_EVENT_CONFIG_SET not set — outbound messages will not emit tag-based correlation in SNS. Set SES_EVENT_CONFIG_SET for event tracking."
+    componentLogger(LogComponent.events).warn(
+      { provider: "ses", error_category: "missing_config" },
+      "SES_EVENT_CONFIG_SET is not set — outbound messages carry no tags, so SNS " +
+        "delivery and open events cannot be correlated back to a campaign"
     );
   }
   const tags = [

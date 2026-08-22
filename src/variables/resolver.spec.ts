@@ -64,8 +64,8 @@ describe("resolveDynamicValues — api", () => {
       );
 
     const out = await resolveDynamicValues([user("u1"), user("u2")], CTX);
-    expect(out.get("u1")?.tier).toBe("gold-u1");
-    expect(out.get("u2")?.tier).toBe("gold-u2");
+    expect(out.get("u1")?.values.tier).toBe("gold-u1");
+    expect(out.get("u2")?.values.tier).toBe("gold-u2");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -80,8 +80,8 @@ describe("resolveDynamicValues — api", () => {
       .mockResolvedValue(new Response(JSON.stringify({ rate: "1.09" }), { status: 200 }));
 
     const out = await resolveDynamicValues([user("u1"), user("u2"), user("u3")], CTX);
-    expect(out.get("u1")?.rate).toBe("1.09");
-    expect(out.get("u3")?.rate).toBe("1.09");
+    expect(out.get("u1")?.values.rate).toBe("1.09");
+    expect(out.get("u3")?.values.rate).toBe("1.09");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -97,7 +97,7 @@ describe("resolveDynamicValues — api", () => {
     );
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 500 }));
     const out = await resolveDynamicValues([user("u1")], CTX);
-    expect(out.get("u1")?.tier).toBe("standard");
+    expect(out.get("u1")?.values.tier).toBe("standard");
   });
 });
 
@@ -141,9 +141,9 @@ describe("resolveDynamicValues — query (sqlite lookup backend)", () => {
       })
     );
     const out = await resolveDynamicValues([user("u1"), user("u2"), user("u3")], CTX);
-    expect(out.get("u1")?.tier).toBe("gold");
-    expect(out.get("u2")?.tier).toBe("silver");
-    expect(out.get("u3")?.tier).toBe("none"); // no row → fallback
+    expect(out.get("u1")?.values.tier).toBe("gold");
+    expect(out.get("u2")?.values.tier).toBe("silver");
+    expect(out.get("u3")?.values.tier).toBe("none"); // no row → fallback
   });
 
   it("is injection-safe: a malicious user_id is bound, not interpreted", async () => {
@@ -157,7 +157,7 @@ describe("resolveDynamicValues — query (sqlite lookup backend)", () => {
       })
     );
     const out = await resolveDynamicValues([user("u1'; DROP TABLE loyalty; --")], CTX);
-    expect(out.get("u1'; DROP TABLE loyalty; --")?.tier).toBe("none");
+    expect(out.get("u1'; DROP TABLE loyalty; --")?.values.tier).toBe("none");
     // Table survived — the value was bound, not executed.
     const db = new Database(dbFile);
     expect(db.prepare("SELECT count(*) c FROM loyalty").get()).toMatchObject({ c: 2 });

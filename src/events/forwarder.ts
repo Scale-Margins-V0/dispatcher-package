@@ -62,8 +62,9 @@ export function validateCallbackUrl(url: string): boolean {
       if (process.env.NODE_ENV === "production") {
         return false;
       }
-      console.warn(
-        `[EventsForwarder] Unexpected callback path: ${parsed.pathname}. Proceeding anyway.`
+      log.warn(
+        { path: parsed.pathname, error_category: "unexpected_callback_path" },
+        "Analytics callback path is not the expected /api/webhooks/campaign-analytics — proceeding (non-production)"
       );
     }
 

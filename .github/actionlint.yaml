@@ -1,0 +1,10 @@
+# Blacksmith runner labels. actionlint only knows GitHub-hosted labels, so
+# without this it reports every `runs-on: blacksmith-*` as an unknown label.
+# Keep in step with the sizes enabled for the Scale-Margins-V0 org.
+self-hosted-runner:
+  labels:
+    - blacksmith
+    - blacksmith-2vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-8vcpu-ubuntu-2404
+    - blacksmith-16vcpu-ubuntu-2404

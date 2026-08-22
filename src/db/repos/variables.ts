@@ -9,6 +9,7 @@ export type NewVariable = {
   field?: string | null;
   expr?: string | null;
   fallback?: string | null;
+  sample?: string | null;
   config?: Record<string, unknown> | null;
   enabled?: boolean;
   updated_by?: string | null;
@@ -35,6 +36,7 @@ function toRow(raw: Record<string, unknown>): VariableRow {
     field: (raw.field as string | null) ?? null,
     expr: (raw.expr as string | null) ?? null,
     fallback: (raw.fallback as string | null) ?? null,
+    sample: (raw.sample as string | null) ?? null,
     config: parseConfig(raw.config),
     enabled: Boolean(raw.enabled),
     created_at: raw.created_at as Date,
@@ -74,6 +76,7 @@ export async function createVariable(input: NewVariable): Promise<VariableRow> {
     field: input.field ?? null,
     expr: input.expr ?? null,
     fallback: input.fallback ?? null,
+    sample: input.sample ?? null,
     config: input.config ?? null,
     enabled: input.enabled ?? true,
     created_at: now,
@@ -98,6 +101,7 @@ export async function updateVariable(
   if (patch.field !== undefined) set.field = patch.field;
   if (patch.expr !== undefined) set.expr = patch.expr;
   if (patch.fallback !== undefined) set.fallback = patch.fallback;
+  if (patch.sample !== undefined) set.sample = patch.sample;
   if (patch.config !== undefined) set.config = patch.config;
   if (patch.enabled !== undefined) set.enabled = patch.enabled;
   if (patch.updated_by !== undefined) set.updated_by = patch.updated_by;

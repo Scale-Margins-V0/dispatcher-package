@@ -6,6 +6,7 @@ import { logPreferenceSideEffectSimulation } from "../events/preference-side-eff
 import { scrubPii } from "../events/scrubber.js";
 import type { StandardizedEvent } from "../events/common/types.js";
 import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 import {
   escapeHtml,
   PUBLIC_PAGE_STYLES,
@@ -13,7 +14,7 @@ import {
   renderLogoHtml,
 } from "../public-pages/branding.js";
 
-const log = componentLogger("preferences");
+const log = componentLogger(LogComponent.events);
 
 /**
  * Recipient-selectable email categories. Keys must match
@@ -37,15 +38,6 @@ function readBodyField(body: unknown, name: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const v = (body as Record<string, unknown>)[name];
   return typeof v === "string" ? v : undefined;
-}
-
-function logUnlessVitest(...args: unknown[]): void {
-  if (process.env.VITEST === "true") return;
-  const [first, ...rest] = args;
-  log.warn(
-    rest.length > 0 ? { details: rest } : {},
-    typeof first === "string" ? first : JSON.stringify(first)
-  );
 }
 
 function renderPreferencesPage(params: {
@@ -238,9 +230,10 @@ export function createPreferencesPostHandler(): RequestHandler {
       Boolean(analyticsUrl) && Boolean(secret) && Boolean(campaignId) && Boolean(organizationId);
 
     if (!canProxy && analyticsUrl) {
-      logUnlessVitest(
-        "[PreferencesLink] UNSUBSCRIBE_LINK_ANALYTICS_URL is set but campaign_id or organization_id is missing — " +
-          "extend preferences_url in dispatch.yaml to append them (see config/dispatch.example.yaml)."
+      log.warn(
+        { error_category: "incomplete_link_context" },
+        "Analytics URL is configured but campaign_id or organization_id is missing — " +
+          "preference changes will not be forwarded. Extend preferences_url in dispatch.yaml."
       );
     }
 
@@ -282,7 +275,10 @@ export function createPreferencesPostHandler(): RequestHandler {
         });
         const r = await postAnalyticsWithRetry(analyticsUrl, payload, secret);
         if (!r.success) {
-          logUnlessVitest(`[PreferencesLink] Analytics POST failed: ${r.error ?? "unknown"}`);
+          log.warn(
+            { error_category: "analytics_post_failed", error_message: r.error ?? "unknown" },
+            "Preference analytics callback failed"
+          );
         }
         forwarded = true;
       }

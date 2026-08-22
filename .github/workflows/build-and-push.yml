@@ -1,0 +1,303 @@
+name: Build & publish image
+
+# One image pipeline for both channels.
+#
+#   push to main   →  ghcr.io/scale-margins-v0/scalemargin-dispatcher
+#                     tags: X.Y.Z, X.Y, X, latest, sha-<short>
+#                     plus a git tag (dispatcher-vX.Y.Z) and a GitHub Release
+#
+#   push to acme   →  ghcr.io/scale-margins-v0/scalemargin-dispatcher-dev
+#                     tags: dev-<short-sha>, dev
+#                     no version, no git tag, no release
+#
+# A merged pull request IS a push to the target branch, so `on: push` covers
+# merges without the `pull_request: closed` + `if: merged` dance. It also covers
+# direct pushes, which is what you want — an image for every commit on these
+# branches, no exceptions.
+#
+# Versioning: see docs/deployment/ci-image-pipeline.md §3. Short version —
+# leave it alone and it derives the bump from your commit messages; override it
+# with the workflow_dispatch inputs when you need to.
+
+on:
+  push:
+    branches: [main, acme]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact version, e.g. 1.4.0. Blank = derive it."
+        required: false
+        type: string
+      bump:
+        description: "Bump level when version is blank"
+        required: false
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+permissions:
+  contents: write # commit the version bump, create the tag and the release
+  packages: write # push to GHCR
+
+# Never let two publishes race: they would compute the same next version and
+# the second would die on a duplicate tag. Queue them instead of cancelling —
+# cancelling mid-push can leave a half-written manifest.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASE: ghcr.io/scale-margins-v0/scalemargin-dispatcher
+
+jobs:
+  # ───────────────────────────────────────────────────────────────
+  # Decide what we are building and what to call it. No side effects
+  # here — this job is safe to read when debugging a bad release.
+  # ───────────────────────────────────────────────────────────────
+  meta:
+    name: Resolve version and tags
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    outputs:
+      channel: ${{ steps.plan.outputs.channel }}
+      version: ${{ steps.plan.outputs.version }}
+      image: ${{ steps.plan.outputs.image }}
+      tags: ${{ steps.plan.outputs.tags }}
+      git_tag: ${{ steps.plan.outputs.git_tag }}
+      is_release: ${{ steps.plan.outputs.is_release }}
+      build_time: ${{ steps.plan.outputs.build_time }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history + tags to derive the bump
+
+      - name: Plan the build
+        id: plan
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+
+          # ---------- dev channel: everything that is not main ----------
+          # Fail safe on purpose. Only `main` can mint a version, a git tag and
+          # a GitHub Release; every other ref — acme, or a scratch branch you
+          # added to the trigger list to test this pipeline — produces a dev
+          # image and nothing else. Getting this backwards means a test push
+          # cuts a real release.
+          if [ "${GITHUB_REF_NAME}" != "main" ]; then
+            IMAGE="${IMAGE_BASE}-dev"
+            {
+              echo "channel=dev"
+              echo "is_release=false"
+              echo "image=${IMAGE}"
+              echo "git_tag="
+              # package.json version is advisory on dev — it only lands in the
+              # image's /build endpoint so support can tell builds apart.
+              echo "version=$(node -p 'require("./package.json").version')-dev.${SHORT_SHA}"
+              # The immutable per-commit tag is always written. The moving
+              # `:dev` pointer is only moved by acme, so a scratch branch can
+              # never repoint what the acme deployment pulls.
+              if [ "${GITHUB_REF_NAME}" = "acme" ]; then
+                printf 'tags<<EOF\n%s:dev-%s\n%s:dev\nEOF\n' "$IMAGE" "$SHORT_SHA" "$IMAGE"
+              else
+                printf 'tags<<EOF\n%s:dev-%s\nEOF\n' "$IMAGE" "$SHORT_SHA"
+              fi
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ---------- release channel: main ----------
+          IMAGE="${IMAGE_BASE}"
+          CURRENT="$(node -p 'require("./package.json").version')"
+          LAST_TAG="$(git tag -l 'dispatcher-v*' --sort=-v:refname | head -n1)"
+          [ -n "$LAST_TAG" ] && CURRENT="${LAST_TAG#dispatcher-v}"
+          echo "Current version: ${CURRENT} (from ${LAST_TAG:-package.json})"
+
+          if [ -n "${IN_VERSION:-}" ]; then
+            # Explicit wins over everything.
+            NEXT="${IN_VERSION#v}"
+            echo "Explicit version requested: ${NEXT}"
+          else
+            LEVEL="${IN_BUMP:-auto}"
+            DERIVED=false
+            if [ "$LEVEL" = "auto" ] || [ -z "$LEVEL" ]; then
+              DERIVED=true
+              # Derive from Conventional Commits since the last release.
+              RANGE="HEAD"
+              [ -n "$LAST_TAG" ] && RANGE="${LAST_TAG}..HEAD"
+              BODIES="$(git log --format='%B' "$RANGE" || true)"
+              SUBJECTS="$(git log --format='%s' "$RANGE" || true)"
+
+              if grep -qE '^BREAKING[ -]CHANGE:' <<<"$BODIES" \
+                 || grep -qE '^[a-z]+(\([^)]*\))?!:' <<<"$SUBJECTS"; then
+                LEVEL="major"
+              elif grep -qE '^feat(\([^)]*\))?:' <<<"$SUBJECTS"; then
+                LEVEL="minor"
+              else
+                LEVEL="patch"
+              fi
+              echo "Derived bump from commits: ${LEVEL}"
+            else
+              echo "Bump level requested: ${LEVEL}"
+            fi
+
+            IFS=. read -r MA MI PA <<<"${CURRENT%%-*}"
+
+            # Pre-1.0 rule: a breaking change bumps the MINOR, not the major.
+            # Going 0.x -> 1.0.0 declares API stability and is a deliberate act,
+            # never something a commit message should trigger by accident.
+            if [ "$LEVEL" = "major" ] && [ "$MA" = "0" ] && [ "$DERIVED" = "true" ]; then
+              echo "::notice::Breaking change on a 0.x line — bumping minor, not major. Use the 'major' input to cut 1.0.0 deliberately."
+              LEVEL="minor"
+            fi
+
+            case "$LEVEL" in
+              major) NEXT="$((MA + 1)).0.0" ;;
+              minor) NEXT="${MA}.$((MI + 1)).0" ;;
+              patch) NEXT="${MA}.${MI}.$((PA + 1))" ;;
+              *) echo "::error::Unknown bump level '${LEVEL}'"; exit 1 ;;
+            esac
+          fi
+
+          if ! [[ "$NEXT" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'${NEXT}' is not a valid semver version"; exit 1
+          fi
+
+          GIT_TAG="dispatcher-v${NEXT}"
+          if git rev-parse -q --verify "refs/tags/${GIT_TAG}" >/dev/null; then
+            echo "::error::Tag ${GIT_TAG} already exists. Pass an explicit 'version' input to override."
+            exit 1
+          fi
+
+          MA="${NEXT%%.*}"; REST="${NEXT#*.}"; MI="${REST%%.*}"
+          {
+            echo "channel=release"
+            echo "is_release=true"
+            echo "image=${IMAGE}"
+            echo "version=${NEXT}"
+            echo "git_tag=${GIT_TAG}"
+            printf 'tags<<EOF\n%s:%s\n%s:%s.%s\n%s:%s\n%s:latest\n%s:sha-%s\nEOF\n' \
+              "$IMAGE" "$NEXT" "$IMAGE" "$MA" "$MI" "$IMAGE" "$MA" "$IMAGE" "$IMAGE" "$SHORT_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "### 📦 ${IMAGE}:${NEXT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Previous: \`${CURRENT}\` → next: \`${NEXT}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────────────────────────────────────────
+  # Gate. A broken build must never reach the registry.
+  # ───────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: npx tsc --noEmit
+      - run: pnpm test
+
+  # ───────────────────────────────────────────────────────────────
+  # Build once, push once.
+  # ───────────────────────────────────────────────────────────────
+  build:
+    name: Build & push (${{ needs.meta.outputs.channel }})
+    needs: [meta, test]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      # Blacksmith's builder keeps the BuildKit layer cache on a sticky NVMe
+      # disk mounted at /var/lib/buildkit, so no cache-from/cache-to is needed —
+      # layers are already local rather than pulled over the network.
+      - name: Set up Blacksmith Docker builder
+        uses: useblacksmith/setup-docker-builder@v2
+        with:
+          cache-key: dispatcher-package-internal/dispatcher-image
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ needs.meta.outputs.tags }}
+          provenance: false
+          build-args: |
+            DISPATCHER_VERSION=${{ needs.meta.outputs.version }}
+            DISPATCHER_GIT_SHA=${{ github.sha }}
+            DISPATCHER_BUILD_TIME=${{ needs.meta.outputs.build_time }}
+            DISPATCHER_IMAGE_TAG=${{ needs.meta.outputs.image }}:${{ needs.meta.outputs.version }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### 🚀 Pushed"
+            echo '```'
+            echo "${{ needs.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────────────────────────────────────────
+  # Only after the image exists: record the version in git.
+  # Ordered last on purpose — a tag with no image behind it is worse
+  # than an image with a late tag.
+  # ───────────────────────────────────────────────────────────────
+  release:
+    name: Tag & release
+    needs: [meta, build]
+    if: needs.meta.outputs.is_release == 'true'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump package.json, tag, release
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          GIT_TAG: ${{ needs.meta.outputs.git_tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            p.version = process.env.VERSION;
+            fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
+          '
+
+          NOTES="$(git log --format='- %s (%h)' "$(git tag -l 'dispatcher-v*' --sort=-v:refname | head -n1)"..HEAD 2>/dev/null \
+                   || git log --format='- %s (%h)' -20)"
+
+          git add package.json
+          # Pushes made with GITHUB_TOKEN do not trigger workflows, so this
+          # commit cannot re-enter this pipeline. [skip ci] is belt-and-braces.
+          git commit -m "chore(release): ${VERSION} [skip ci]" || echo "nothing to commit"
+          git tag -a "${GIT_TAG}" -m "Dispatcher ${VERSION}"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
+          git push origin "${GIT_TAG}"
+
+          printf '%s\n' "$NOTES" > /tmp/notes.md
+          gh release create "${GIT_TAG}" \
+            --title "Dispatcher v${VERSION}" \
+            --notes-file /tmp/notes.md

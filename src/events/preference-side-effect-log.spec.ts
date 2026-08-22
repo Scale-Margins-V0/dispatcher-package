@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { clearCapturedLogs, findCapturedLogs } from "../logging/test-capture.js";
 import { logPreferenceSideEffectSimulation } from "./preference-side-effect-log.js";
 
 describe("logPreferenceSideEffectSimulation", () => {
@@ -9,7 +10,7 @@ describe("logPreferenceSideEffectSimulation", () => {
 
   it("logs unsubscribed with correlation + metadata only", () => {
     vi.stubEnv("EVENT_PREFERENCE_SIMULATION_LOG", "1");
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    clearCapturedLogs();
     logPreferenceSideEffectSimulation({
       campaign_id: "c1",
       user_id: "u1",
@@ -21,16 +22,18 @@ describe("logPreferenceSideEffectSimulation", () => {
       occurred_at: "2020-01-02T03:04:05.000Z",
       metadata: { unsubscribe_source: "global", provider_event_id: "e1" },
     });
-    expect(log).toHaveBeenCalledTimes(1);
-    const msg = String(log.mock.calls[0]?.[0]);
-    expect(msg).toContain("[Events][PreferenceSimulation]");
-    expect(msg).toContain('"user_id":"u1"');
-    expect(msg).toContain("preference_side_effect_simulation");
+    const entries = findCapturedLogs((e) => e.fields.simulated === true);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.fields).toMatchObject({
+      user_id: "u1",
+      campaign_id: "c1",
+      kind: "preference_side_effect_simulation",
+    });
   });
 
   it("skips when EVENT_PREFERENCE_SIMULATION_LOG=0", () => {
     vi.stubEnv("EVENT_PREFERENCE_SIMULATION_LOG", "0");
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    clearCapturedLogs();
     logPreferenceSideEffectSimulation({
       campaign_id: "c1",
       user_id: "u1",
@@ -41,11 +44,11 @@ describe("logPreferenceSideEffectSimulation", () => {
       provider_message_id: "mid",
       occurred_at: "2020-01-02T03:04:05.000Z",
     });
-    expect(log).not.toHaveBeenCalled();
+    expect(findCapturedLogs((e) => e.fields.simulated === true)).toHaveLength(0);
   });
 
   it("ignores delivered", () => {
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    clearCapturedLogs();
     logPreferenceSideEffectSimulation({
       campaign_id: "c1",
       user_id: "u1",
@@ -56,6 +59,6 @@ describe("logPreferenceSideEffectSimulation", () => {
       provider_message_id: "mid",
       occurred_at: "2020-01-02T03:04:05.000Z",
     });
-    expect(log).not.toHaveBeenCalled();
+    expect(findCapturedLogs((e) => e.fields.simulated === true)).toHaveLength(0);
   });
 });

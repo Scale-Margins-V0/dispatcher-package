@@ -1,0 +1,1 @@
+ALTER TABLE `variables` ADD `sample` text;

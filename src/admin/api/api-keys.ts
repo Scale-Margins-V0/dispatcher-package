@@ -1,11 +1,23 @@
 import express, { type Express, type Request, type Response } from "express";
 import { z } from "zod";
 import {
+  ATLAS_KEY_ENV,
+  atlasKeyWarning,
+  isAtlasApiConfigured,
+} from "../../api/v1/atlas-key.js";
+import {
+  allowedOrigins,
+  CORS_ORIGINS_ENV,
+  corsWarning,
+} from "../../api/v1/cors.js";
+import { API_VERSION } from "../../api/v1/version.js";
+import {
   createApiKey,
   listApiKeys,
   revokeApiKey,
   rotateApiKey,
 } from "../../auth/api-keys.js";
+import { authBaseURL } from "../../auth/index.js";
 import { asyncHandler } from "./variables.js";
 
 const nameSchema = z.object({
@@ -22,6 +34,36 @@ export const registerApiKeyRoutes = (app: Express): void => {
       res.json({ api_keys: await listApiKeys() });
     })
   );
+
+  /**
+   * Everything an operator must copy into Atlas to connect this dispatcher,
+   * plus the fixed endpoint list. The base URL varies per deployment; the
+   * paths are identical everywhere, which is what lets Atlas support any
+   * number of clients without special cases.
+   */
+  app.get("/admin/api/settings/connection", (_req, res) => {
+    const base = authBaseURL();
+    res.json({
+      base_url: base,
+      api_version: API_VERSION,
+      configured_public_url: Boolean(process.env.DISPATCHER_PUBLIC_URL?.trim()),
+      // Presence only — the key itself is never read back out of the process.
+      atlas_key_env: ATLAS_KEY_ENV,
+      atlas_key_configured: isAtlasApiConfigured(),
+      atlas_key_warning: atlasKeyWarning(),
+      cors_env: CORS_ORIGINS_ENV,
+      cors_origins: allowedOrigins(),
+      cors_warning: corsWarning(),
+      endpoints: [
+        { method: "GET", path: `/api/v1/data-plane/state`, purpose: "Dashboard status" },
+        { method: "GET", path: `/api/v1/data-plane/build`, purpose: "Identity + connection check" },
+      ],
+      internal_endpoints: [
+        { method: "GET", path: `/api/v1/internal/health`, purpose: "Liveness" },
+        { method: "GET", path: `/api/v1/internal/ready`, purpose: "Readiness" },
+      ],
+    });
+  });
 
   app.get("/admin/api/settings/platform-secrets", (_req, res) => {
     const names = ["SCALEMARGIN_DISPATCH_SECRET", "SCALEMARGIN_ANALYTICS_SECRET"] as const;

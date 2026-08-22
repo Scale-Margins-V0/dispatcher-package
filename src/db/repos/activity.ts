@@ -172,9 +172,35 @@ export async function hasActiveRun(program_id: string, since: Date): Promise<boo
 }
 
 /**
- * Send-time failures for one recipient across a whole program. A drip
- * recipient's failures are spread over many wire campaign ids, so we join
- * through the program map rather than enumerating sends.
+ * Failure rows now live in dispatch_send_logs, which records every recipient
+ * rather than only the ones that failed. The shape is preserved so the console
+ * and its serializers did not have to change; `error_stack` and `context` are
+ * always null because the old table's callers never populated them either.
+ *
+ * dispatch_recipient_failures is no longer written. It is left in place, with
+ * its retention rule, so historical rows stay readable until they age out.
+ */
+function sendLogToFailure(raw: Record<string, unknown>): RecipientFailureRow {
+  return {
+    id: raw.id as string,
+    dispatch_run_id: raw.dispatch_run_id as string,
+    campaign_id: raw.campaign_id as string,
+    user_id: raw.user_id as string,
+    provider: raw.provider as string,
+    error_category: (raw.error_category as string | null) ?? "delivery_failure",
+    error_message: (raw.error_message as string | null) ?? "",
+    error_stack: null,
+    context: null,
+    occurred_at: raw.occurred_at as Date,
+  };
+}
+
+/**
+ * Send-time failures for one recipient across a whole program.
+ *
+ * The old implementation joined dispatch_programs, because a failure row only
+ * knew its wire campaign id and a drip recipient's failures are spread across
+ * many of them. Send logs carry program_id directly, so the join is gone.
  */
 export async function listRecipientFailuresForUser(
   program_id: string,
@@ -182,33 +208,20 @@ export async function listRecipientFailuresForUser(
   limit = 100
 ): Promise<RecipientFailureRow[]> {
   const dbx = getDb();
-  const f = tableFor(dbx, "dispatchRecipientFailures");
-  const p = tableFor(dbx, "dispatchPrograms");
+  const t = tableFor(dbx, "dispatchSendLogs");
   const raw: Record<string, unknown>[] = await queryDb(dbx)
-    .select({
-      id: f.id,
-      dispatch_run_id: f.dispatch_run_id,
-      campaign_id: f.campaign_id,
-      user_id: f.user_id,
-      provider: f.provider,
-      error_category: f.error_category,
-      error_message: f.error_message,
-      error_stack: f.error_stack,
-      context: f.context,
-      occurred_at: f.occurred_at,
-    })
-    .from(f)
-    // LEFT JOIN + fallback: an unmapped send still shows its failures.
-    .leftJoin(p, eq(p.campaign_id, f.campaign_id))
+    .select()
+    .from(t)
     .where(
       and(
-        or(eq(p.program_id, program_id), eq(f.campaign_id, program_id)),
-        eq(f.user_id, user_id)
+        eq(t.program_id, program_id),
+        eq(t.user_id, user_id),
+        eq(t.status, "failed")
       )
     )
-    .orderBy(desc(f.occurred_at), desc(f.id))
+    .orderBy(desc(t.occurred_at), desc(t.id))
     .limit(limit);
-  return raw as unknown as RecipientFailureRow[];
+  return raw.map(sendLogToFailure);
 }
 
 export async function getDispatchRun(id: string): Promise<{
@@ -218,17 +231,17 @@ export async function getDispatchRun(id: string): Promise<{
   const dbx = getDb();
   const q = queryDb(dbx);
   const runs = tableFor(dbx, "dispatchRuns");
-  const failures = tableFor(dbx, "dispatchRecipientFailures");
+  const logs = tableFor(dbx, "dispatchSendLogs");
   const raw: Record<string, unknown>[] = await q.select().from(runs).where(eq(runs.id, id));
   if (!raw[0]) return null;
   const failureRows: Record<string, unknown>[] = await q
     .select()
-    .from(failures)
-    .where(eq(failures.dispatch_run_id, id))
-    .orderBy(desc(failures.occurred_at))
+    .from(logs)
+    .where(and(eq(logs.dispatch_run_id, id), eq(logs.status, "failed")))
+    .orderBy(desc(logs.occurred_at))
     .limit(500);
   return {
     run: toRun(raw[0]),
-    recipient_failures: failureRows as unknown as RecipientFailureRow[],
+    recipient_failures: failureRows.map(sendLogToFailure),
   };
 }

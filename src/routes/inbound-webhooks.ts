@@ -5,24 +5,42 @@ import {
   getInboundAdapter,
   isProviderEnabled,
 } from "../events/index.js";
-import { warnUnlessVitest, logUnlessVitest } from "../logging.js";
+import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 import { verifySnsMessage } from "../events/sns-verify.js";
 
 /**
  * Log the raw inbound Gupshup webhook payload (headers + body) for inspection.
  * Always called, independent of whether forwarding to the backend is enabled.
  */
+const log = componentLogger(LogComponent.eventsInbound);
+
+/**
+ * Header names only, never values.
+ *
+ * The previous version serialized the whole header map into app_logs, which put
+ * the provider's `apikey` and `authorization` in a table the /logs API serves.
+ * Knowing *which* headers arrived is the useful part of debugging a webhook;
+ * their values are credentials.
+ */
+function headerNames(req: express.Request): string[] {
+  return Object.keys(req.headers).sort();
+}
+
 function logGupshupPayload(req: express.Request): void {
   const rawBody = Buffer.isBuffer(req.body)
     ? req.body.toString("utf-8")
     : typeof req.body === "string"
       ? req.body
       : JSON.stringify(req.body ?? {});
-  logUnlessVitest(
-    "[Gupshup] inbound webhook received:\n" +
-      `[Gupshup] headers: ${JSON.stringify(req.headers)}\n` +
-      `[Gupshup] body: ${rawBody}`
+
+  log.info(
+    { provider: "gupshup", header_names: headerNames(req), body_bytes: rawBody.length },
+    "Inbound webhook received"
   );
+  // The body carries recipient phone numbers, so it is debug-only: off in
+  // production, available when someone is actually debugging a correlation bug.
+  log.debug({ provider: "gupshup", body: rawBody }, "Inbound webhook payload");
 }
 
 export function registerInboundWebhookRoutes(app: Express): void {
@@ -56,16 +74,17 @@ export function registerInboundWebhookRoutes(app: Express): void {
           try {
             const parsed = new URL(subscribeUrl);
             if (parsed.hostname.endsWith(".amazonaws.com")) {
-              logUnlessVitest("[SES-SNS] Confirming subscription...");
+              log.info({ provider: "ses", host: parsed.hostname }, "Confirming SNS subscription");
               await fetch(subscribeUrl);
-              logUnlessVitest("[SES-SNS] Subscription confirmed");
+              log.info({ provider: "ses", host: parsed.hostname }, "SNS subscription confirmed");
             } else {
-              warnUnlessVitest(
-                `[SES-SNS] Rejected non-AWS SubscribeURL: ${parsed.hostname}`
+              log.warn(
+                { provider: "ses", host: parsed.hostname },
+                "Rejected SNS SubscribeURL — host is not an AWS domain"
               );
             }
           } catch {
-            warnUnlessVitest("[SES-SNS] Invalid SubscribeURL, skipping");
+            log.warn({ provider: "ses" }, "Rejected SNS SubscribeURL — not a valid URL");
           }
         }
         res.status(200).json({ confirmed: true });

@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { clearCapturedLogs, findCapturedLogs } from "../logging/test-capture.js";
 import {
   loadEventsConfigFromYaml,
   assertEventsConfigEnv,
@@ -70,11 +71,12 @@ describe("events/config", () => {
       .replace("gupshup:\n      enabled: false", "gupshup:\n      enabled: true");
     const cfg = loadEventsConfigFromYaml(yaml);
     delete process.env.GUPSHUP_WEBHOOK_SECRET;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    clearCapturedLogs();
     expect(() => assertEventsConfigEnv(cfg)).not.toThrow();
     expect(cfg.providers.gupshup.enabled).toBe(true);
-    expect(warn.mock.calls[0]?.[0]).toMatch(/Gupshup inbound webhook is OPEN/);
-    warn.mockRestore();
+    const warned = findCapturedLogs((entry) => entry.level === "warn");
+    expect(warned[0]?.msg).toMatch(/Gupshup inbound webhook is OPEN/);
+    expect(warned[0]?.fields.error_category).toBe("unauthenticated_webhook");
   });
 
   it("parses sendgrid inbound_event_types", () => {
@@ -123,13 +125,17 @@ describe("events/config", () => {
     delete process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY;
   });
 
-  it("logResolvedEventsConfig logs JSON when EVENT_DEBUG=1", () => {
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  it("logResolvedEventsConfig logs the resolved shape when EVENT_DEBUG=1", () => {
+    clearCapturedLogs();
     process.env.EVENT_DEBUG = "1";
     const cfg = loadEventsConfigFromYaml(validYaml);
     logResolvedEventsConfig(cfg);
-    expect(log.mock.calls[0]?.[0]).toContain("[Events] resolved config");
-    log.mockRestore();
+
+    const [entry] = findCapturedLogs((e) => e.msg === "Resolved events configuration");
+    expect(entry).toBeDefined();
+    expect(entry?.fields.delivery_mode).toBeDefined();
+    // Env var names are useful; their values are secrets and must not appear.
+    expect(JSON.stringify(entry?.fields)).not.toContain("test-secret");
     delete process.env.EVENT_DEBUG;
   });
 });

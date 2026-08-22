@@ -33,6 +33,45 @@ function ensureOpenTrackingPixelPlaceholder(payload: Record<string, unknown>): v
   payload.html = `${html}\n<span style="display:none;font-size:0;line-height:0;max-height:0;overflow:hidden" aria-hidden="true">${OPEN_TRACK_SUBSTITUTION_TAG}</span>`;
 }
 
+/** The shape @sendgrid/mail throws on a non-2xx. Narrowed, not imported — the SDK does not export it. */
+type SendGridResponseError = {
+  code?: number;
+  response?: {
+    body?: {
+      errors?: Array<{ message?: string; field?: string | null }>;
+    };
+  };
+};
+
+/**
+ * SendGrid's `Error.message` is only the HTTP status text — "Forbidden",
+ * "Bad Request". The actionable reason lives in the response body, which is
+ * where SendGrid puts things like *"The from address does not match a verified
+ * Sender Identity"*.
+ *
+ * Keeping only `.message` reduced a fixable configuration problem to the single
+ * word "Forbidden" on the operator's screen, with nothing to act on. This
+ * flattens the body into the message so it reaches `dispatch_send_logs` and the
+ * Atlas send log.
+ */
+export function describeSendGridError(error: unknown): string {
+  const status = (error as SendGridResponseError | null)?.code;
+  const statusText = error instanceof Error ? error.message : "SendGrid send failed";
+  const head = typeof status === "number" ? `${status} ${statusText}` : statusText;
+
+  const details = ((error as SendGridResponseError | null)?.response?.body?.errors ?? [])
+    .map((entry) =>
+      [entry?.message, entry?.field ? `(field: ${entry.field})` : null]
+        .filter(Boolean)
+        .join(" ")
+        .trim()
+    )
+    .filter((line) => line.length > 0);
+
+  // Bounded: this lands in a text column and in an analytics event.
+  return [head, ...details].join(" — ").slice(0, 1000);
+}
+
 export class SendGridProvider implements EmailProvider {
   name = "sendgrid";
 
@@ -80,7 +119,7 @@ export class SendGridProvider implements EmailProvider {
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : "SendGrid send failed",
+        error: describeSendGridError(error),
       };
     }
   }
