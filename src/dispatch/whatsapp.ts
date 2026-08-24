@@ -14,6 +14,10 @@ import {
   resolveTemplateId,
 } from "../providers/gupshup-whatsapp.js";
 import {
+  parseFreshchatTemplateSpec,
+  resolveFreshchatDevTestRecipient,
+} from "../providers/freshchat-whatsapp.js";
+import {
   resolveSenderChainForRecipient,
   sendWithFailover,
 } from "../providers/senders.js";
@@ -38,7 +42,7 @@ export async function processWhatsAppDispatch(
   const { campaign_id, user_ids, content, metadata } = payload;
 
   log.info(
-    { recipients: user_ids.length, channel: "whatsapp", provider: "gupshup" },
+    { recipients: user_ids.length, channel: "whatsapp" },
     "Dispatch started"
   );
 
@@ -63,7 +67,7 @@ export async function processWhatsAppDispatch(
   };
 
   const users = await lookupUsers(user_ids);
-  const devRecipient = resolveDevTestRecipient();
+  const devRecipient = resolveDevTestRecipient() || resolveFreshchatDevTestRecipient();
 
   const program = programOf(payload);
   const sendLogs = new SendLogRecorder({
@@ -73,7 +77,7 @@ export async function processWhatsAppDispatch(
     step_id: program.step_id,
     organization_id: metadata.organization_id ?? null,
     channel: "whatsapp",
-    provider: metadata.sender_id || "gupshup",
+    provider: metadata.sender_id || "whatsapp",
     // Unlike email, this is a real provider-registered template id.
     template_ref: deriveTemplateRef(
       payload,
@@ -168,12 +172,28 @@ export async function processWhatsAppDispatch(
     }
 
     if (!mediaSpec && !templateSpec) {
-      const senderDefaultTemplate = chain[0]?.config.gupshup?.default_template;
+      const senderDefaultTemplate =
+        chain[0]?.config.gupshup?.default_template ||
+        chain[0]?.config.freshchat?.default_template;
       templateSpec = parseWhatsAppTemplateSpec(content, senderDefaultTemplate);
+      if (!templateSpec) {
+        const freshchatSpec = parseFreshchatTemplateSpec(
+          content,
+          payload.images,
+          senderDefaultTemplate
+        );
+        if (freshchatSpec) {
+          templateSpec = {
+            id: freshchatSpec.template_id,
+            template_id: freshchatSpec.template_id,
+            params: freshchatSpec.params,
+          };
+        }
+      }
       if (!templateSpec) {
         throw new Error(
           "WhatsApp dispatch requires content.caption (+ media_url), template JSON in content.text_body/html_body, " +
-            "sender default_template, or GUPSHUP_DEFAULT_TEMPLATE env"
+            "sender default_template, or default template in env"
         );
       }
     }
@@ -181,7 +201,7 @@ export async function processWhatsAppDispatch(
     if (devRecipient) {
       log.warn(
         { dev_mode: true },
-        "DEV mode — routing all WhatsApp recipients to GUPSHUP_EVENT_TEST_RECIPIENTS"
+        "DEV mode — routing all WhatsApp recipients to test recipient"
       );
     }
 
@@ -193,21 +213,37 @@ export async function processWhatsAppDispatch(
       analytics_callback_url: resolvedAnalyticsUrl,
     };
 
-    const message = mediaSpec
-      ? buildWhatsAppMediaMessageForUser(
-          mediaSpec,
+    const freshchatSpec = parseFreshchatTemplateSpec(
+      content,
+      payload.images,
+      chain[0]?.config.freshchat?.default_template
+    );
+
+    const message: any = mediaSpec
+      ? {
+          ...buildWhatsAppMediaMessageForUser(
+            mediaSpec,
+            user,
+            phone,
+            personalizeCtx,
+            sendContext
+          ),
           user,
-          phone,
           personalizeCtx,
-          sendContext
-        )
-      : buildWhatsAppMessageForUser(
-          templateSpec!,
+          freshchatSpec: freshchatSpec ?? undefined,
+        }
+      : {
+          ...buildWhatsAppMessageForUser(
+            templateSpec!,
+            user,
+            phone,
+            personalizeCtx,
+            sendContext
+          ),
           user,
-          phone,
           personalizeCtx,
-          sendContext
-        );
+          freshchatSpec: freshchatSpec ?? undefined,
+        };
 
     const sendStartedAt = performance.now();
     const result = await sendWithFailover(message, chain, "whatsapp");
@@ -215,7 +251,7 @@ export async function processWhatsAppDispatch(
 
     if (!result.success) {
       telemetry.capture("dispatcher_provider_send_failed", {
-        provider: "gupshup",
+        provider: result.finalSender.config.provider,
         channel: "whatsapp",
       });
       const level = failureCount === 0 ? "warn" : "debug";
@@ -224,7 +260,7 @@ export async function processWhatsAppDispatch(
         {
           user_id: userId,
           sender_id: result.finalSender.config.id,
-          provider: "gupshup",
+          provider: result.finalSender.config.provider,
           error_category: result.error_category || "delivery_failure",
           error_message: result.error ?? "provider send failed",
           duration_ms: latencyMs,
@@ -261,6 +297,7 @@ export async function processWhatsAppDispatch(
       metadata,
       resolvedAnalyticsUrl,
       payload,
+      provider: result.finalSender.config.provider,
       senderId: result.finalSender.config.id,
       success: result.success,
       messageId: result.messageId,
@@ -283,7 +320,6 @@ export async function processWhatsAppDispatch(
   }
   log[failed > 0 ? "warn" : "info"](
     {
-      provider: "gupshup",
       channel: "whatsapp",
       requested: user_ids.length,
       sent,
@@ -295,7 +331,6 @@ export async function processWhatsAppDispatch(
   );
   telemetry.capture("dispatcher_dispatch_completed", {
     channel: "whatsapp",
-    provider: "gupshup",
     requested_count: user_ids.length,
     resolved_count: sendResults.length,
     sent_count: sent,
@@ -310,6 +345,7 @@ async function emitWhatsAppEvent(args: {
   metadata: DispatchPayload["metadata"];
   resolvedAnalyticsUrl: string;
   payload: DispatchPayload;
+  provider?: string;
   senderId?: string;
   success: boolean;
   messageId?: string;
@@ -321,6 +357,7 @@ async function emitWhatsAppEvent(args: {
     metadata,
     resolvedAnalyticsUrl,
     payload,
+    provider = "gupshup",
     senderId,
     success,
     messageId,
@@ -333,8 +370,8 @@ async function emitWhatsAppEvent(args: {
   const hasMessageId = typeof messageId === "string" && messageId.length > 0;
   if (success && !hasMessageId) {
     log.warn(
-      { user_id: userId, provider: "gupshup", error_category: "noProviderMessageId" },
-      "Gupshup accepted the message but returned no message id — recording it as failed, " +
+      { user_id: userId, provider, error_category: "noProviderMessageId" },
+      "Provider accepted the message but returned no message id — recording it as failed, " +
         "because delivery receipts are keyed on that id and could never be correlated"
     );
   }
@@ -344,7 +381,7 @@ async function emitWhatsAppEvent(args: {
 
   const dispatch_id = payload.dispatch_ids?.[userId];
 
-  // `smsign_<sig>` is the same HMAC placed on the outbound Gupshup `extra`/`tag`.
+  // `smsign_<sig>` is the same HMAC placed on outbound provider tags.
   // Forwarded so the backend — which recovers campaign/user/org by externalId —
   // can recompute it and confirm the event originated from a message we sent.
   const sign = computeTagSign({
@@ -362,7 +399,7 @@ async function emitWhatsAppEvent(args: {
       analytics_callback_url: resolvedAnalyticsUrl,
       channel: "whatsapp",
       event: effectiveSuccess ? "dispatched" : "failed",
-      provider: "gupshup",
+      provider: provider as any,
       provider_message_id: messageId ?? "unknown",
       occurred_at: new Date().toISOString(),
       metadata: {

@@ -7,7 +7,7 @@ import type { AnalyticsEventType } from "../../providers/types.js";
 export type Channel = "email" | "whatsapp" | "sms";
 
 /** `link_click` = synthetic unsubscribe recorded from POST /api/unsubscribe (no provider webhook). */
-export type InboundProviderName = "sendgrid" | "ses" | "gupshup" | "link_click";
+export type InboundProviderName = "sendgrid" | "ses" | "gupshup" | "freshchat" | "link_click";
 
 export interface Correlation {
   campaign_id: string;

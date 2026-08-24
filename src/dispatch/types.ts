@@ -7,6 +7,8 @@ export type DispatchPayload = {
     subject?: string;
     html_body?: string;
     text_body?: string;
+    /** Template ID/name for WhatsApp templates (Freshchat/Gupshup). */
+    template_id?: string;
     /** WhatsApp media template caption with {{placeholders}} — triggers SENDMEDIAMESSAGE API. */
     caption?: string;
     /** Public HTTPS URL for the WhatsApp media asset (image, etc.). */
