@@ -23,6 +23,7 @@ import {
 } from "../providers/senders.js";
 import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
+import { resolveDynamicValues } from "../variables/resolver.js";
 import { programOf } from "../db/repos/dispatch-programs.js";
 import { SendLogRecorder } from "./send-log-recorder.js";
 import { deriveTemplateRef } from "./template-ref.js";
@@ -67,6 +68,7 @@ export async function processWhatsAppDispatch(
   };
 
   const users = await lookupUsers(user_ids);
+  const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx);
   const devRecipient = resolveDevTestRecipient() || resolveFreshchatDevTestRecipient();
 
   const program = programOf(payload);
@@ -97,18 +99,37 @@ export async function processWhatsAppDispatch(
   let failureCount = 0;
 
   for (const userId of user_ids) {
-    const user = users.get(userId);
+    let user = users.get(userId);
     if (!user) {
-      unresolved += 1;
-      log.debug({ user_id: userId }, "Recipient not found in user lookup — skipped");
-      sendLogs.add({
-        user_id: userId,
-        status: "failed",
-        error_category: "user_not_found",
-        error_message: `User ${userId} not found in user lookup — skipped`,
-      });
-      continue;
+      if (devRecipient || /^\+?[0-9]{7,15}$/.test(userId)) {
+        user = {
+          user_id: userId,
+          email: `${userId}@test.local`,
+          fields: {
+            first_name: "there",
+            phone: devRecipient || userId,
+            phone_no: devRecipient || userId,
+          },
+        };
+        log.info(
+          { user_id: userId, dev_recipient: devRecipient },
+          "Recipient not found in DB — using fallback recipient for dev/testing"
+        );
+      } else {
+        unresolved += 1;
+        log.debug({ user_id: userId }, "Recipient not found in user lookup — skipped");
+        sendLogs.add({
+          user_id: userId,
+          status: "failed",
+          error_category: "user_not_found",
+          error_message: `User ${userId} not found in user lookup — skipped`,
+        });
+        continue;
+      }
     }
+
+    const resolution = resolvedVars.get(user.user_id);
+    const resolved = resolution?.values;
 
     const phone = resolveRecipientPhone(user, devRecipient);
     if (!phone) {
@@ -230,6 +251,7 @@ export async function processWhatsAppDispatch(
           ),
           user,
           personalizeCtx,
+          resolvedVars: resolved,
           freshchatSpec: freshchatSpec ?? undefined,
         }
       : {
@@ -242,6 +264,7 @@ export async function processWhatsAppDispatch(
           ),
           user,
           personalizeCtx,
+          resolvedVars: resolved,
           freshchatSpec: freshchatSpec ?? undefined,
         };
 
