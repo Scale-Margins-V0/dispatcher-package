@@ -96,6 +96,7 @@ export const LogComponent = {
   dispatchSendLogs: "dispatch.send-logs",
   providers: "providers",
   providersGupshup: "providers.gupshup",
+  providersFreshchat: "providers.freshchat",
   variablesResolver: "variables.resolver",
   events: "events",
   eventsInbound: "events.inbound",

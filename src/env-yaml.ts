@@ -49,16 +49,22 @@ const gupshupConfigSchema = z.object({
 });
 
 const freshchatConfigSchema = z.object({
+  mode: z.string().optional(),
   api_key: z.string().optional(),
   api_key_env: z.string().optional(),
+  source: z.union([z.string(), z.number()]).transform(String).optional(),
+  source_env: z.string().optional(),
+  src_name: z.string().optional(),
+  template_api_url: z.string().optional(),
   api_endpoint: z.string().optional(),
   api_endpoint_env: z.string().optional(),
   namespace: z.string().optional(),
   namespace_env: z.string().optional(),
-  from_number: z.string().optional(),
-  from_number_env: z.string().optional(),
   default_template: z.string().optional(),
   default_template_json: z.string().optional(),
+  template_language: z.string().optional(),
+  from_number: z.string().optional(),
+  from_number_env: z.string().optional(),
 });
 
 const senderFailoverSchema = z.object({
@@ -200,22 +206,33 @@ export function synthesizeBackCompatEnvYaml(): EnvYaml {
   let defaultWaId: string | undefined = undefined;
 
   if (waProvider === "freshchat" || (hasFreshchat && !hasGupshup)) {
+    const freshchatSource =
+      process.env.FRESHCHAT_SOURCE || process.env.FRESHCHAT_FROM_NUMBER;
     defaultWaId = "default-freshchat";
     senders.push({
       id: "default-freshchat",
       channel: "whatsapp",
       provider: "freshchat",
       organizations: ["*"],
-      from: process.env.FRESHCHAT_FROM_NUMBER,
+      from: freshchatSource,
       weight: 1,
       enabled: true,
       freshchat: {
+        mode: "api_key",
         api_key_env: "FRESHCHAT_API_KEY",
+        source: freshchatSource,
+        source_env: process.env.FRESHCHAT_SOURCE
+          ? "FRESHCHAT_SOURCE"
+          : "FRESHCHAT_FROM_NUMBER",
+        template_api_url:
+          process.env.FRESHCHAT_TEMPLATE_API_URL ||
+          process.env.FRESHCHAT_OUTBOUND_MESSAGES_URL,
         api_endpoint_env: "FRESHCHAT_OUTBOUND_MESSAGES_URL",
         namespace_env: "FRESHCHAT_NAMESPACE",
-        from_number_env: "FRESHCHAT_FROM_NUMBER",
+        template_language: process.env.FRESHCHAT_TEMPLATE_LANGUAGE || "en",
         default_template:
-          process.env.FRESHCHAT_DEFAULT_TEMPLATE || process.env.FRESHCHAT_EVENT_TEST_TEMPLATE,
+          process.env.FRESHCHAT_DEFAULT_TEMPLATE ||
+          process.env.FRESHCHAT_EVENT_TEST_TEMPLATE,
       },
     });
   } else if (hasGupshup) {
@@ -422,14 +439,16 @@ export function ensureEnvYamlValid(): void {
           `[env.yaml] Freshchat sender '${sender.id}' requires api_key or valid api_key_env`
         );
       }
+      const rawSource = fc?.source !== undefined ? String(fc.source) : undefined;
       const fromNumber =
         fc?.from_number?.trim() ||
         (fc?.from_number_env ? process.env[fc.from_number_env]?.trim() : undefined) ||
+        rawSource?.trim() ||
         sender.from?.trim() ||
         process.env.FRESHCHAT_FROM_NUMBER?.trim();
       if (!fromNumber) {
         throw new Error(
-          `[env.yaml] Freshchat sender '${sender.id}' requires from_number or from address`
+          `[env.yaml] Freshchat sender '${sender.id}' requires source, from_number, or from address`
         );
       }
     }

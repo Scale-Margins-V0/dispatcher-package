@@ -102,16 +102,22 @@ export interface GupshupSenderConfig {
 }
 
 export interface FreshchatSenderConfig {
+  mode?: "api_key" | string;
   api_key?: string;
   api_key_env?: string;
+  source?: string | number;
+  source_env?: string;
+  src_name?: string;
+  template_api_url?: string;
   api_endpoint?: string;
   api_endpoint_env?: string;
   namespace?: string;
   namespace_env?: string;
-  from_number?: string;
-  from_number_env?: string;
   default_template?: string;
   default_template_json?: string;
+  template_language?: string;
+  from_number?: string;
+  from_number_env?: string;
 }
 
 export interface SenderFailoverConfig {

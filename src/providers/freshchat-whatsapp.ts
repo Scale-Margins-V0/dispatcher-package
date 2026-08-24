@@ -2,25 +2,27 @@
  * Freshchat WhatsApp outbound provider:
  *
  * Calls the Freshchat Outbound Messages API to send templated WhatsApp messages
- * with rich media and personalized body parameters.
+ * with rich media, headers (image/document/video), and personalized body parameters.
  *
  * Endpoint: POST https://<account>.freshchat.com/v2/outbound-messages/whatsapp
  * Auth: Authorization: Bearer <token>
  */
 
+import { LogComponent } from "../logging/conventions.js";
 import { componentLogger } from "../logging/logger.js";
 import { personalize, type PersonalizeDispatchContext } from "../personalize.js";
 import type { UserRecord } from "../user-lookup/types.js";
 import type { SendContext, SendResult, SenderConfig } from "./types.js";
 
-const log = componentLogger("providers.freshchat");
+const log = componentLogger(LogComponent.providersFreshchat);
 
 export interface FreshchatConfig {
   apiKey: string;
   apiEndpoint: string;
-  fromNumber: string;
+  source: string;
   namespace?: string;
   defaultTemplate?: string;
+  templateLanguage?: string;
 }
 
 export interface FreshchatTemplateSpec {
@@ -31,6 +33,7 @@ export interface FreshchatTemplateSpec {
   namespace?: string;
   params?: string[];
   media_url?: string;
+  header_type?: "image" | "document" | "video";
 }
 
 export interface FreshchatWhatsAppPayload {
@@ -52,7 +55,7 @@ export interface FreshchatWhatsAppPayload {
       };
       rich_template_data?: {
         header?: {
-          type: "image";
+          type: "image" | "document" | "video";
           media_url?: string;
           media?: {
             url?: string;
@@ -81,6 +84,7 @@ export interface FreshchatSendParams {
     storage?: string;
     namespace?: string;
     media_url?: string;
+    header_type?: "image" | "document" | "video";
   };
   caption?: string;
   mediaUrl?: string;
@@ -90,6 +94,7 @@ export interface FreshchatSendParams {
   context?: SendContext;
   user?: UserRecord;
   personalizeCtx?: PersonalizeDispatchContext;
+  resolvedVars?: Record<string, string>;
   freshchatSpec?: FreshchatTemplateSpec;
 }
 
@@ -113,22 +118,28 @@ export function resolveFreshchatDevTestRecipient(): string | undefined {
 export function resolveFreshchatConfig(): FreshchatConfig | null {
   const apiKey = process.env.FRESHCHAT_API_KEY?.trim();
   const apiEndpoint =
+    process.env.FRESHCHAT_TEMPLATE_API_URL?.trim() ||
     process.env.FRESHCHAT_OUTBOUND_MESSAGES_URL?.trim() ||
     "https://api.freshchat.com/v2/outbound-messages/whatsapp";
-  const fromNumberRaw = process.env.FRESHCHAT_FROM_NUMBER?.trim();
+  const sourceRaw =
+    process.env.FRESHCHAT_SOURCE?.trim() ||
+    process.env.FRESHCHAT_FROM_NUMBER?.trim();
   const namespace = process.env.FRESHCHAT_NAMESPACE?.trim();
   const defaultTemplate = process.env.FRESHCHAT_DEFAULT_TEMPLATE?.trim();
+  const templateLanguage =
+    process.env.FRESHCHAT_TEMPLATE_LANGUAGE?.trim() || "en";
 
-  if (!apiKey || !fromNumberRaw) {
+  if (!apiKey || !sourceRaw) {
     return null;
   }
 
   return {
     apiKey,
     apiEndpoint,
-    fromNumber: formatFreshchatPhone(fromNumberRaw),
+    source: formatFreshchatPhone(sourceRaw),
     namespace,
     defaultTemplate,
+    templateLanguage,
   };
 }
 
@@ -141,15 +152,24 @@ export function freshchatConfigFromSender(sender: SenderConfig): FreshchatConfig
     "";
 
   const apiEndpoint =
+    fc?.template_api_url?.trim() ||
     fc?.api_endpoint?.trim() ||
     (fc?.api_endpoint_env ? process.env[fc.api_endpoint_env]?.trim() : undefined) ||
+    process.env.FRESHCHAT_TEMPLATE_API_URL?.trim() ||
     process.env.FRESHCHAT_OUTBOUND_MESSAGES_URL?.trim() ||
     "https://api.freshchat.com/v2/outbound-messages/whatsapp";
 
-  const fromNumberRaw =
+  const rawSource = fc?.source !== undefined ? String(fc.source) : undefined;
+  const sourceEnv = fc?.source_env ? process.env[fc.source_env]?.trim() : undefined;
+  const fromNumberEnv = fc?.from_number_env ? process.env[fc.from_number_env]?.trim() : undefined;
+
+  const sourceRaw =
+    rawSource?.trim() ||
+    sourceEnv ||
     fc?.from_number?.trim() ||
-    (fc?.from_number_env ? process.env[fc.from_number_env]?.trim() : undefined) ||
+    fromNumberEnv ||
     sender.from?.trim() ||
+    process.env.FRESHCHAT_SOURCE?.trim() ||
     process.env.FRESHCHAT_FROM_NUMBER?.trim() ||
     "";
 
@@ -163,12 +183,18 @@ export function freshchatConfigFromSender(sender: SenderConfig): FreshchatConfig
     fc?.default_template?.trim() ||
     process.env.FRESHCHAT_DEFAULT_TEMPLATE?.trim();
 
+  const templateLanguage =
+    fc?.template_language?.trim() ||
+    process.env.FRESHCHAT_TEMPLATE_LANGUAGE?.trim() ||
+    "en";
+
   return {
     apiKey,
     apiEndpoint,
-    fromNumber: fromNumberRaw ? formatFreshchatPhone(fromNumberRaw) : "",
+    source: sourceRaw ? formatFreshchatPhone(sourceRaw) : "",
     namespace,
     defaultTemplate,
+    templateLanguage,
   };
 }
 
@@ -179,17 +205,37 @@ export function parseFreshchatTemplateSpec(
 ): FreshchatTemplateSpec | null {
   if (!content && !senderDefaultTemplate) return null;
 
-  // 1. Direct template_id string
-  if (content && typeof content.template_id === "string" && content.template_id.trim()) {
-    const templateId = content.template_id.trim();
-    const mediaUrl =
-      typeof content.media_url === "string" && content.media_url.trim()
-        ? content.media_url.trim()
-        : images?.[0]?.url;
+  const templateId =
+    (content && typeof content.template_id === "string" && content.template_id.trim()) ||
+    (content && typeof content.template_name === "string" && content.template_name.trim()) ||
+    undefined;
 
-    // Check if caption has {{variables}}
-    const caption = typeof content.caption === "string" ? content.caption : undefined;
-    const bodyText = typeof content.text_body === "string" ? content.text_body : undefined;
+  const mediaUrl =
+    (content && typeof content.media_url === "string" && content.media_url.trim() ? content.media_url.trim() : undefined) ||
+    images?.[0]?.url;
+
+  const headerType = (content?.header_type as "image" | "document" | "video" | undefined) || undefined;
+
+  // 1. Direct array of params or variables from Atlas payload
+  const arrayParams =
+    (content && Array.isArray(content.params) ? content.params : undefined) ||
+    (content && Array.isArray(content.variables) ? content.variables : undefined);
+
+  if (arrayParams) {
+    const stringParams = arrayParams.map((p) => String(p));
+    return {
+      template_id: templateId || senderDefaultTemplate,
+      template_name: templateId || senderDefaultTemplate,
+      params: stringParams,
+      media_url: mediaUrl,
+      header_type: headerType,
+    };
+  }
+
+  // 2. Direct template_id string with caption / text_body extraction
+  if (templateId) {
+    const caption = typeof content?.caption === "string" ? content.caption : undefined;
+    const bodyText = typeof content?.text_body === "string" ? content.text_body : undefined;
     const sourceText = caption || bodyText || "";
     const placeholders = Array.from(sourceText.matchAll(/\{\{([^}]+)\}\}/g)).map(
       (m) => `{{${m[1]?.trim()}}}`
@@ -200,10 +246,11 @@ export function parseFreshchatTemplateSpec(
       template_name: templateId,
       params: placeholders.length > 0 ? placeholders : undefined,
       media_url: mediaUrl,
+      header_type: headerType,
     };
   }
 
-  // 2. Embedded JSON in text_body / html_body
+  // 3. Embedded JSON in text_body / html_body
   const rawJson =
     (content && typeof content.text_body === "string" && content.text_body.trim().startsWith("{")
       ? content.text_body.trim()
@@ -222,8 +269,13 @@ export function parseFreshchatTemplateSpec(
           language: parsed.language || "en",
           namespace: parsed.namespace,
           storage: parsed.storage || "none",
-          params: Array.isArray(parsed.params) ? parsed.params : undefined,
-          media_url: parsed.media_url || images?.[0]?.url,
+          params: Array.isArray(parsed.params)
+            ? parsed.params.map((p: unknown) => String(p))
+            : Array.isArray(parsed.variables)
+            ? parsed.variables.map((p: unknown) => String(p))
+            : undefined,
+          media_url: parsed.media_url || mediaUrl,
+          header_type: parsed.header_type || headerType,
         };
       }
     } catch {
@@ -231,7 +283,7 @@ export function parseFreshchatTemplateSpec(
     }
   }
 
-  // 3. Fallback to sender or env default template
+  // 4. Fallback to sender or env default template
   const fallback =
     senderDefaultTemplate ||
     process.env.FRESHCHAT_DEFAULT_TEMPLATE?.trim() ||
@@ -247,15 +299,21 @@ export function parseFreshchatTemplateSpec(
           language: parsed.language || "en",
           namespace: parsed.namespace,
           storage: parsed.storage || "none",
-          params: Array.isArray(parsed.params) ? parsed.params : undefined,
-          media_url: parsed.media_url || images?.[0]?.url,
+          params: Array.isArray(parsed.params)
+            ? parsed.params.map((p: unknown) => String(p))
+            : Array.isArray(parsed.variables)
+            ? parsed.variables.map((p: unknown) => String(p))
+            : undefined,
+          media_url: parsed.media_url || mediaUrl,
+          header_type: parsed.header_type || headerType,
         };
       } catch {}
     }
     return {
       template_id: fallback,
       template_name: fallback,
-      media_url: images?.[0]?.url,
+      media_url: mediaUrl,
+      header_type: headerType,
     };
   }
 
@@ -274,7 +332,7 @@ export class FreshchatWhatsAppProvider {
       this.config = resolved || {
         apiKey: "",
         apiEndpoint: "https://api.freshchat.com/v2/outbound-messages/whatsapp",
-        fromNumber: "",
+        source: "",
       };
     }
   }
@@ -293,6 +351,7 @@ export class FreshchatWhatsAppProvider {
     let templateSpec: FreshchatTemplateSpec | null = null;
     let user: UserRecord | undefined;
     let personalizeCtx: PersonalizeDispatchContext | undefined;
+    let resolvedVars: Record<string, string> | undefined;
     let explicitMediaUrl: string | undefined;
 
     if (typeof messageOrPhone === "string") {
@@ -305,6 +364,7 @@ export class FreshchatWhatsAppProvider {
       toPhone = msg.to;
       user = msg.user;
       personalizeCtx = msg.personalizeCtx;
+      resolvedVars = msg.resolvedVars;
       explicitMediaUrl = msg.mediaUrl;
 
       if (msg.freshchatSpec) {
@@ -318,6 +378,7 @@ export class FreshchatWhatsAppProvider {
           namespace: msg.template.namespace,
           params: msg.template.params || msg.template.attributes,
           media_url: msg.template.media_url || explicitMediaUrl,
+          header_type: msg.template.header_type,
         };
       }
     }
@@ -342,13 +403,20 @@ export class FreshchatWhatsAppProvider {
     }
 
     const namespace = templateSpec.namespace || this.config.namespace || "";
-    const languageCode = templateSpec.language || "en";
+    const languageCode =
+      templateSpec.language ||
+      this.config.templateLanguage ||
+      "en";
     const storage = templateSpec.storage || "none";
 
     const rawParams = templateSpec.params || [];
-    const personalizedParams = rawParams.map((p) =>
-      user && personalizeCtx ? personalize(p, user, personalizeCtx) : p
-    );
+    const personalizedParams = rawParams.map((p) => {
+      const paramStr = String(p);
+      if (user && personalizeCtx) {
+        return personalize(paramStr, user, personalizeCtx, resolvedVars);
+      }
+      return paramStr;
+    });
 
     const messageTemplate: FreshchatWhatsAppPayload["data"]["message_template"] = {
       storage,
@@ -361,12 +429,26 @@ export class FreshchatWhatsAppProvider {
     };
 
     const mediaUrl = explicitMediaUrl || templateSpec.media_url;
+
+    // Attach rich_template_data only if media header or body params exist
     if (personalizedParams.length > 0 || mediaUrl) {
       messageTemplate.rich_template_data = {};
 
       if (mediaUrl) {
+        let headerType: "image" | "document" | "video" = "image";
+        if (templateSpec.header_type) {
+          headerType = templateSpec.header_type;
+        } else {
+          const lower = mediaUrl.toLowerCase();
+          if (lower.endsWith(".pdf") || lower.endsWith(".doc") || lower.endsWith(".docx")) {
+            headerType = "document";
+          } else if (lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".3gp")) {
+            headerType = "video";
+          }
+        }
+
         messageTemplate.rich_template_data.header = {
-          type: "image",
+          type: headerType,
           media_url: mediaUrl,
           media: {
             url: mediaUrl,
@@ -376,14 +458,14 @@ export class FreshchatWhatsAppProvider {
 
       if (personalizedParams.length > 0) {
         messageTemplate.rich_template_data.body = {
-          params: personalizedParams.map((param) => ({ data: param })),
+          params: personalizedParams.map((param) => ({ data: String(param) })),
         };
       }
     }
 
     const payload: FreshchatWhatsAppPayload = {
       from: {
-        phone_number: this.config.fromNumber,
+        phone_number: formatFreshchatPhone(this.config.source),
       },
       to: [
         {
@@ -419,6 +501,11 @@ export class FreshchatWhatsAppProvider {
           (typeof data.request_id === "string" && data.request_id) ||
           (typeof data.id === "string" && data.id) ||
           undefined;
+
+        log.info(
+          { http_status: response.status, message_id: requestId },
+          "Freshchat API returned 2xx status"
+        );
 
         return {
           success: true,
