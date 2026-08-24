@@ -48,6 +48,19 @@ const gupshupConfigSchema = z.object({
   media_api_url: z.string().optional(),
 });
 
+const freshchatConfigSchema = z.object({
+  api_key: z.string().optional(),
+  api_key_env: z.string().optional(),
+  api_endpoint: z.string().optional(),
+  api_endpoint_env: z.string().optional(),
+  namespace: z.string().optional(),
+  namespace_env: z.string().optional(),
+  from_number: z.string().optional(),
+  from_number_env: z.string().optional(),
+  default_template: z.string().optional(),
+  default_template_json: z.string().optional(),
+});
+
 const senderFailoverSchema = z.object({
   enabled: z.boolean().optional(),
   max_attempts: z.number().int().positive().optional(),
@@ -58,7 +71,7 @@ const senderFailoverSchema = z.object({
 const senderSchema = z.object({
   id: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/, "Sender id must be an alphanumeric slug"),
   channel: z.enum(["email", "whatsapp"]),
-  provider: z.enum(["ses", "sendgrid", "gupshup"]),
+  provider: z.enum(["ses", "sendgrid", "gupshup", "freshchat"]),
   organizations: z.array(z.string().min(1)).optional(),
   from: z.string().optional(),
   reply_to: z.string().optional(),
@@ -68,6 +81,7 @@ const senderSchema = z.object({
   ses: sesConfigSchema.optional(),
   sendgrid: sendgridConfigSchema.optional(),
   gupshup: gupshupConfigSchema.optional(),
+  freshchat: freshchatConfigSchema.optional(),
 });
 
 const routingFailoverSchema = z.object({
@@ -176,13 +190,36 @@ export function synthesizeBackCompatEnvYaml(): EnvYaml {
 
   const senders: EnvYaml["senders"] = [emailSender as EnvYaml["senders"][number]];
 
-  // If Gupshup environment variables are present, synthesize a default whatsapp sender as well
+  const waProvider = process.env.WHATSAPP_PROVIDER?.toLowerCase();
+  const hasFreshchat = Boolean(process.env.FRESHCHAT_API_KEY);
   const hasGupshup = Boolean(
     process.env.GUPSHUP_API_KEY ||
       (process.env.GUPSHUP_USER_ID && process.env.GUPSHUP_PASSWORD)
   );
 
-  if (hasGupshup) {
+  let defaultWaId: string | undefined = undefined;
+
+  if (waProvider === "freshchat" || (hasFreshchat && !hasGupshup)) {
+    defaultWaId = "default-freshchat";
+    senders.push({
+      id: "default-freshchat",
+      channel: "whatsapp",
+      provider: "freshchat",
+      organizations: ["*"],
+      from: process.env.FRESHCHAT_FROM_NUMBER,
+      weight: 1,
+      enabled: true,
+      freshchat: {
+        api_key_env: "FRESHCHAT_API_KEY",
+        api_endpoint_env: "FRESHCHAT_OUTBOUND_MESSAGES_URL",
+        namespace_env: "FRESHCHAT_NAMESPACE",
+        from_number_env: "FRESHCHAT_FROM_NUMBER",
+        default_template:
+          process.env.FRESHCHAT_DEFAULT_TEMPLATE || process.env.FRESHCHAT_EVENT_TEST_TEMPLATE,
+      },
+    });
+  } else if (hasGupshup) {
+    defaultWaId = "default-wa";
     const isApiKey = Boolean(process.env.GUPSHUP_API_KEY);
     senders.push({
       id: "default-wa",
@@ -217,7 +254,7 @@ export function synthesizeBackCompatEnvYaml(): EnvYaml {
       },
       default_sender: {
         email: "default-email",
-        ...(hasGupshup ? { whatsapp: "default-wa" } : {}),
+        ...(defaultWaId ? { whatsapp: defaultWaId } : {}),
       },
     },
     senders,
@@ -304,8 +341,8 @@ export function ensureEnvYamlValid(): void {
     if (sender.channel === "email" && sender.provider !== "ses" && sender.provider !== "sendgrid") {
       throw new Error(`[env.yaml] Email sender '${sender.id}' cannot use provider '${sender.provider}'`);
     }
-    if (sender.channel === "whatsapp" && sender.provider !== "gupshup") {
-      throw new Error(`[env.yaml] WhatsApp sender '${sender.id}' must use provider 'gupshup'`);
+    if (sender.channel === "whatsapp" && sender.provider !== "gupshup" && sender.provider !== "freshchat") {
+      throw new Error(`[env.yaml] WhatsApp sender '${sender.id}' cannot use provider '${sender.provider}'`);
     }
 
     // 3. Unique From address for email
@@ -374,6 +411,26 @@ export function ensureEnvYamlValid(): void {
             `[env.yaml] Gupshup Enterprise sender '${sender.id}' requires user_id and password`
           );
         }
+      }
+    }
+
+    if (sender.provider === "freshchat") {
+      const fc = sender.freshchat;
+      const key = fc?.api_key?.trim() || (fc?.api_key_env ? process.env[fc.api_key_env]?.trim() : undefined);
+      if (!key) {
+        throw new Error(
+          `[env.yaml] Freshchat sender '${sender.id}' requires api_key or valid api_key_env`
+        );
+      }
+      const fromNumber =
+        fc?.from_number?.trim() ||
+        (fc?.from_number_env ? process.env[fc.from_number_env]?.trim() : undefined) ||
+        sender.from?.trim() ||
+        process.env.FRESHCHAT_FROM_NUMBER?.trim();
+      if (!fromNumber) {
+        throw new Error(
+          `[env.yaml] Freshchat sender '${sender.id}' requires from_number or from address`
+        );
       }
     }
   }
