@@ -35,15 +35,16 @@ senders:
     channel: whatsapp
     provider: freshchat
     organizations: ["*"]
-    from: "+919876543210"
     weight: 2
     enabled: true
     freshchat:
+      mode: api_key
       api_key_env: FRESHCHAT_API_KEY
-      api_endpoint_env: FRESHCHAT_OUTBOUND_MESSAGES_URL
-      namespace_env: FRESHCHAT_NAMESPACE
-      from_number_env: FRESHCHAT_FROM_NUMBER
+      source: "918306107771"
+      template_api_url: "https://api.freshchat.com/v2/outbound-messages/whatsapp"
+      namespace: "124dc328_2252_4914_8472_c77dc7352d28"
       default_template: study_abroad_enquiry
+      template_language: en
 
   - id: gupshup-backup
     channel: whatsapp
@@ -54,7 +55,9 @@ senders:
     gupshup:
       mode: api_key
       api_key_env: GUPSHUP_API_KEY
+      source: "917016185829"
       default_template: study_abroad_enquiry
+      template_language: en
 ```
 
 ---
@@ -77,6 +80,21 @@ Set these in `.env` (see also [`.env.example`](../.env.example)).
 
 ---
 
+## Supported Template Types
+
+1. **Plain Template**:
+   - Template with static text, no media header, no body parameters.
+   - `rich_template_data` is omitted automatically.
+2. **Media Template**:
+   - Includes header media URL with auto-detected or explicit type: `"image"` (default), `"document"` (`.pdf`, `.doc`), or `"video"` (`.mp4`, `.mov`).
+3. **Dynamic with Values Template**:
+   - Includes ordered `params` or `variables` array containing mixed resolved strings (`"Some Custom String"`, `"SAVE50"`) and unresolved placeholders (`"{{first_name}}"`, `"{{age}}"`).
+   - Unresolved placeholders are evaluated per user; resolved strings are preserved intact.
+4. **Combined Media + Dynamic Values Template**:
+   - Includes both header media and body params.
+
+---
+
 ## Dispatch payload format
 
 When dispatching WhatsApp campaigns with Freshchat, ScaleMargin sends:
@@ -87,9 +105,16 @@ When dispatching WhatsApp campaigns with Freshchat, ScaleMargin sends:
   "channel": "whatsapp",
   "user_ids": ["usr_123", "usr_456"],
   "content": {
+    "template_name": "winter_discount_offer",
     "template_id": "winter_discount_offer",
-    "caption": "Hello {{first_name}}, get {{discount}}% off with code {{coupon_code}}!",
-    "media_url": "https://cdn.example.com/assets/promo-banner.png"
+    "media_url": "https://cdn.example.com/assets/promo-banner.png",
+    "header_type": "image",
+    "params": [
+      "{{first_name}}",
+      "Special Edition Course",
+      "SAVE50",
+      "{{age}}"
+    ]
   },
   "metadata": {
     "sender_id": "freshchat-primary",
