@@ -63,7 +63,7 @@ export interface EmailProvider {
 }
 
 export type SenderChannel = "email" | "whatsapp";
-export type SenderProviderType = "ses" | "sendgrid" | "gupshup";
+export type SenderProviderType = "ses" | "sendgrid" | "gupshup" | "freshchat";
 
 export interface SesSenderConfig {
   region?: string;
@@ -101,6 +101,19 @@ export interface GupshupSenderConfig {
   media_api_url?: string;
 }
 
+export interface FreshchatSenderConfig {
+  api_key?: string;
+  api_key_env?: string;
+  api_endpoint?: string;
+  api_endpoint_env?: string;
+  namespace?: string;
+  namespace_env?: string;
+  from_number?: string;
+  from_number_env?: string;
+  default_template?: string;
+  default_template_json?: string;
+}
+
 export interface SenderFailoverConfig {
   enabled?: boolean;
   max_attempts?: number;
@@ -121,6 +134,7 @@ export interface SenderConfig {
   ses?: SesSenderConfig;
   sendgrid?: SendGridSenderConfig;
   gupshup?: GupshupSenderConfig;
+  freshchat?: FreshchatSenderConfig;
 }
 
 export interface BreakerConfig {

@@ -294,6 +294,64 @@ describe("Multi-Sender Dispatcher Feature Suite", () => {
     });
   });
 
+  describe("Freshchat WhatsApp Multi-Sender Routing", () => {
+    it("resolves and pins Freshchat WhatsApp senders cleanly", () => {
+      setEnvYamlForTests({
+        version: 1,
+        senders: [
+          {
+            id: "freshchat-primary",
+            channel: "whatsapp",
+            provider: "freshchat",
+            from: "+919876543210",
+            weight: 2,
+            enabled: true,
+            freshchat: {
+              api_key: "fc-key-1",
+              api_endpoint: "https://api.freshchat.com/v2/outbound-messages/whatsapp",
+              from_number: "+919876543210",
+              namespace: "fc-ns-1",
+            },
+          },
+          {
+            id: "gupshup-backup",
+            channel: "whatsapp",
+            provider: "gupshup",
+            weight: 1,
+            enabled: true,
+            gupshup: {
+              api_key: "gs-key-1",
+              src_name: "gs-bot",
+              source: "919999999999",
+            },
+          },
+        ],
+      });
+
+      const payload: DispatchPayload = {
+        campaign_id: "c-wa-1",
+        channel: "whatsapp",
+        user_ids: ["u-wa-1"],
+        content: { template_id: "winter_offer" },
+        metadata: {
+          sender_id: "freshchat-primary",
+          organization_id: "org-1",
+          analytics_callback_url: "https://example.com/cb",
+        },
+      };
+
+      const pinResult = resolveSenderPin(payload);
+      expect(pinResult.ok).toBe(true);
+
+      const chain = resolveSenderChainForRecipient("u-wa-1", "whatsapp", "org-1", {
+        sender_id: "freshchat-primary",
+      });
+      expect(chain.length).toBe(1);
+      expect(chain[0]?.config.id).toBe("freshchat-primary");
+      expect(chain[0]?.config.provider).toBe("freshchat");
+    });
+  });
+
   describe("PII Scrubbing", () => {
     it("scrubs email addresses and phone numbers from error/metadata objects", () => {
       const dirty = {

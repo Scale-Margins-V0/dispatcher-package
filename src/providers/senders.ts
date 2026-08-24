@@ -3,6 +3,7 @@ import { loadEnvYaml } from "../env-yaml.js";
 import { LogComponent } from "../logging/conventions.js";
 import { componentLogger } from "../logging/logger.js";
 import { GupshupWhatsAppProvider, gupshupConfigFromSender } from "./gupshup-whatsapp.js";
+import { FreshchatWhatsAppProvider, freshchatConfigFromSender } from "./freshchat-whatsapp.js";
 import { SendGridProvider } from "./sendgrid.js";
 import { SESProvider } from "./ses.js";
 import type {
@@ -63,7 +64,7 @@ class SenderRegistry {
     }
   }
 
-  private instantiateProvider(cfg: SenderConfig): EmailProvider | GupshupWhatsAppProvider {
+  private instantiateProvider(cfg: SenderConfig): EmailProvider | GupshupWhatsAppProvider | FreshchatWhatsAppProvider {
     if (cfg.channel === "email") {
       if (cfg.provider === "sendgrid") {
         const apiKey =
@@ -93,6 +94,11 @@ class SenderRegistry {
     }
 
     // WhatsApp
+    if (cfg.provider === "freshchat") {
+      const freshchatCfg = freshchatConfigFromSender(cfg);
+      return new FreshchatWhatsAppProvider(freshchatCfg);
+    }
+
     const gupshupCfg = gupshupConfigFromSender(cfg);
     return new GupshupWhatsAppProvider(gupshupCfg);
   }
