@@ -83,7 +83,8 @@ export const LogField = {
  *
  * This list is descriptive, not enforced: `componentLogger` takes any string,
  * because a hard union would mean touching this file to add a log line. Keep it
- * current — ATLAS_API.md §8 publishes it so Atlas can build a filter dropdown.
+ * current — docs/swagger/atlas-api.yaml publishes it so Atlas can build a
+ * filter dropdown.
  */
 export const LogComponent = {
   apiDataplane: "api.dataplane",

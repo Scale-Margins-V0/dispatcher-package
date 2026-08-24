@@ -2,7 +2,7 @@
  * Contract tests for the data-plane campaign surface.
  *
  * The load-bearing one is the last block: a provider's rejection text routinely
- * quotes the address it rejected, and ATLAS_API.md promises no recipient
+ * quotes the address it rejected, and docs/swagger/atlas-api.yaml promises no recipient
  * address ever reaches ScaleMargin. That has to fail the build, not a review.
  */
 

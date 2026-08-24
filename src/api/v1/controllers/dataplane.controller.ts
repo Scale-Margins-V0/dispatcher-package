@@ -645,9 +645,9 @@ function serializeCampaign(row: CampaignSummaryRollupRow) {
 /**
  * A provider's rejection text is free-form and routinely quotes the address it
  * rejected — "550 5.1.1 <ada@acme.com> does not exist". That would put a
- * recipient email on the wire to ScaleMargin, which ATLAS_API.md §10 promises
- * never happens, so every message goes through the same scrubber the event
- * pipeline uses.
+ * recipient email on the wire to ScaleMargin, which the published API contract
+ * (docs/swagger/atlas-api.yaml) promises never happens, so every message goes
+ * through the same scrubber the event pipeline uses.
  */
 function serializeSendLog(row: SendLogRow) {
   return {

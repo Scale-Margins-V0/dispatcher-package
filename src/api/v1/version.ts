@@ -1,7 +1,6 @@
 /**
- * Contract version for the /api/v1 tree. Additive changes ship in place and
- * consumers must ignore unknown fields; removing or retyping a field means a
- * new /api/v2 mounted alongside this one.
+ * Contract version for the /api/v1 tree. Consumers must ignore unknown fields;
+ * the additive-change policy is documented in routes/dataplane.route.ts.
  */
 export const API_VERSION = "v1";
 
