@@ -44,12 +44,7 @@ import {
   listProgramSteps,
 } from "../../../db/repos/campaign-events.js";
 import { countSendLogs, listSendLogsPage } from "../../../db/repos/send-logs.js";
-import {
-  countLogs,
-  getLogById,
-  queryLogsPage,
-  type LogFilters,
-} from "../../../db/repos/logs.js";
+import { countLogs, getLogById, queryLogsPage, type LogFilters } from "../../../db/repos/logs.js";
 import { scrubPii } from "../../../events/scrubber.js";
 import type {
   AppLogRow,
@@ -59,6 +54,8 @@ import type {
 } from "../../../db/schema/index.js";
 import { getBuildInfo } from "../../../ops/build-info.js";
 import { getRuntimeStatus } from "../../../ops/diagnostics.js";
+import { loadEnvYaml } from "../../../env-yaml.js";
+import { registry } from "../../../providers/senders.js";
 import { renderPlaceholderPreview } from "../../../personalize.js";
 import { rowToPlaceholderEntry } from "../../../variables/mapping.js";
 import { redactConfig, unmaskHeaders } from "../../../variables/redaction.js";
@@ -902,3 +899,45 @@ export async function deleteVariableHandler(
   );
   res.json({ deleted: true, name: params.data.name });
 }
+
+/**
+ * GET /senders — lists configured, active senders for Atlas routing.
+ */
+export async function listSendersHandler(req: Request, res: Response): Promise<void> {
+  try {
+    const yaml = loadEnvYaml();
+    registry.init();
+    const channelFilter = req.query.channel ? String(req.query.channel).toLowerCase() : undefined;
+    const orgFilter = req.query.organization_id ? String(req.query.organization_id) : undefined;
+
+    const senders = yaml.senders
+      .filter((s) => s.enabled !== false)
+      .filter((s) => !channelFilter || s.channel.toLowerCase() === channelFilter)
+      .filter((s) => {
+        if (!orgFilter) return true;
+        if (!s.organizations || s.organizations.includes("*")) return true;
+        return s.organizations.includes(orgFilter);
+      })
+      .map((s) => ({
+        id: s.id,
+        channel: s.channel,
+        provider: s.provider,
+        from: s.from,
+        weight: s.weight ?? 1,
+        enabled: s.enabled !== false,
+        organizations: s.organizations ?? ["*"],
+        breaker_state: registry.getBreakerState(s.id)?.state ?? "closed",
+      }));
+
+    res.json({
+      generated_at: new Date().toISOString(),
+      senders,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: "failed_to_list_senders",
+      message: error instanceof Error ? error.message : "Failed to list senders",
+    });
+  }
+}
+
