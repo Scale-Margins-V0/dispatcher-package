@@ -1,29 +1,37 @@
 name: Deploy dispatcher to ACME
 
-# Auto-deploys the dispatcher to the isolated `acme` test environment
-# (namespace: acme on the dev GKE cluster) on every push to the `acme` branch.
+# Rolls the `dispatcher` Deployment in the GKE `acme` namespace onto the image
+# that build-and-push.yml just published to GHCR.
 #
-# What it does:
-#   1. Builds the dispatcher image with Cloud Build and pushes it to
-#      gcr.io/scale-margins-v0/scalemargin-dispatcher:dev-<sha> (+ moves :dev).
-#   2. Authenticates to GKE (Workload Identity Federation) and updates the
-#      existing `dispatcher` Deployment in the `acme` namespace to that image.
+# This workflow does NOT build. That is the whole point of splitting it out —
+# the old version built its own image with `docker build` and pushed it to
+# gcr.io, so every push to `acme` built the same commit twice, to two registries.
+# Now there is one build, and this deploys its output.
 #
-# It does NOT manage the acme k8s manifests/secrets (those live in the sm/acme
-# folder, out of this repo) — it only rolls the already-deployed Deployment.
+# It also does NOT manage the acme manifests, Secret or ConfigMap. Those live in
+# the sm/acme folder outside this repo and are unchanged by a deploy — exactly as
+# before. This only swaps the image tag on an already-existing Deployment.
 #
-# Required (configure once in the repo's `acme` GitHub Environment):
-#   secrets.GCP_SA_KEY - JSON key for a GCP service account with roles:
-#                          roles/storage.admin        (gcr.io push)
-#                          roles/container.developer  (kubectl to GKE)
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠️  workflow_run only fires if THIS FILE EXISTS ON THE DEFAULT BRANCH (`main`).
+#     That is a GitHub rule, not a choice. Merged to `acme` alone, nothing will
+#     ever trigger and there is no error to tell you why — the run simply never
+#     appears. Get this file onto `main` before relying on it.
+# ─────────────────────────────────────────────────────────────────────────────
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Build & publish image"]
+    types: [completed]
     branches: [acme]
   workflow_dispatch:
     inputs:
+      image_tag:
+        description: "Dev tag to deploy, e.g. dev-a5d5797. Blank = current HEAD of acme. Use this to roll back."
+        required: false
+        type: string
       restart_only:
-        description: "Skip build, just restart the deployment"
+        description: "Skip the image swap, just restart the deployment"
         required: false
         type: boolean
         default: false
@@ -38,15 +46,69 @@ env:
   NAMESPACE: acme
   DEPLOYMENT: dispatcher
   CONTAINER: dispatcher
-  IMAGE: gcr.io/scale-margins-v0/scalemargin-dispatcher
+  IMAGE: ghcr.io/scale-margins-v0/scalemargin-dispatcher-dev
+  PULL_SECRET: ghcr-dev
 
 jobs:
   deploy:
-    name: Build & deploy to acme
+    name: Deploy to acme
+    # A failed or cancelled build must not roll anything out. Manual runs are
+    # always allowed — that is the rollback path when a build is already red.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    # Deliberately not a Blacksmith runner: this is ~30s of kubectl, and the
+    # deploy path should not go down when a third-party runner service does.
     runs-on: ubuntu-latest
     environment: acme
     steps:
-      - uses: actions/checkout@v4
+      - name: Resolve the image tag to deploy
+        id: target
+        env:
+          # Never interpolate ${{ inputs.* }} straight into a run block.
+          INPUT_TAG: ${{ inputs.image_tag }}
+          # On workflow_run, github.sha is the DEFAULT BRANCH head, not the commit
+          # that was built. Using it would deploy an image that does not exist.
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG:-}" ]; then
+            TAG="${INPUT_TAG}"
+            SRC="manual input"
+          elif [ -n "${RUN_SHA:-}" ]; then
+            TAG="dev-${RUN_SHA:0:7}"
+            SRC="build of ${RUN_SHA}"
+          else
+            TAG="dev-${GITHUB_SHA:0:7}"
+            SRC="workflow ref ${GITHUB_SHA}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Deploying ${IMAGE}:${TAG}  (from ${SRC})"
+          {
+            echo "### 🚀 acme"
+            echo "\`${IMAGE}:${TAG}\` — from ${SRC}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Confirm the image exists in GHCR
+        if: ${{ !inputs.restart_only }}
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          TARGET: ${{ steps.target.outputs.image }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
+            echo "::warning::GHCR_PULL_TOKEN not set — skipping the pre-flight check. A missing image will surface as ImagePullBackOff instead."
+            exit 0
+          fi
+          echo "${GHCR_PULL_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          # Fail here, in two seconds, rather than after a three-minute rollout
+          # timeout with ImagePullBackOff and no obvious cause.
+          if ! docker manifest inspect "${TARGET}" >/dev/null 2>&1; then
+            echo "::error::${TARGET} is not in GHCR. Did the build succeed? Check the Build & publish image run for this commit."
+            exit 1
+          fi
+          echo "✅ ${TARGET} exists"
 
       - name: Google Auth (service account key)
         uses: google-github-actions/auth@v2
@@ -58,44 +120,53 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Configure Docker for gcr.io
-        if: ${{ !inputs.restart_only }}
-        run: gcloud auth configure-docker gcr.io --quiet
-
-      - name: Build & push image
-        if: ${{ !inputs.restart_only }}
-        run: |
-          set -euo pipefail
-          VERSION="$(node -p 'require("./package.json").version')"
-          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          docker build \
-            --build-arg DISPATCHER_VERSION="${VERSION}" \
-            --build-arg DISPATCHER_GIT_SHA="${GITHUB_SHA}" \
-            --build-arg DISPATCHER_BUILD_TIME="${BUILD_TIME}" \
-            --build-arg DISPATCHER_IMAGE_TAG="${IMAGE}:dev-${GITHUB_SHA}" \
-            -t "${IMAGE}:dev-${GITHUB_SHA}" \
-            -t "${IMAGE}:dev" \
-            .
-          docker push "${IMAGE}:dev-${GITHUB_SHA}"
-          docker push "${IMAGE}:dev"
-
       - name: Get GKE credentials
         uses: google-github-actions/get-gke-credentials@v2
         with:
           cluster_name: ${{ env.GKE_CLUSTER }}
           location: ${{ env.GKE_REGION }}
 
-      - name: Deploy to acme
+      # The -dev package is private (see ci-image-pipeline.md §1), so the cluster
+      # needs its own long-lived credential — GITHUB_TOKEN dies with the job and
+      # would break the next time a pod is rescheduled. Applied every run so it
+      # is self-healing and the requirement is visible in one place.
+      - name: Ensure the GHCR pull secret
         env:
-          RESTART_ONLY: ${{ inputs.restart_only }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
         run: |
           set -euo pipefail
-          if [ "$RESTART_ONLY" = "true" ]; then
+          if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
+            echo "::warning::GHCR_PULL_TOKEN not set — leaving the existing pull secret alone. If this is the first GHCR deploy, the rollout will fail with ImagePullBackOff."
+            exit 0
+          fi
+          kubectl -n "${NAMESPACE}" create secret docker-registry "${PULL_SECRET}" \
+            --docker-server=ghcr.io \
+            --docker-username="${GITHUB_ACTOR}" \
+            --docker-password="${GHCR_PULL_TOKEN}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          # Attached to the ServiceAccount rather than the Deployment spec, so the
+          # manifests in sm/acme stay untouched.
+          kubectl -n "${NAMESPACE}" patch serviceaccount default \
+            -p "{\"imagePullSecrets\":[{\"name\":\"${PULL_SECRET}\"}]}"
+
+      - name: Deploy
+        env:
+          RESTART_ONLY: ${{ inputs.restart_only }}
+          TARGET: ${{ steps.target.outputs.image }}
+        run: |
+          set -euo pipefail
+          echo "Currently running:"
+          kubectl -n "${NAMESPACE}" get deployment/"${DEPLOYMENT}" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+
+          if [ "${RESTART_ONLY}" = "true" ]; then
+            # For when only the Secret or ConfigMap changed — same image, fresh pods.
             kubectl -n "${NAMESPACE}" rollout restart deployment/"${DEPLOYMENT}"
           else
-            # Pin to the immutable per-commit tag so the rollout is deterministic.
+            # Pinned to the immutable per-commit tag, never :dev, so the rollout is
+            # deterministic and `get deployment` says exactly what is running.
             kubectl -n "${NAMESPACE}" set image \
-              deployment/"${DEPLOYMENT}" "${CONTAINER}=${IMAGE}:dev-${GITHUB_SHA}"
+              deployment/"${DEPLOYMENT}" "${CONTAINER}=${TARGET}"
           fi
           kubectl -n "${NAMESPACE}" rollout status deployment/"${DEPLOYMENT}" --timeout=180s
 
@@ -112,3 +183,27 @@ jobs:
               let d=""; r.on("data",c=>d+=c);
               r.on("end",()=>{ console.log(d); process.exit(r.statusCode===200?0:1); });
             }).on("error",e=>{ console.error(e.message); process.exit(1); });'
+          # Proves the image carries real build metadata rather than "unknown",
+          # which is the first thing support asks for.
+          kubectl -n "${NAMESPACE}" exec deploy/"${DEPLOYMENT}" -- node -e '
+            require("http").get("http://localhost:3100/api/v1/internal/ready", r => {
+              let d=""; r.on("data",c=>d+=c);
+              r.on("end",()=>{ console.log(d.slice(0,400)); });
+            }).on("error",e=>{ console.error(e.message); });'
+
+      - name: On failure, how to get back
+        if: failure()
+        env:
+          TARGET: ${{ steps.target.outputs.image }}
+        run: |
+          echo "::error::Deploy of ${TARGET} failed. The previous ReplicaSet is still there."
+          {
+            echo "### ❌ Rollback"
+            echo '```bash'
+            echo "kubectl -n ${NAMESPACE} rollout undo deployment/${DEPLOYMENT}"
+            echo "kubectl -n ${NAMESPACE} rollout status deployment/${DEPLOYMENT}"
+            echo '```'
+            echo "Or re-run this workflow with \`image_tag\` set to a known-good \`dev-<sha>\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          kubectl -n "${NAMESPACE}" get pods -l app="${DEPLOYMENT}" -o wide || true
+          kubectl -n "${NAMESPACE}" describe deployment/"${DEPLOYMENT}" | tail -30 || true

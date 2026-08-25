@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
+import { clearCapturedLogs, findCapturedLogs } from "./../logging/test-capture.js";
 
 import type { StandardizedEvent } from "./common/types.js";
 
@@ -159,15 +160,13 @@ describe("validateCallbackUrl", () => {
 
   it("allows unexpected path outside production (with warning)", () => {
     process.env.NODE_ENV = "test";
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      expect(validateCallbackUrl("http://127.0.0.1:3000/not-analytics")).toBeTruthy();
-      expect(warn).toHaveBeenCalledWith(
-        "[EventsForwarder] Unexpected callback path: /not-analytics. Proceeding anyway."
-      );
-    } finally {
-      warn.mockRestore();
-    }
+    clearCapturedLogs();
+    expect(validateCallbackUrl("http://127.0.0.1:3000/not-analytics")).toBeTruthy();
+    const [warned] = findCapturedLogs(
+      (entry) => entry.fields.error_category === "unexpected_callback_path"
+    );
+    expect(warned?.level).toBe("warn");
+    expect(warned?.fields.path).toBe("/not-analytics");
   });
 
   it("rejects unexpected path in production", () => {

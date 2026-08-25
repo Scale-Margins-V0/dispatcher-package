@@ -6,6 +6,7 @@ import { logPreferenceSideEffectSimulation } from "../events/preference-side-eff
 import { scrubPii } from "../events/scrubber.js";
 import type { StandardizedEvent } from "../events/common/types.js";
 import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 import {
   escapeHtml,
   PUBLIC_PAGE_STYLES,
@@ -17,7 +18,7 @@ import {
   resolveUnsubscribeReasonText,
 } from "./reasons.js";
 
-const log = componentLogger("unsubscribe");
+const log = componentLogger(LogComponent.events);
 
 function readParam(req: Parameters<RequestHandler>[0], name: string): string | undefined {
   const q = req.query[name];
@@ -32,15 +33,6 @@ function readBodyField(body: unknown, name: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const v = (body as Record<string, unknown>)[name];
   return typeof v === "string" ? v : undefined;
-}
-
-function logUnlessVitest(...args: unknown[]): void {
-  if (process.env.VITEST === "true") return;
-  const [first, ...rest] = args;
-  log.warn(
-    rest.length > 0 ? { details: rest } : {},
-    typeof first === "string" ? first : JSON.stringify(first)
-  );
 }
 
 function renderUnsubscribePage(params: {
@@ -237,9 +229,10 @@ export function createUnsubscribeLinkPostHandler(): RequestHandler {
       Boolean(organizationId);
 
     if (!canProxy && analyticsUrl) {
-      logUnlessVitest(
-        "[UnsubscribeLink] UNSUBSCRIBE_LINK_ANALYTICS_URL is set but campaign_id or organization_id query param is missing — " +
-          "extend unsubscribe_url in dispatch.yaml to append them (see config/dispatch.example.yaml)."
+      log.warn(
+        { error_category: "incomplete_link_context" },
+        "Analytics URL is configured but campaign_id or organization_id is missing from the link — " +
+          "unsubscribes will not be forwarded. Extend unsubscribe_url in dispatch.yaml."
       );
     }
 
@@ -265,7 +258,10 @@ export function createUnsubscribeLinkPostHandler(): RequestHandler {
         });
         const r = await postAnalyticsWithRetry(analyticsUrl, payload, secret);
         if (!r.success) {
-          logUnlessVitest(`[UnsubscribeLink] Analytics POST failed: ${r.error ?? "unknown"}`);
+          log.warn(
+            { error_category: "analytics_post_failed", error_message: r.error ?? "unknown" },
+            "Unsubscribe analytics callback failed"
+          );
         }
       }
     }

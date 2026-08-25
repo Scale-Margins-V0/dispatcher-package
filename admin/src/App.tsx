@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { fetchActivity, fetchOverview, fetchPlatformSecrets, fetchSession, signIn, signOut } from "./api";
+import { fetchActivity, fetchConnection, fetchOverview, fetchPlatformSecrets, fetchSession, signIn, signOut, verifyServerApiKey } from "./api";
 import { InfoTip } from "./components/InfoTip";
 import { ActivityIcon, AlertIcon, BellIcon, ChatIcon, CheckIcon, ChevronIcon, ClockIcon, CopyIcon, ExternalLinkIcon, GridIcon, MailIcon, MessageIcon, MonitorIcon, MoonIcon, RefreshIcon, ServerIcon, ShieldIcon, SidebarIcon, SlidersIcon, SunIcon, UsersIcon } from "./icons";
 import { PROVIDER_DOCS, ProviderLogo } from "./logos";
@@ -11,7 +11,7 @@ import Campaigns, { campaignHash } from "./pages/Campaigns";
 import Logs from "./pages/Logs";
 import Settings from "./pages/Settings";
 import Variables from "./pages/Variables";
-import type { AdminActivity, AdminOverview, DispatchActivity, SessionUser, StatusValue } from "./types";
+import type { AdminActivity, AdminOverview, ConnectionInfo, DispatchActivity, SessionUser, StatusValue } from "./types";
 
 type Page = "overview" | "campaigns" | "variables" | "logs" | "settings" | "runtime" | "configuration";
 type Theme = "light" | "dark" | "system";
@@ -109,7 +109,94 @@ function PlatformSecrets() {
   return <article className="panel"><div className="panel-title"><ShieldIcon /> Platform secrets</div><p className="panel-description">Values are truncated on screen. Copy sends the complete value to your clipboard.</p><div className="credential-list secret-list">{secrets.map(({ name, value }) => <div key={name}><span className={`dot ${value ? "dot-green" : "dot-red"}`} /><span className="secret-copy"><code>{name}</code><code>{value ? truncateSecret(value) : "Not configured"}</code></span>{value ? <button type="button" className="ghost icon-button" aria-label={copied === name ? `${name} copied` : `Copy ${name}`} title={copied === name ? "Copied" : "Copy secret"} onClick={() => void copy(name, value)}>{copied === name ? <CheckIcon /> : <CopyIcon />}</button> : <Badge tone="red">Missing</Badge>}</div>)}</div></article>;
 }
 
-function Configuration({ data }: { data: AdminOverview }) { return <><header className="page-head"><div><h1>Configuration</h1><p>Inspect provider readiness and protected runtime settings.</p></div></header><section className="configuration-secrets"><PlatformSecrets /></section><div className="section-heading"><span>Channels &amp; providers</span><span className="section-line" /></div><ProvidersPanel providers={data.config.providers} /></>; }
+/**
+ * Server API — the credential Atlas presents on every /api/v1/data-plane call.
+ *
+ * The key lives in the environment (DISPATCHER_ATLAS_KEY), not in the database,
+ * so this panel reports configuration rather than managing it. Rotating means
+ * editing the environment and restarting; there is no runtime kill switch here.
+ */
+function ServerApiPanel() {
+  const [connection, setConnection] = useState<ConnectionInfo | null>(null);
+  const [probe, setProbe] = useState<{ ok: boolean; label: string } | null>(null);
+  const [testKey, setTestKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  useEffect(() => { void fetchConnection().then(setConnection).catch(() => toast.error("Unable to load server API settings")); }, []);
+
+  const copy = async (id: string, value: string) => {
+    await navigator.clipboard.writeText(value);
+    setCopied(id);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  /**
+   * Calls the real external router with a key the operator pastes in, so a green
+   * result proves the credential and the endpoints work. It cannot prove
+   * ScaleMargin can reach this host — only Atlas's own connection step can.
+   */
+  const test = async () => {
+    if (!testKey.trim()) return;
+    setBusy(true);
+    try {
+      const result = await verifyServerApiKey(testKey.trim());
+      const label = result.ok ? "Key works" : `Failed (${result.status || "unreachable"})`;
+      setProbe({ ok: result.ok, label });
+      if (result.ok) toast.success("Key works", { description: "The API answered. Atlas still needs to reach this host over the network." });
+      else toast.error("Check failed", { description: result.message ?? label });
+    } finally { setBusy(false); }
+  };
+
+  if (!connection) return <article className="panel"><div className="loading-state"><span className="loader" />Loading server API settings…</div></article>;
+  const configured = connection.atlas_key_configured;
+
+  return <>
+    <article className="panel">
+      <div className="panel-title"><ServerIcon /> Server API <InfoTip label="Atlas reads this dispatcher over a fixed, read-only API. The base URL changes per deployment; the endpoints never do." /></div>
+      <p className="panel-description">Paste the base URL and the Atlas key into Atlas to connect this dispatcher. The API is read-only — it exposes status and counts, never customer data.</p>
+      <div className="credential-list">
+        <div>
+          <span className={`dot ${connection.configured_public_url ? "dot-green" : "dot-amber"}`} />
+          <span className="secret-copy"><code>Base URL</code><code>{connection.base_url}</code></span>
+          <button type="button" className="ghost icon-button" aria-label="Copy base URL" title={copied === "base" ? "Copied" : "Copy base URL"} onClick={() => void copy("base", connection.base_url)}>{copied === "base" ? <CheckIcon /> : <CopyIcon />}</button>
+        </div>
+        <div>
+          <span className={`dot ${configured ? "dot-green" : "dot-red"}`} />
+          <span className="secret-copy"><code>{connection.atlas_key_env}</code><code>{configured ? "Configured" : "Not set — the API is disabled"}</code></span>
+          <Badge tone={configured ? "green" : "red"}>{configured ? "enabled" : "disabled"}</Badge>
+        </div>
+      </div>
+      {!connection.configured_public_url && <div className="check-message">Base URL is derived from this request. Set <code>DISPATCHER_PUBLIC_URL</code> so it is stable and correct behind a proxy.</div>}
+      {connection.atlas_key_warning && <div className="check-message">{connection.atlas_key_warning}</div>}
+      <div className="table-wrap scroll-x">
+        <table>
+          <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+          <tbody>{connection.endpoints.map((endpoint) => <tr key={endpoint.path}><td className="mono">{endpoint.method} {endpoint.path}</td><td>{endpoint.purpose}</td></tr>)}</tbody>
+        </table>
+      </div>
+    </article>
+
+    <article className="panel api-key-create-panel">
+      <div className="panel-title"><ShieldIcon /> Atlas key <InfoTip label="Set in the environment, not stored here. The console can check a key but never reads the configured one back." /></div>
+      <p className="panel-description">
+        Set <code>{connection.atlas_key_env}</code> in the dispatcher environment and restart. One key authenticates every external API call; to rotate or revoke it, change the value and restart.
+      </p>
+      <pre className="code-block"><code>{`# generate\nopenssl rand -base64 32\n\n# .env\n${connection.atlas_key_env}=<paste the value here>`}</code></pre>
+      <form className="api-key-create" onSubmit={(event) => { event.preventDefault(); void test(); }}>
+        <label htmlFor="atlas-key-test">Check a key</label>
+        <div>
+          <input id="atlas-key-test" type="password" autoComplete="off" value={testKey} placeholder="Paste the key to confirm it is accepted" onChange={(event) => setTestKey(event.target.value)} />
+          <button type="submit" disabled={busy || !configured || !testKey.trim()}>{busy ? "Checking…" : "Check key"}</button>
+        </div>
+      </form>
+      {probe && <div className="invite-result"><Badge tone={probe.ok ? "green" : "red"}>{probe.label}</Badge><span>Confirms the credential and endpoints. Atlas must still be able to reach this host.</span></div>}
+      {!configured && <div className="api-key-empty"><ShieldIcon /><strong>Atlas API is disabled</strong><span>Every /api/v1/data-plane request returns 503 until {connection.atlas_key_env} is set.</span></div>}
+    </article>
+  </>;
+}
+
+function Configuration({ data }: { data: AdminOverview }) { return <><header className="page-head"><div><h1>Configuration</h1><p>Connect this dispatcher to Atlas, and inspect provider readiness and protected runtime settings.</p></div></header><div className="section-heading"><span>Server API</span><span className="section-line" /></div><section className="server-api-block"><ServerApiPanel /></section><div className="section-heading"><span>Platform secrets</span><span className="section-line" /></div><section className="configuration-secrets"><PlatformSecrets /></section><div className="section-heading"><span>Channels &amp; providers</span><span className="section-line" /></div><ProvidersPanel providers={data.config.providers} /></>; }
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null); const [sessionUser, setSessionUser] = useState<SessionUser | null>(null); const [page, setPage] = useState<Page>(readPage); const [theme, setTheme] = useState<Theme>(readTheme); const [overview, setOverview] = useState<AdminOverview | null>(null); const [activity, setActivity] = useState<AdminActivity | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(false); const [refreshSignal, setRefreshSignal] = useState(0);

@@ -28,6 +28,13 @@ export type VariableRow = {
   field: string | null;
   expr: string | null;
   fallback: string | null;
+  /**
+   * Last known preview for the fictional sample record. Rendered on write for
+   * field/computed/constant; for query/api it is whatever the caller's live
+   * test returned, because re-running a SELECT or an HTTP call on every list
+   * would make reading the catalog a side-effecting operation.
+   */
+  sample: string | null;
   /** Type-specific config for constant/query/api (null for field/computed). */
   config: Record<string, unknown> | null;
   enabled: boolean;
@@ -57,10 +64,90 @@ export type DispatchRunRow = {
   sent_count: number | null;
   failed_count: number | null;
   duration_ms: number | null;
+  /** Variable resolutions attempted across the run: recipients × tokens used. */
+  resolution_total: number | null;
+  /** How many of those fell back. `fallback_rate` = fallbacks / total. */
+  resolution_fallbacks: number | null;
   error_category: string | null;
   error_message: string | null;
   error_stack: string | null;
   occurred_at: Date;
+  updated_at: Date;
+};
+
+export type SendLogStatus = "sent" | "failed";
+
+/**
+ * One recipient × one send, success or failure.
+ *
+ * Supersedes RecipientFailureRow, which only ever recorded the failures — a
+ * successful send left no per-recipient trace outside the event stream. This is
+ * the highest-volume table in the state DB (one row per recipient per send), so
+ * it carries its own retention window and row cap.
+ *
+ * `user_id` is the client's opaque id, never an address.
+ */
+export type SendLogRow = {
+  id: string;
+  /** The dispatch_runs row this send belonged to. */
+  dispatch_run_id: string;
+  /** The wire id — one SEND (for drips: one recipient × one step). */
+  campaign_id: string;
+  /** Grouping key: drip_sequence_id for drip steps, else campaign_id. */
+  program_id: string;
+  step_id: string | null;
+  organization_id: string | null;
+  user_id: string;
+  channel: string;
+  provider: string;
+  /** Best available template identity — see deriveTemplateRef(). */
+  template_ref: string | null;
+  status: SendLogStatus;
+  provider_message_id: string | null;
+  /** Time spent inside provider.send() alone, not the whole run. */
+  latency_ms: number | null;
+  error_category: string | null;
+  error_message: string | null;
+  /** Variables referenced by this message that resolved to their fallback. */
+  fallbacks_used: number | null;
+  occurred_at: Date;
+};
+
+/**
+ * One row per program — the durable rollup a human calls "the campaign".
+ *
+ * Exists because campaign_events is pruned (90 days / 500k rows by default), so
+ * anything computed live from it disappears. This table is never pruned.
+ *
+ * Recomputed wholesale by refreshCampaignSummary(), never incremented: webhook
+ * retries are absorbed by insert-ignore on dedupe_key, which cannot report how
+ * many rows it actually inserted, so a delta counter would drift upward forever.
+ */
+export type CampaignSummaryRollupRow = {
+  program_id: string;
+  program_kind: ProgramKind;
+  organization_id: string | null;
+  /** Last seen. A drip may span channels; listCampaignChannels has the full set. */
+  channel: string | null;
+  provider: string | null;
+  template_ref: string | null;
+  /** sum(dispatch_runs.recipient_count) — counts SENDS, not people. */
+  total_recipients: number;
+  sent: number;
+  failed: number;
+  fallbacks_used: number | null;
+  /** Distinct people, from the event funnel — the headcount total_recipients is not. */
+  unique_recipients: number;
+  dispatched: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  bounced: number;
+  complained: number;
+  unsubscribed: number;
+  first_send_at: Date | null;
+  last_event_at: Date | null;
+  /** When the rollup was last recomputed, not when the campaign last ran. */
   updated_at: Date;
 };
 
@@ -210,4 +297,5 @@ export type ApiKeyRow = {
 export const META_KEYS = {
   yamlImportDoneAt: "yaml_import_done_at",
   campaignEventsBackfillDoneAt: "campaign_events_backfill_done_at",
+  campaignSummaryBackfillDoneAt: "campaign_summary_backfill_done_at",
 } as const;

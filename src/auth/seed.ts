@@ -8,6 +8,7 @@
 
 import { chmodSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { resolveDbEnv } from "../db/env.js";
 import { getDb } from "../db/state.js";
 import { queryDb, tableFor } from "../db/dialect-helpers.js";
 import { componentLogger } from "../logging/logger.js";
@@ -23,6 +24,24 @@ function credentialsFile(): string {
   return (
     process.env.DISPATCHER_ADMIN_CREDENTIALS_FILE || "./data/initial-admin-credentials.txt"
   );
+}
+
+/**
+ * An in-memory database is always empty, so seeding always runs and always
+ * generates a password. Writing that to the DEFAULT shared path clobbers the
+ * real credentials of whatever deployment shares this working directory —
+ * which is what happens whenever a test run or a throwaway script boots the DB
+ * in the repo root. A password for a database that vanishes at process exit is
+ * worth nothing, so it is not worth destroying a real one to record it.
+ *
+ * An explicitly configured destination is a deliberate choice by the caller and
+ * is always honoured.
+ */
+function shouldPersistCredentials(): boolean {
+  if (process.env.DISPATCHER_ADMIN_CREDENTIALS_FILE?.trim()) return true;
+  // Not destructured: `file` exists only on the sqlite arm of the union.
+  const db = resolveDbEnv(process.env);
+  return !(db.dialect === "sqlite" && db.file === ":memory:");
 }
 
 /** ~20 char password with mixed classes, no ambiguous chars. */
@@ -68,6 +87,13 @@ export async function seedDefaultAdmin(): Promise<void> {
       userId: created.user.id, // creator becomes org owner
     },
   });
+
+  if (generated && !shouldPersistCredentials()) {
+    log.info(
+      `Seeded a throwaway admin ${email} for an in-memory database — credentials not written to disk.`
+    );
+    return;
+  }
 
   if (generated) {
     const file = credentialsFile();

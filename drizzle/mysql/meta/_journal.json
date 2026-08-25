@@ -50,6 +50,20 @@
       "when": 1784193932622,
       "tag": "0006_slow_hellfire_club",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1786712173916,
+      "tag": "0007_luxuriant_felicia_hardy",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1786949216197,
+      "tag": "0008_sudden_randall_flagg",
+      "breakpoints": true
     }
   ]
 }

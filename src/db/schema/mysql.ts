@@ -27,6 +27,7 @@ export const variables = mysqlTable("variables", {
   field: id191("field"),
   expr: text("expr"),
   fallback: text("fallback"),
+  sample: text("sample"),
   config: json("config"),
   enabled: boolean("enabled").notNull().default(true),
   created_at: ts("created_at").notNull(),
@@ -51,6 +52,8 @@ export const dispatchRuns = mysqlTable(
     sent_count: int("sent_count"),
     failed_count: int("failed_count"),
     duration_ms: int("duration_ms"),
+    resolution_total: int("resolution_total"),
+    resolution_fallbacks: int("resolution_fallbacks"),
     error_category: id191("error_category"),
     error_message: text("error_message"),
     error_stack: text("error_stack"),
@@ -340,4 +343,64 @@ export const invitation = mysqlTable(
     createdAt: ts("created_at").notNull(),
   },
   (t) => [index("invitation_org_idx").on(t.organizationId)]
+);
+
+export const dispatchSendLogs = mysqlTable(
+  "dispatch_send_logs",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    dispatch_run_id: varchar("dispatch_run_id", { length: 36 }).notNull(),
+    campaign_id: id191("campaign_id").notNull(),
+    program_id: id191("program_id").notNull().default(""),
+    step_id: id191("step_id"),
+    organization_id: id191("organization_id"),
+    user_id: id191("user_id").notNull(),
+    channel: varchar("channel", { length: 16 }).notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    template_ref: id191("template_ref"),
+    status: varchar("status", { length: 16 }).notNull(),
+    provider_message_id: id191("provider_message_id"),
+    latency_ms: int("latency_ms"),
+    error_category: id191("error_category"),
+    error_message: text("error_message"),
+    fallbacks_used: int("fallbacks_used"),
+    occurred_at: ts("occurred_at").notNull(),
+  },
+  (t) => [
+    index("send_logs_run_idx").on(t.dispatch_run_id),
+    index("send_logs_program_occurred_idx").on(t.program_id, t.occurred_at),
+    index("send_logs_program_user_idx").on(t.program_id, t.user_id),
+    index("send_logs_occurred_at_idx").on(t.occurred_at),
+  ]
+);
+
+export const campaignSummary = mysqlTable(
+  "campaign_summary",
+  {
+    program_id: id191("program_id").primaryKey(),
+    program_kind: varchar("program_kind", { length: 16 }).notNull().default("campaign"),
+    organization_id: id191("organization_id"),
+    channel: varchar("channel", { length: 16 }),
+    provider: varchar("provider", { length: 32 }),
+    template_ref: id191("template_ref"),
+    total_recipients: int("total_recipients").notNull().default(0),
+    sent: int("sent").notNull().default(0),
+    failed: int("failed").notNull().default(0),
+    fallbacks_used: int("fallbacks_used"),
+    unique_recipients: int("unique_recipients").notNull().default(0),
+    dispatched: int("dispatched").notNull().default(0),
+    delivered: int("delivered").notNull().default(0),
+    opened: int("opened").notNull().default(0),
+    clicked: int("clicked").notNull().default(0),
+    bounced: int("bounced").notNull().default(0),
+    complained: int("complained").notNull().default(0),
+    unsubscribed: int("unsubscribed").notNull().default(0),
+    first_send_at: ts("first_send_at"),
+    last_event_at: ts("last_event_at"),
+    updated_at: ts("updated_at").notNull(),
+  },
+  (t) => [
+    index("campaign_summary_org_idx").on(t.organization_id, t.last_event_at),
+    index("campaign_summary_last_event_idx").on(t.last_event_at),
+  ]
 );

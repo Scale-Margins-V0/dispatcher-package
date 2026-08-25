@@ -2,9 +2,10 @@ import type { Express } from "express";
 import { closeDispatcherDb } from "./db/shutdown.js";
 import { flushLogSink } from "./logging/db-sink.js";
 import { componentLogger } from "./logging/logger.js";
+import { LogComponent, errorFields } from "./logging/conventions.js";
 import { telemetry } from "./telemetry/posthog.js";
 
-const log = componentLogger("server");
+const log = componentLogger(LogComponent.server);
 
 export function startServer(app: Express, port: number): void {
   const server = app.listen(port, () => {
@@ -13,18 +14,21 @@ export function startServer(app: Express, port: number): void {
       email_provider: process.env.EMAIL_PROVIDER || "ses",
       telemetry_enabled: telemetry.isEnabled(),
     });
-    log.info(`[Server] ScaleMargin Dispatch Handler running on port ${port}`);
-    log.info(`[Server] Email provider: ${process.env.EMAIL_PROVIDER || "ses"}`);
-    log.info(`[Server] Dispatch endpoint: POST /api/scalemargin/dispatch`);
-    log.info(`[Server] SES notifications: POST /api/scalemargin/ses-notifications`);
-    log.info(`[Server] SendGrid events: POST /api/scalemargin/sendgrid-events`);
-    log.info(`[Server] Gupshup events: POST /api/scalemargin/gupshup-events`);
-    log.info("[Server] Health check: GET /health");
+    log.info(
+      {
+        port,
+        provider: process.env.EMAIL_PROVIDER || "ses",
+        node_env: process.env.NODE_ENV ?? "development",
+        telemetry_enabled: telemetry.isEnabled(),
+      },
+      "Dispatcher started"
+    );
     if (process.env.EVENT_TEST_CSV_PATH) {
       const base =
         process.env.EVENT_TEST_PUBLIC_BASE_URL || `http://127.0.0.1:${port}`;
       log.info(
-        `[Server] Event test capture URL (use as analytics_callback_url): ${base}/api/webhooks/campaign-analytics/capture`
+        { capture_url: `${base}/api/webhooks/campaign-analytics/capture` },
+        "Event-test capture URL ready — use it as analytics_callback_url"
       );
     }
   });
@@ -55,13 +59,17 @@ export function startServer(app: Express, port: number): void {
 
   process.on("uncaughtException", (error) => {
     telemetry.captureException(error, { component: "uncaught_exception" });
-    void telemetry.shutdown().finally(() => {
-      console.error("[Server] uncaught exception:", error);
+    log.fatal(errorFields(error), "Uncaught exception — process is exiting");
+    // Console too: the flush below is best-effort, and a crash that leaves no
+    // trace anywhere is the worst possible outcome.
+    console.error("[Server] uncaught exception:", error);
+    void Promise.allSettled([telemetry.shutdown(), flushLogSink()]).finally(() => {
       process.exit(1);
     });
   });
 
   process.on("unhandledRejection", (reason) => {
     telemetry.captureException(reason, { component: "unhandled_rejection" });
+    log.error(errorFields(reason), "Unhandled promise rejection");
   });
 }

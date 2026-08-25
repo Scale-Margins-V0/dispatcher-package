@@ -10,6 +10,8 @@
  *   (or use IAM role-based auth on EC2/ECS/Lambda)
  */
 
+import { componentLogger } from "../logging/logger.js";
+import { LogComponent } from "../logging/conventions.js";
 import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 import type { EmailProvider, EmailMessage, SendResult, BulkSendResult } from "./types.js";
 import { applySesMessageTags } from "../events/outbound/ses-tagger.js";
@@ -28,11 +30,15 @@ export class SESProvider implements EmailProvider {
       !/^(AKIA|ASIA)[A-Z0-9]{16}$/.test(akidCheck) &&
       process.env.VITEST !== "true"
     ) {
-      console.warn(
-        `[SES] WARNING: AWS_ACCESS_KEY_ID does not look like a real AWS access key ` +
-          `(expected 20 chars starting with AKIA or ASIA; got len=${akidCheck.length}, prefix="${akidCheck.slice(0, 4)}"). ` +
-          `Likely a leftover export in your shell rc (e.g. ~/.zshrc) overriding .env. ` +
-          `SES calls will fail with InvalidClientTokenId. Run: env | grep AWS_`
+      componentLogger(LogComponent.providers).warn(
+        {
+          provider: "ses",
+          error_category: "invalid_credentials",
+          key_length: akidCheck.length,
+          key_prefix: akidCheck.slice(0, 4),
+        },
+        "AWS_ACCESS_KEY_ID does not look like an AWS access key (expected 20 chars, AKIA/ASIA). " +
+          "Usually a leftover shell export overriding .env — SES will fail with InvalidClientTokenId"
       );
     }
   }

@@ -34,15 +34,17 @@ import express, { type Express } from "express";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { registerApiV1Routes } from "./api/v1/router.js";
 import { initDispatcherDb } from "./db/bootstrap.js";
 import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerLogsApiRoutes } from "./logs-api.js";
 import { recordDispatchActivity } from "./admin/activity.js";
 import { programOf, recordDispatchProgramForPayload } from "./db/repos/dispatch-programs.js";
+import { refreshCampaignSummarySafe } from "./db/repos/campaign-summary.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
-import { logUnlessVitest } from "./logging.js";
+import { LogComponent } from "./logging/conventions.js";
 import { bindCampaignId } from "./logging/context.js";
 import { componentLogger } from "./logging/logger.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
@@ -86,8 +88,9 @@ if (
   process.env.SCALEMARGIN_ANALYTICS_SECRET ??=
     "local-dev-placeholder-analytics-secret";
   if (process.env.VITEST !== "true") {
-    console.warn(
-      "[LOCAL_DEV] Placeholder SCALEMARGIN_* secrets in use — set real values for Atlas HMAC. Not for production."
+    componentLogger(LogComponent.config).warn(
+      { local_dev: true },
+      "Placeholder SCALEMARGIN_* secrets in use — set real values for Atlas HMAC. Not for production."
     );
   }
 }
@@ -102,6 +105,9 @@ if (missing.length > 0) {
     component: "required_env",
     missing_env_count: missing.length,
   });
+  // Console, deliberately: every [FATAL] path here exits immediately, and the
+  // log sink batches — a logger call would never reach the database before the
+  // process is gone. Everything that does not exit uses componentLogger.
   console.error(`[FATAL] Missing required env vars: ${missing.join(", ")}`);
   console.error("See .env.example for all required variables.");
   process.exit(1);
@@ -142,14 +148,26 @@ app.disable("x-powered-by");
 app.set("trust proxy", 1);
 app.use(requestIdMiddleware);
 const PORT = parseInt(process.env.PORT || "3100", 10);
-const FROM_EMAIL = process.env.FROM_EMAIL || "noreply@example.com";
+/** Placeholder sender. No provider can verify it — example.com is IANA-reserved. */
+const DEFAULT_FROM_EMAIL = "noreply@example.com";
+const FROM_EMAIL = process.env.FROM_EMAIL || DEFAULT_FROM_EMAIL;
 
 registerAdminRoutes(app);
 registerLogsApiRoutes(app);
+// External (Atlas) + internal ops APIs. Mounts its own JSON parser, scoped to
+// /api/v1 so the raw body the dispatch route signs stays untouched.
+registerApiV1Routes(app);
 
-if (FROM_EMAIL === "noreply@example.com" && process.env.VITEST !== "true") {
-  console.warn(
-    "[WARN] FROM_EMAIL not set — using default noreply@example.com. Emails will likely bounce."
+// Through the logger, not console.warn: this runs after initDispatcherDb(), so
+// it reaches app_logs, the /logs API and the Atlas console. As a bare
+// console.warn it only ever appeared in the terminal that started the process —
+// which is how a dispatcher can sit for weeks sending from an unverifiable
+// address while every send fails with an unexplained provider rejection.
+if (FROM_EMAIL === DEFAULT_FROM_EMAIL && process.env.VITEST !== "true") {
+  componentLogger("server").warn(
+    `FROM_EMAIL is not set — sending as ${DEFAULT_FROM_EMAIL}. ` +
+      "That address cannot be verified with any provider (example.com is reserved), " +
+      "so every send will be rejected. Set FROM_EMAIL to a verified sender."
   );
 }
 
@@ -293,8 +311,9 @@ if (process.env.EVENT_TEST_CSV_PATH) {
     csvHandler
   );
   if (process.env.VITEST !== "true") {
-    console.log(
-      `[EventTest] CSV capture enabled → ${process.env.EVENT_TEST_CSV_PATH} (POST /api/webhooks/campaign-analytics/capture)`
+    componentLogger(LogComponent.config).info(
+      { path: process.env.EVENT_TEST_CSV_PATH },
+      "Event-test CSV capture enabled"
     );
   }
 }
@@ -303,7 +322,7 @@ if (process.env.EVENT_TEST_CSV_PATH) {
 // POST /api/scalemargin/dispatch — Campaign Dispatch Handler
 // ---------------------------------------------------------------------------
 
-const dispatchLog = componentLogger("dispatch");
+const dispatchLog = componentLogger(LogComponent.dispatch);
 
 app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   const payload = req.body as DispatchPayload;
@@ -311,9 +330,14 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   const startedAt = performance.now();
   bindCampaignId(String(payload.campaign_id ?? "unknown"));
 
-  logUnlessVitest(
-    `[Dispatch] Received campaign ${payload.campaign_id} — ` +
-      `${payload.user_ids?.length || 0} recipients, channel: ${payload.channel}`
+  dispatchLog.info(
+    {
+      channel: payload.channel,
+      recipients: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+      organization_id: payload.metadata?.organization_id,
+      dispatch_kind: payload.metadata?.dispatch_kind ?? "campaign",
+    },
+    "Dispatch request accepted"
   );
 
   // Record wire id → program before any event is emitted. A drip step's
@@ -356,9 +380,12 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
       recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
       sent_count: result?.sent,
       failed_count: result?.failed,
+      resolution_total: result?.resolution_total,
+      resolution_fallbacks: result?.resolution_fallbacks,
       duration_ms: Math.round(performance.now() - startedAt),
       occurred_at: new Date().toISOString(),
     });
+    refreshCampaignSummarySafe(programOf(payload).program_id);
   }).catch((error) => {
     recordDispatchActivity({
       id: activityId,
@@ -375,6 +402,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
       error_message: error instanceof Error ? error.message : String(error),
       error_stack: error instanceof Error ? error.stack : undefined,
     });
+    refreshCampaignSummarySafe(programOf(payload).program_id);
     telemetry.captureException(error, {
       component: "dispatch_processor",
       channel: payload.channel,

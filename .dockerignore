@@ -1,0 +1,49 @@
+# Keep the build context small and free of secrets.
+#
+# Without this file `docker build` uploads the whole working tree — including
+# node_modules, .git, local databases and .env — which is slow and puts real
+# credentials into the build context and the layer cache.
+#
+# The Dockerfile installs dependencies from package.json + pnpm-lock.yaml and
+# compiles from src/ only, so none of the following is needed to build.
+
+# Dependencies and build output (rebuilt inside the image)
+node_modules
+dist
+
+# Admin console UI — not shipped in the image at all. The Dockerfile builds
+# the server only (pnpm run build:server), so neither the source nor its
+# output is needed in the build context.
+admin
+admin-dist
+
+# Secrets and local state
+.env
+.env.*
+!.env.example
+data
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+
+# VCS and CI
+.git
+.gitignore
+.github
+.changeset
+
+# Tooling, editors, local caches
+.vscode
+.idea
+.claude
+.gitnexus
+coverage
+*.log
+
+# Docs and design assets — not used at build or run time.
+# NOTE: config/ is deliberately NOT ignored here even though the Dockerfile
+# does not copy it, so that adding a COPY later works without surprise.
+docs
+*.md
+!README.md

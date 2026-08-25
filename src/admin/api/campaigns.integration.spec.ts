@@ -2,7 +2,8 @@ import express, { type Express } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DispatcherDb } from "../../db/client.js";
-import { insertRecipientFailure, upsertDispatchRun } from "../../db/repos/activity.js";
+import { upsertDispatchRun } from "../../db/repos/activity.js";
+import { insertSendLogs } from "../../db/repos/send-logs.js";
 import { upsertCampaignCallback } from "../../db/repos/campaign-callbacks.js";
 import { insertCampaignEvents } from "../../db/repos/campaign-events.js";
 import { enqueueOutbox } from "../../db/repos/outbox.js";
@@ -205,18 +206,27 @@ describe("/admin/api/campaigns", () => {
     await insertCampaignEvents([
       ev({ user_id: "u-fail", event: "failed", occurred_at: at(2) }),
     ]);
-    await insertRecipientFailure({
-      id: crypto.randomUUID(),
-      dispatch_run_id: runId,
-      campaign_id: "cmp_1",
-      user_id: "u-fail",
-      provider: "ses",
-      error_category: "provider_rejected",
-      error_message: "Address suppressed",
-      error_stack: null,
-      context: { code: 554 },
-      occurred_at: at(2),
-    });
+    await insertSendLogs([
+      {
+        id: crypto.randomUUID(),
+        dispatch_run_id: runId,
+        campaign_id: "cmp_1",
+        program_id: "cmp_1",
+        step_id: null,
+        organization_id: "org_1",
+        user_id: "u-fail",
+        channel: "email",
+        provider: "ses",
+        template_ref: null,
+        status: "failed",
+        provider_message_id: null,
+        latency_ms: 42,
+        error_category: "provider_rejected",
+        error_message: "Address suppressed",
+        fallbacks_used: 0,
+        occurred_at: at(2),
+      },
+    ]);
 
     const agent = await loginAgent();
     const res = await agent.get("/admin/api/campaigns/cmp_1/recipients/u-fail").expect(200);
@@ -224,7 +234,7 @@ describe("/admin/api/campaigns", () => {
     expect(res.body.events).toHaveLength(1);
     expect(res.body.recipient_failures[0]).toMatchObject({
       error_category: "provider_rejected",
-      context: { code: 554 },
+      error_message: "Address suppressed",
     });
 
     await agent.get("/admin/api/campaigns/cmp_1/recipients/ghost").expect(404);

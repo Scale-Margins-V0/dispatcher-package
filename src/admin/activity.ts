@@ -39,6 +39,10 @@ export type DispatchActivity = {
   sent_count?: number;
   failed_count?: number;
   duration_ms?: number;
+  /** Variable resolutions attempted across the run: recipients x tokens used. */
+  resolution_total?: number;
+  /** How many of those fell back to their fallback string. */
+  resolution_fallbacks?: number;
   occurred_at: string;
   error_category?: string;
   error_message?: string;
@@ -71,8 +75,17 @@ export type RecipientFailure = {
   context?: Record<string, unknown>;
 };
 
+/**
+ * Clamp to the column width (varchar(191)) rather than something shorter.
+ *
+ * This MUST match the truncation in src/events/persist.ts. A tighter limit here
+ * silently forks a long program id into two: `dispatch_runs.program_id` would
+ * never equal the `campaign_events.program_id` for the same program, splitting
+ * every rollup that groups on it.
+ */
+const ID_MAX = 191;
 const safeId = (value: string): string =>
-  value.length <= 80 ? value : `${value.slice(0, 77)}...`;
+  value.length <= ID_MAX ? value : `${value.slice(0, ID_MAX - 3)}...`;
 
 const swallow = (what: string) => (error: unknown) => {
   log.warn(
@@ -98,6 +111,8 @@ export const recordDispatchActivity = (activity: DispatchActivity): void => {
     sent_count: activity.sent_count ?? null,
     failed_count: activity.failed_count ?? null,
     duration_ms: activity.duration_ms ?? null,
+    resolution_total: activity.resolution_total ?? null,
+    resolution_fallbacks: activity.resolution_fallbacks ?? null,
     error_category: activity.error_category ?? null,
     error_message: activity.error_message ?? null,
     error_stack: activity.error_stack ?? null,
@@ -162,6 +177,8 @@ const runToActivity = (run: DispatchRunRow): DispatchActivity => ({
   sent_count: run.sent_count ?? undefined,
   failed_count: run.failed_count ?? undefined,
   duration_ms: run.duration_ms ?? undefined,
+  resolution_total: run.resolution_total ?? undefined,
+  resolution_fallbacks: run.resolution_fallbacks ?? undefined,
   occurred_at: run.occurred_at.toISOString(),
   error_category: run.error_category ?? undefined,
   error_message: run.error_message ?? undefined,
