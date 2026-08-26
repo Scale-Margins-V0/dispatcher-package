@@ -182,7 +182,6 @@ describe("no PII escapes in a log line", () => {
       log({
         level: "warn",
         component: "user-lookup.sql",
-        // Exactly the kind of line real code writes without thinking about it.
         message: "No row for ada.lovelace@acme-corp.com (phone +14155550142)",
         stack: "Error: lookup failed for ada.lovelace@acme-corp.com\n    at lookupUsers (/app/src/user-lookup.ts:9:3)",
         context: { email: "ada.lovelace@acme-corp.com", client_ip: "203.0.113.7" },

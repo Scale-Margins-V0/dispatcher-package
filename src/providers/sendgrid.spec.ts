@@ -2,10 +2,16 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const sendMock = vi.hoisted(() => vi.fn().mockResolvedValue([{ statusCode: 202, headers: {} }]));
 
+class MockMailService {
+  setApiKey = vi.fn();
+  send = sendMock;
+}
+
 vi.mock("@sendgrid/mail", () => ({
+  MailService: MockMailService,
   setApiKey: vi.fn(),
   send: sendMock,
-  default: { setApiKey: vi.fn(), send: sendMock },
+  default: { MailService: MockMailService, setApiKey: vi.fn(), send: sendMock },
 }));
 
 describe("SendGridProvider", () => {

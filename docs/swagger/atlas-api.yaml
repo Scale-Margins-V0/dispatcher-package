@@ -1,0 +1,1601 @@
+# OpenAPI contract for the ScaleMargin Dispatcher API consumed by Atlas.
+#
+# Source of truth: src/api/v1/ (routes, validators, controllers).
+# This document replaces ATLAS_API.md.
+#
+# View:  npx @redocly/cli preview-docs docs/swagger/atlas-api.yaml
+# Lint:  npx @redocly/cli lint docs/swagger/atlas-api.yaml
+
+openapi: 3.0.3
+
+info:
+  title: ScaleMargin Dispatcher API — Atlas data plane
+  version: "1.0.0"
+  description: |
+    The HTTP API the **ScaleMargin Atlas** platform calls to render a dispatcher
+    dashboard, author its variables, and read campaign reporting and logs.
+
+    **The contract in one line:** the base URL changes per client, the endpoints
+    never do. Atlas hard-codes the paths and varies only the host.
+
+    ## Two routers
+
+    | Tree | Audience | Auth | Reachability |
+    | --- | --- | --- | --- |
+    | `/api/v1/data-plane/*` | Atlas | API key | must be reachable from ScaleMargin |
+    | `/api/v1/internal/*` | the client's own infrastructure | none | should **not** be internet-exposed |
+
+    ## Authentication
+
+    One environment variable on the dispatcher (`DISPATCHER_ATLAS_KEY`, 32+
+    chars, e.g. `openssl rand -base64 32`). No database record, no UI — the
+    deployment owns the credential.
+
+    * Send it as `Authorization: Bearer <key>`. **Never in a query string** —
+      it lands in access logs, proxy logs and browser history.
+    * Comparison is constant-time over SHA-256 digests; neither the key's length
+      nor its prefix leaks through response timing.
+    * **Rotation/revocation = change the value and restart.** No runtime kill switch.
+    * **Unset means disabled:** every data-plane route returns `503 unavailable`
+      while `DISPATCHER_ATLAS_KEY` is absent — including requests presenting a
+      key. It fails closed and never falls open.
+    * `401` is returned identically for a missing, malformed or wrong key — the
+      distinction exists only in the dispatcher's own logs.
+
+    ## Conventions
+
+    * Every non-2xx returns one envelope: `{ "error": "<code>", "message": … }`.
+      Validation failures add a `details` array, one entry per field, so a form
+      can highlight the input that failed.
+    * Request bodies are limited to **64kb**.
+    * **Rate limit:** 60 requests/minute/key, fixed window → `429`. Back off.
+    * **Caching:** `/state` ~15s · `/build` ~60s (changes only on deploy).
+    * Every endpoint budgets ~5 seconds server-side; a 10-second client timeout
+      is comfortable.
+    * **An unhealthy dispatcher is still a `200`.** Failing dependencies are
+      reported inside the payload (`status.state`), not as HTTP errors.
+    * **CORS is disabled by default** — a browser cannot call the API. Operators
+      may allowlist origins via `DISPATCHER_ATLAS_CORS_ORIGINS`. Preflight
+      (`OPTIONS`) is answered **before** authentication and always answers `204`.
+      `Access-Control-Allow-Credentials` is never sent; auth is a bearer header,
+      not a cookie.
+
+    ## Null vs zero (load-bearing)
+
+    | Value | Meaning | Render as |
+    | --- | --- | --- |
+    | `0` | measured, and the answer is zero | `0` |
+    | `null` | **not measured** — unavailable or not implemented | dash |
+
+    ## What this API never returns
+
+    Recipient email addresses, phone numbers, names, message bodies, resolved
+    personalization values, SQL/API variable results, raw provider error text,
+    database credentials, provider secrets, IP addresses or user agents.
+    Provider rejection text and log `message`/`stack`/`context` are scrubbed —
+    addresses, phones and IPs become `[REDACTED]` before serialization.
+    `api.headers` values are masked as `••••••••`.
+
+    ## Versioning
+
+    Additive changes ship in place (new fields, new check names); clients must
+    ignore unknown fields. Removing or retyping a field means a new `/api/v2`
+    mounted alongside. Branch on `service.api_version`, never on payload shape.
+
+servers:
+  - url: "https://{host}"
+    description: Each client runs its own dispatcher — base URL varies, paths never do
+    variables:
+      host:
+        default: dispatcher.acme-corp.com
+        description: >
+          The client dispatcher's public URL (`DISPATCHER_PUBLIC_URL`). Found in
+          the dispatcher console under Configuration → Server API → Base URL.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Observability
+    description: >
+      Connection probe (/build) and dashboard state (/state). Both read-only;
+      both answer 200 even when a dependency is failing.
+  - name: Variables
+    description: >
+      The authoring surface. Definitions travel in both directions; a resolved
+      customer value has no route through here. Every write refreshes the
+      resolver's snapshot, so a saved definition applies to the next dispatch
+      without a restart or redeploy.
+  - name: Campaigns
+    description: >
+      Read-only reporting from the durable campaign_summary rollup. A campaign
+      is something the platform decided; nothing here authors one.
+  - name: Logs
+    description: >
+      The dispatcher's own structured log, persisted to the state DB.
+      Free-form fields are PII-scrubbed on the way out.
+  - name: Internal
+    description: >
+      Liveness/readiness probes for the client's own infrastructure. No auth;
+      expected to be network-restricted rather than internet-exposed.
+
+paths:
+  /api/v1/data-plane/build:
+    get:
+      operationId: getBuild
+      summary: Identity and environment
+      description: |
+        Cheap and dependency-light — **this is the connection probe**: a `200`
+        proves both reachability and authentication before a connection is saved.
+
+        Never returned: the database URL, host, user or password. Only the
+        dialect is emitted (operationally useful; the connection string is a
+        credential). Cache ~60s; changes only on deploy.
+      tags: [Observability]
+      responses:
+        "200":
+          description: Build identity, runtime environment and database reachability
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildResponse"
+              example:
+                generated_at: "2026-08-12T10:07:36.796Z"
+                service:
+                  name: scalemargin-dispatch-handler
+                  version: "0.3.0"
+                  git_sha: unknown
+                  build_time: unknown
+                  image_tag: unknown
+                  api_version: v1
+                runtime:
+                  environment: development
+                  node_version: v24.10.0
+                  uptime_seconds: 1312
+                database:
+                  dialect: sqlite
+                  reachable: true
+                  migrations_applied: true
+                last_dispatch_at: null
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/state:
+    get:
+      operationId: getState
+      summary: Everything on the Atlas dashboard, in one call
+      description: |
+        Two rules this endpoint lives by:
+
+        1. **Counters are null, never zero, when not measured.**
+           `fallback_rate: 0` reads as "perfect"; `null` reads as "not measured".
+        2. **Never 5xx for an expected condition.** If the state database is
+           unreachable the counters come back `null` and `status.state` says
+           `degraded`.
+
+        `status.checks` is an open map — render entries generically rather than
+        hard-coding the current five (`required_env`, `dispatch_config`,
+        `event_config`, `telemetry`, `state_database`). When `ok` is false a
+        `message` explains why — surface it verbatim, it is written for an operator.
+
+        Cache ~15s. Refetch on dashboard open and explicit refresh.
+      tags: [Observability]
+      responses:
+        "200":
+          description: Dashboard snapshot (state may be healthy, degraded or error)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StateResponse"
+              example:
+                generated_at: "2026-08-12T10:07:36.809Z"
+                status:
+                  state: healthy
+                  checks:
+                    required_env: { ok: true }
+                    dispatch_config: { ok: true }
+                    event_config: { ok: true }
+                    telemetry: { ok: true }
+                    state_database: { ok: true }
+                dispatch:
+                  window_days: 30
+                  dispatched: 0
+                  failed: 0
+                  runs: 0
+                  last_dispatch_at: null
+                  by_channel: {}
+                resolution:
+                  fallback_rate: null
+                  resolutions_total: null
+                  fallbacks_used: null
+                  fallback_events: 0
+                  variables_enabled: 7
+                catalog:
+                  variables_total: 7
+                  variables_enabled: 7
+                  last_published_at: null
+                outbox:
+                  pending: 0
+                  failed: 0
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/variables:
+    get:
+      operationId: listVariables
+      summary: List variables (the catalog)
+      description: |
+        Names, definitions and samples; never a resolved value. Sorted by name
+        ascending. Filters narrow the set, then the page is cut from what
+        survives, so `meta.total` describes the filtered result — never the whole
+        table. A page past the end is a `200` with an empty array and honest
+        counts; walk back rather than handling a 404. `total_pages` floors at 1.
+      tags: [Variables]
+      parameters:
+        - $ref: "#/components/parameters/sourceFilter"
+        - $ref: "#/components/parameters/enabledFilter"
+        - $ref: "#/components/parameters/nameSearch"
+        - $ref: "#/components/parameters/pageParam"
+        - $ref: "#/components/parameters/limitParam"
+      responses:
+        "200":
+          description: A filtered page of variables
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VariableListResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      operationId: createVariable
+      summary: Create a variable
+      description: |
+        Nothing is written when validation fails (`400 invalid_request` with a
+        details entry pointing at the offending field). Validation highlights:
+
+        * `name`: no spaces, dots or dashes; must start with a letter or underscore.
+        * `query.sql`: a **single** SELECT/WITH statement — a semicolon is
+          rejected, so nothing can be stacked onto a read.
+        * `computed.expr`: checked against the real evaluator, so anything
+          accepted here also resolves at send time.
+        * `api.url`: must start with http(s); {{tokens}} are interpolated
+          URL-encoded at send time.
+        * A masked header value (`••••••••`) is rejected on create — there is no
+          stored secret to preserve yet. Send the real value.
+
+        `sample` is ignored for field/computed/constant — the dispatcher renders
+        those against a fictional sample record itself. For query/api it is
+        stored as sent (a save must never run the client's SQL or call their
+        internal service); send whatever your live test returned.
+
+        On success the placeholder snapshot refreshes: applies to the **next
+        dispatch**, no restart.
+      tags: [Variables]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVariableRequest"
+            example:
+              name: available_credit
+              definition:
+                source: query
+                sql: "SELECT limit_amount - drawn_amount FROM credit_accounts WHERE user_ref = {{user_id}}"
+              fallback: your current limit
+              sample: "48,250.00"
+              enabled: true
+      responses:
+        "201":
+          description: Created — echoes the stored variable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SingleVariableResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/variables/{name}:
+    parameters:
+      - $ref: "#/components/parameters/variableName"
+    get:
+      operationId: getVariable
+      summary: Get one variable by placeholder name
+      tags: [Variables]
+      responses:
+        "200":
+          description: The variable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SingleVariableResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+    patch:
+      operationId: updateVariable
+      summary: Partially update a variable
+      description: |
+        Partial by field, atomic by definition. Every key is optional but at
+        least one is required (an empty body is 400).
+
+        * Omit definition → recipe untouched. Send it → replaced **whole** (a
+          partial definition would let a caller turn a query into a field while
+          leaving the SQL behind). Switching source clears the previous source's
+          columns.
+        * Rename via `name`; renaming onto an existing name is 409 conflict.
+        * **Masked headers mean "keep the stored secret":** sending
+          `"••••••••"` back preserves the stored value, so an editor that can
+          never read a bearer token can still round-trip its definition. A
+          header the caller omits is dropped.
+        * `enabled: false` disables resolution while keeping the definition.
+      tags: [Variables]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVariableRequest"
+            examples:
+              disableOnly:
+                summary: Toggle status without touching the definition
+                value:
+                  enabled: false
+              renameAndReplace:
+                summary: Rename and replace the definition whole
+                value:
+                  name: credit_available
+                  definition:
+                    source: constant
+                    value: "—"
+      responses:
+        "200":
+          description: Updated variable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SingleVariableResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: deleteVariable
+      summary: Delete a variable
+      description: >
+        Immediate and not reversible. Templates still referencing the placeholder
+        render it as an empty string on the next dispatch. 404 if already gone.
+      tags: [Variables]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteVariableResponse"
+              example:
+                deleted: true
+                name: available_credit
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/campaigns:
+    get:
+      operationId: listCampaigns
+      summary: List campaign rollups
+      description: |
+        One row per campaign, recomputed whenever a run completes or a webhook
+        batch lands. Underlying events are pruned (90 days / 500k rows); the
+        rollup is never pruned — a campaign from two years ago still reports totals.
+
+        Coding notes:
+
+        * Counters never decrease (each recompute takes max(stored, computed)).
+        * `updated_at` is when the rollup was recomputed — when the campaign last
+          did anything, see `last_event_at`.
+        * `totals.recipients` counts SENDS, not people (a drip counts one per
+          recipient per step); headcount is `totals.unique_recipients`.
+        * `channel`/`provider` are the most recent ones seen; fetch the campaign
+          directly for the full set.
+        * from/to bound `last_event_at`, not creation.
+      tags: [Campaigns]
+      parameters:
+        - name: organization_id
+          in: query
+          required: false
+          description: Exact match
+          schema: { type: string, maxLength: 191 }
+        - name: channel
+          in: query
+          required: false
+          description: Exact match — e.g. email, whatsapp, sms
+          schema: { type: string, maxLength: 16 }
+        - name: program_kind
+          in: query
+          required: false
+          schema: { type: string, enum: [campaign, drip] }
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive substring match on the campaign id
+          schema: { type: string, maxLength: 191 }
+        - name: from
+          in: query
+          required: false
+          description: Lower bound on last activity
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: Upper bound on last activity (must be >= from)
+          schema: { type: string, format: date-time }
+        - $ref: "#/components/parameters/pageParam"
+        - $ref: "#/components/parameters/limitParam"
+      responses:
+        "200":
+          description: A filtered page of campaign summaries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignListResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/campaigns/{programId}:
+    parameters:
+      - $ref: "#/components/parameters/programId"
+    get:
+      operationId: getCampaign
+      summary: Get one campaign with its channel set and per-step breakdown
+      description: >
+        The rollup plus the two things a single row cannot hold: the full
+        channel/provider set (a drip may span several; the summary keeps only the
+        latest) and the per-step breakdown. steps is empty for a one-shot
+        campaign. Passing a drip's wire id (drip_{enrollment}_{step}) here
+        returns 404 — that id names one SEND, not a campaign.
+      tags: [Campaigns]
+      responses:
+        "200":
+          description: Campaign detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignDetailResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/campaigns/{programId}/sends:
+    parameters:
+      - $ref: "#/components/parameters/programId"
+    get:
+      operationId: listCampaignSends
+      summary: Per-recipient send rows for one campaign
+      description: |
+        One row per recipient per send — successes included. Scoped to the
+        program: another campaign's rows never leak in. Newest first.
+
+        Field notes:
+
+        * `latency_ms` measures time inside the provider call alone.
+        * `fallbacks_used` counts how many of this message's referenced
+          variables resolved to their fallback; 0 is healthy.
+        * `error_message` is scrubbed — provider rejection text routinely quotes
+          the address it rejected, and no recipient address may leave the
+          dispatcher. Addresses/phones/IPs become [REDACTED]; the diagnostic
+          code survives.
+        * Send-log retention is shorter than the rollup (30 days / 1M rows by
+          default): an old campaign reports totals with no sends to list.
+      tags: [Campaigns]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [sent, failed] }
+        - name: user_id
+          in: query
+          required: false
+          schema: { type: string, maxLength: 191 }
+        - name: dispatch_run_id
+          in: query
+          required: false
+          schema: { type: string, maxLength: 36 }
+        - $ref: "#/components/parameters/pageParam"
+        - $ref: "#/components/parameters/limitParam"
+      responses:
+        "200":
+          description: A page of send rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendListResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/logs:
+    get:
+      operationId: listLogs
+      summary: Query the dispatcher's structured log
+      description: |
+        Every componentLogger line the process wrote, persisted to the state DB —
+        how an Atlas operator answers "the campaign says 12 failed; why?" without
+        asking the client for shell access.
+
+        Filtering rules:
+
+        * `min_level` = this level AND everything more severe; wins over an exact
+          `level` when both are sent.
+        * `since` accepts a relative window (15m / 2h / 7d — s/m/h/d only); an
+          absolute `from` overrides `since` when both are given.
+        * `q` is a case-sensitive substring match on the message.
+        * `campaign_id` filters on the wire id (for a drip,
+          drip_{enrollment}_{step}), not the program id. To join: read
+          campaign_id off /campaigns/{id}/sends rows, then filter by it.
+          request_id is the tighter join — every line from one HTTP request
+          shares it.
+
+        Scrubbing: message, stack and every nested context value pass through
+        the PII scrubber — addresses/phones/IPs become [REDACTED]. Structured
+        fields (level, component, ids, timestamps) pass through untouched.
+        Render what you receive; do not treat [REDACTED] as a parse failure.
+
+        Components useful for filtering: dispatch.email, dispatch.whatsapp,
+        providers.*, variables.resolver, user-lookup.*, events.*, config, server.
+        Treat unknown component values as valid — the set grows over time.
+
+        Retention: pruned on both window and row cap (14 days / 200k rows by
+        default) — expect old campaigns to still report totals with no logs left.
+      tags: [Logs]
+      parameters:
+        - name: level
+          in: query
+          required: false
+          description: Exact level (ignored when min_level is also set)
+          schema: { $ref: "#/components/schemas/LogLevel" }
+        - name: min_level
+          in: query
+          required: false
+          description: This level and everything more severe
+          schema: { $ref: "#/components/schemas/LogLevel" }
+        - name: component
+          in: query
+          required: false
+          description: Exact match on the dotted component name
+          schema:
+            type: string
+            maxLength: 64
+            example: variables.resolver
+        - name: campaign_id
+          in: query
+          required: false
+          description: The wire id bound to the dispatch request
+          schema: { type: string, maxLength: 191 }
+        - name: request_id
+          in: query
+          required: false
+          description: Every line emitted while handling one request
+          schema: { type: string, maxLength: 64 }
+        - name: q
+          in: query
+          required: false
+          description: Case-sensitive substring match on the message
+          schema: { type: string, maxLength: 200 }
+        - name: since
+          in: query
+          required: false
+          description: Relative window — e.g. 15m, 2h, 7d
+          schema:
+            type: string
+            pattern: "^\\d+\\s*(s|m|h|d)$"
+            example: 2h
+        - name: from
+          in: query
+          required: false
+          description: Absolute lower bound (overrides since)
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: Absolute upper bound (must be >= from)
+          schema: { type: string, format: date-time }
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - $ref: "#/components/parameters/pageParam"
+        - $ref: "#/components/parameters/limitParam"
+      responses:
+        "200":
+          description: A filtered page of log lines (newest first by default)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogListResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/logs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/logId"
+    get:
+      operationId: getLog
+      summary: Get one log line
+      description: >
+        Includes stack and context. The list endpoint already returns them, so
+        this is mainly for deep links. 404 very often simply means the row was
+        pruned (14 days / 200k rows by default).
+      tags: [Logs]
+      responses:
+        "200":
+          description: One log line
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SingleLogResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/internal/health:
+    get:
+      operationId: internalHealth
+      summary: Liveness probe
+      description: >
+        The process is up and serving. Always 200 while serving; touches no
+        dependency. Point liveness probes here — wiring readiness into a liveness
+        probe means a brief database outage restarts the container, which does
+        not fix the database and removes capacity while it happens.
+      tags: [Internal]
+      security: []
+      responses:
+        "200":
+          description: Serving
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/v1/internal/ready:
+    get:
+      operationId: internalReady
+      summary: Readiness probe
+      description: >
+        This instance can actually do useful work right now (required env,
+        dispatch/event config, state database reachable). 200 when ready, 503
+        when not. Point readiness probes here.
+      tags: [Internal]
+      security: []
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyResponse"
+              example:
+                ready: true
+                checks:
+                  required_env: true
+                  dispatch_config: true
+                  event_config: true
+                  state_database: true
+        "503":
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyResponse"
+              example:
+                ready: false
+                checks:
+                  required_env: true
+                  dispatch_config: true
+                  event_config: true
+                  state_database: false
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        The dispatcher's DISPATCHER_ATLAS_KEY (32+ chars). Header only — never
+        in a query string. Unset on the dispatcher, every route answers 503
+        unavailable regardless of the key presented.
+
+  parameters:
+    pageParam:
+      name: page
+      in: query
+      required: false
+      description: 1-based page number; filters apply before the page is cut
+      schema: { type: integer, minimum: 1, default: 1 }
+    limitParam:
+      name: limit
+      in: query
+      required: false
+      description: Rows per page — capped so one request cannot serialize the whole table
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    sourceFilter:
+      name: source
+      in: query
+      required: false
+      description: Filter by definition source type
+      schema: { $ref: "#/components/schemas/VariableSource" }
+    enabledFilter:
+      name: enabled
+      in: query
+      required: false
+      description: Filter by status; omitted returns both
+      schema: { type: boolean }
+    nameSearch:
+      name: q
+      in: query
+      required: false
+      description: Case-insensitive substring match on the placeholder name
+      schema: { type: string, maxLength: 191 }
+    variableName:
+      name: name
+      in: path
+      required: true
+      description: The placeholder name — what the template writes between {{ }}
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 191
+        pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+    programId:
+      name: programId
+      in: path
+      required: true
+      description: >
+        Opaque program id — a one-shot campaign id, or a drip SEQUENCE id.
+        Passing a drip's per-send wire id (drip_{enrollment}_{step}) returns 404.
+      schema: { type: string, minLength: 1, maxLength: 191 }
+    logId:
+      name: id
+      in: path
+      required: true
+      description: Log line id (UUID minted by the sink)
+      schema: { type: string, minLength: 1, maxLength: 64 }
+
+  responses:
+    BadRequest:
+      description: Payload failed validation — see details[].path
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example:
+            error: invalid_request
+            message: Request failed validation
+            details:
+              - path: definition.sql
+                message: SQL must be a SELECT or WITH statement
+    Unauthorized:
+      description: Missing, malformed or wrong key — same body for every reason
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example:
+            error: unauthorized
+            message: Valid API key required
+    NotFound:
+      description: Unknown path, or a named resource that does not exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example:
+            error: not_found
+            message: Variable "nope" does not exist
+    Conflict:
+      description: The write would duplicate a name that already exists
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example:
+            error: conflict
+            message: Variable "available_credit" already exists
+    RateLimited:
+      description: More than 60 requests per minute for one key — back off
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example:
+            error: rate_limited
+            message: Rate limit is 60 requests per minute
+    Unavailable:
+      description: >
+        Key unset (integration not enabled), no state database attached, or the
+        state database unreachable where degrading was impossible
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example:
+            error: unavailable
+            message: "Atlas API is not configured on this dispatcher (DISPATCHER_ATLAS_KEY is unset)"
+    Internal:
+      description: Unexpected — should not occur; report it
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example:
+            error: internal
+            message: Unexpected error
+
+  schemas:
+    LogLevel:
+      type: string
+      enum: [trace, debug, info, warn, error, fatal]
+
+    ApiErrorCode:
+      type: string
+      description: Stable machine-readable code — branch on this, never on prose
+      enum:
+        - invalid_request   # 400 payload failed validation
+        - unauthorized      # 401 missing/malformed/wrong key
+        - not_found         # 404 unknown path or resource
+        - conflict          # 409 duplicate name
+        - rate_limited      # 429 over 60 req/min/key
+        - unavailable       # 503 key unset / no usable state DB
+        - internal          # 500 unexpected
+
+    ErrorDetail:
+      type: object
+      required: [path, message]
+      properties:
+        path:
+          type: string
+          description: Dotted field path, e.g. definition.api.headers.Authorization
+        message:
+          type: string
+
+    ErrorEnvelope:
+      type: object
+      required: [error, message]
+      properties:
+        error: { $ref: "#/components/schemas/ApiErrorCode" }
+        message:
+          type: string
+        details:
+          type: array
+          description: Present on invalid_request only — one entry per failing field
+          items: { $ref: "#/components/schemas/ErrorDetail" }
+
+    PageMeta:
+      type: object
+      required:
+        - page
+        - limit
+        - total
+        - total_pages
+        - from
+        - to
+        - has_previous_page
+        - has_next_page
+      properties:
+        page:
+          type: integer
+          description: Echoes the requested page, even when past the end
+        limit:
+          type: integer
+          description: Echoes the requested page size
+        total:
+          type: integer
+          description: Rows matching the FILTERS, before the page is cut
+        total_pages:
+          type: integer
+          description: ceil(total/limit), floored at 1 — an empty result is "page 1 of 1"
+        from:
+          type: integer
+          nullable: true
+          description: 1-based index of the first row in this response; null when empty
+        to:
+          type: integer
+          nullable: true
+          description: 1-based index of the last row; null when empty
+        has_previous_page: { type: boolean }
+        has_next_page:
+          type: boolean
+          description: A page past the end is 200 with an empty array, never a 404
+
+    CheckResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        message:
+          type: string
+          description: Written for an operator — surface verbatim when ok is false
+
+    BuildResponse:
+      type: object
+      required: [generated_at, service, runtime, database, last_dispatch_at]
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+          description: When this response was produced
+        service:
+          type: object
+          required: [name, version, git_sha, build_time, image_tag, api_version]
+          properties:
+            name:
+              type: string
+              description: Package name
+            version:
+              type: string
+              description: Dispatcher release
+            git_sha:
+              type: string
+              description: '"unknown" for local/dev builds — render as a dash'
+            build_time:
+              type: string
+              description: '"unknown" for local/dev builds'
+            image_tag:
+              type: string
+              description: Container tag; "unknown" outside Docker
+            api_version:
+              type: string
+              description: Branch on this ("v1"), don't sniff payload shapes
+        runtime:
+          type: object
+          required: [environment, node_version, uptime_seconds]
+          properties:
+            environment:
+              type: string
+              description: production | staging | development
+            node_version: { type: string }
+            uptime_seconds: { type: number }
+        database:
+          type: object
+          required: [dialect, reachable, migrations_applied]
+          properties:
+            dialect:
+              type: string
+              description: sqlite | mysql | postgres — never the URL/host/user/password
+            reachable:
+              type: boolean
+              description: A live probe, not a config read
+            migrations_applied:
+              type: boolean
+              description: Schema is initialized
+        last_dispatch_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Most recent dispatch; null if none ever
+
+    StateResponse:
+      type: object
+      required: [generated_at, status, dispatch, resolution, catalog, outbox]
+      properties:
+        generated_at: { type: string, format: date-time }
+        status:
+          type: object
+          required: [state, checks]
+          properties:
+            state:
+              type: string
+              enum: [healthy, degraded, error]
+              description: >
+                Derived: all checks pass → healthy; all fail → error; anything
+                between → degraded. A dashboard reporting "up, but its database
+                is unreachable" beats a failed request.
+            checks:
+              type: object
+              description: Open map — names may be added in a minor release
+              additionalProperties:
+                $ref: "#/components/schemas/CheckResult"
+        dispatch:
+          type: object
+          required: [window_days, dispatched, failed, runs, last_dispatch_at, by_channel]
+          properties:
+            window_days:
+              type: integer
+              description: Always 30 in v1 — not configurable
+            dispatched:
+              type: integer
+              nullable: true
+              description: Messages a provider accepted in the window; null when DB unreachable
+            failed:
+              type: integer
+              nullable: true
+              description: Rejected, or recipient had no address/phone
+            runs:
+              type: integer
+              nullable: true
+              description: Completed dispatch runs (campaigns, drip steps)
+            last_dispatch_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: Null if the dispatcher has never sent
+            by_channel:
+              type: object
+              nullable: true
+              description: >
+                Dispatched split by channel. {} when nothing sent; only contains
+                channels actually used — do not assume email is present.
+              additionalProperties: { type: integer }
+        resolution:
+          type: object
+          required: [fallback_rate, resolutions_total, fallbacks_used, fallback_events, variables_enabled]
+          properties:
+            fallback_rate:
+              type: number
+              nullable: true
+              description: >
+                Real per-recipient rate (0-1) counted at send time across every
+                variable each message actually references. NULL — never 0 — when
+                nothing was resolved in the window. This is the number to put a
+                percentage on.
+            resolutions_total:
+              type: integer
+              nullable: true
+              description: Resolutions attempted (recipients × tokens used)
+            fallbacks_used:
+              type: integer
+              nullable: true
+              description: How many of those fell back
+            fallback_events:
+              type: integer
+              nullable: true
+              description: >
+                Resolution failures that THREW, deduplicated by inputs — a
+                different signal from the rate; show separately as "resolution
+                warnings", never relabelled as the same thing.
+            variables_enabled:
+              type: integer
+              nullable: true
+        catalog:
+          type: object
+          required: [variables_total, variables_enabled, last_published_at]
+          properties:
+            variables_total:
+              type: integer
+              nullable: true
+            variables_enabled:
+              type: integer
+              nullable: true
+            last_published_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: Always null in v1 — nothing publishes the catalog yet
+        outbox:
+          type: object
+          required: [pending, failed]
+          properties:
+            pending:
+              type: integer
+              nullable: true
+              description: >
+                Analytics events queued or in flight to ScaleMargin. Persistently
+                rising = dispatcher cannot reach ScaleMargin's callback — worth
+                surfacing, invisible from the platform side.
+            failed:
+              type: integer
+              nullable: true
+              description: Events that exhausted their retries
+
+    VariableSource:
+      type: string
+      enum: [field, computed, constant, query, api]
+
+    FieldDefinition:
+      type: object
+      required: [source, field]
+      properties:
+        source: { type: string, enum: [field] }
+        field:
+          type: string
+          maxLength: 191
+          description: Column read from the record already fetched, via the client's field mapping
+
+    ComputedDefinition:
+      type: object
+      required: [source, expr]
+      properties:
+        source: { type: string, enum: [computed] }
+        expr:
+          type: string
+          maxLength: 4000
+          description: >
+            Joins literals and fields ('Welcome back to ' + company_name).
+            Accepts 'literals', field names, user_id, email, campaign_id,
+            organization_id, env.NAME — nothing else. Validated against the real
+            evaluator.
+
+    ConstantDefinition:
+      type: object
+      required: [source, value]
+      properties:
+        source: { type: string, enum: [constant] }
+        value:
+          type: string
+          maxLength: 8000
+          description: Fixed string, changed in one place instead of forty templates
+
+    QueryDefinition:
+      type: object
+      required: [source, sql]
+      properties:
+        source: { type: string, enum: [query] }
+        sql:
+          type: string
+          maxLength: 8000
+          description: >
+            Read-only statement run inside the client's network at send time;
+            {{tokens}} are bound as parameters, never interpolated. Must be a
+            single SELECT/WITH (no semicolon). Guardrail only — the real
+            protection is the credentials the dispatcher connects with.
+
+    ApiConfig:
+      type: object
+      required: [url]
+      properties:
+        method:
+          type: string
+          enum: [GET, POST]
+          default: GET
+        url:
+          type: string
+          maxLength: 2000
+          description: Must start with http:// or https://; {{tokens}} interpolated URL-encoded at send time
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+            maxLength: 4000
+          description: Values are MASKED as •••••••• in every response
+        json_path:
+          type: string
+          maxLength: 200
+          default: ""
+          description: Dotted path into the JSON response; empty means whole body
+        body:
+          type: string
+          maxLength: 8000
+          description: POST only
+        timeout_ms:
+          type: integer
+          minimum: 100
+          maximum: 30000
+          default: 5000
+
+    ApiDefinition:
+      type: object
+      required: [source, api]
+      properties:
+        source: { type: string, enum: [api] }
+        api: { $ref: "#/components/schemas/ApiConfig" }
+
+    VariableDefinition:
+      description: Discriminated union — an invalid source fails before branch rules run
+      oneOf:
+        - $ref: "#/components/schemas/FieldDefinition"
+        - $ref: "#/components/schemas/ComputedDefinition"
+        - $ref: "#/components/schemas/ConstantDefinition"
+        - $ref: "#/components/schemas/QueryDefinition"
+        - $ref: "#/components/schemas/ApiDefinition"
+      discriminator:
+        propertyName: source
+        mapping:
+          field: "#/components/schemas/FieldDefinition"
+          computed: "#/components/schemas/ComputedDefinition"
+          constant: "#/components/schemas/ConstantDefinition"
+          query: "#/components/schemas/QueryDefinition"
+          api: "#/components/schemas/ApiDefinition"
+
+    Variable:
+      type: object
+      required:
+        - name
+        - source
+        - definition
+        - fallback
+        - sample
+        - enabled
+        - created_at
+        - updated_at
+        - updated_by
+      properties:
+        name:
+          type: string
+          maxLength: 191
+          description: The placeholder as written in a template — {{available_credit}}. Unique.
+        source:
+          $ref: "#/components/schemas/VariableSource"
+        definition:
+          $ref: "#/components/schemas/VariableDefinition"
+        fallback:
+          type: string
+          nullable: true
+          description: Used when the source yields nothing or fails — with one, a variable can never break a send
+        sample:
+          type: string
+          nullable: true
+          description: Preview against the fictional sample record (usr_1024 / Ada Lovelace / Acme Corp). Never a real customer.
+        enabled:
+          type: boolean
+          description: A disabled variable keeps its definition but stops resolving
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        updated_by:
+          type: string
+          nullable: true
+          description: '"atlas:" plus the first 8 characters of the key that wrote it'
+
+    CreateVariableRequest:
+      type: object
+      required: [name, definition]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 191
+          pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+        definition: { $ref: "#/components/schemas/VariableDefinition" }
+        fallback: { type: string, nullable: true, maxLength: 4000 }
+        sample:
+          type: string
+          nullable: true
+          maxLength: 4000
+          description: Ignored for field/computed/constant (rendered server-side); stored as sent for query/api
+        enabled:
+          type: boolean
+          default: true
+
+    UpdateVariableRequest:
+      type: object
+      minProperties: 1
+      description: Every field optional, at least one required; definition moves whole
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 191
+          pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+        definition: { $ref: "#/components/schemas/VariableDefinition" }
+        fallback: { type: string, nullable: true, maxLength: 4000 }
+        sample: { type: string, nullable: true, maxLength: 4000 }
+        enabled: { type: boolean }
+
+    SingleVariableResponse:
+      type: object
+      required: [variable]
+      properties:
+        variable: { $ref: "#/components/schemas/Variable" }
+
+    VariableListResponse:
+      type: object
+      required: [generated_at, meta, variables]
+      properties:
+        generated_at: { type: string, format: date-time }
+        meta: { $ref: "#/components/schemas/PageMeta" }
+        variables:
+          type: array
+          items: { $ref: "#/components/schemas/Variable" }
+
+    DeleteVariableResponse:
+      type: object
+      required: [deleted, name]
+      properties:
+        deleted:
+          type: boolean
+          enum: [true]
+        name: { type: string }
+
+    CampaignTotals:
+      type: object
+      required: [recipients, unique_recipients, sent, failed, fallbacks_used]
+      properties:
+        recipients:
+          type: integer
+          description: SENDS, not people — a drip counts one per recipient per step
+        unique_recipients:
+          type: integer
+          description: Headcount, from the event funnel
+        sent: { type: integer }
+        failed: { type: integer }
+        fallbacks_used: { type: integer }
+
+    CampaignEngagement:
+      type: object
+      required:
+        - dispatched
+        - delivered
+        - opened
+        - clicked
+        - bounced
+        - complained
+        - unsubscribed
+      properties:
+        dispatched: { type: integer }
+        delivered: { type: integer }
+        opened: { type: integer }
+        clicked: { type: integer }
+        bounced: { type: integer }
+        complained: { type: integer }
+        unsubscribed: { type: integer }
+
+    CampaignSummary:
+      type: object
+      required:
+        - program_id
+        - program_kind
+        - organization_id
+        - channel
+        - provider
+        - template_ref
+        - totals
+        - engagement
+        - first_send_at
+        - last_event_at
+        - updated_at
+      properties:
+        program_id:
+          type: string
+          description: The grouping key a human calls "the campaign"
+        program_kind:
+          type: string
+          enum: [campaign, drip]
+        organization_id: { type: string }
+        channel:
+          type: string
+          description: Most recent channel seen — fetch detail for the full set
+        provider:
+          type: string
+          description: Most recent provider seen
+        template_ref:
+          type: string
+          nullable: true
+          description: WhatsApp = real Gupshup template id; email derived from variant/campaign name
+        totals: { $ref: "#/components/schemas/CampaignTotals" }
+        engagement: { $ref: "#/components/schemas/CampaignEngagement" }
+        first_send_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_event_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the campaign last did anything (vs updated_at = rollup recompute)
+        updated_at:
+          type: string
+          format: date-time
+          description: When the rollup was recomputed
+
+    ChannelProvider:
+      type: object
+      required: [channel, provider]
+      properties:
+        channel: { type: string }
+        provider: { type: string }
+
+    ProgramStep:
+      type: object
+      required: [step_id, channel, provider, sends, first_activity, last_activity]
+      properties:
+        step_id: { type: string }
+        channel: { type: string }
+        provider: { type: string }
+        sends:
+          type: integer
+          description: Distinct sends through this step
+        first_activity: { type: string, format: date-time }
+        last_activity: { type: string, format: date-time }
+
+    CampaignDetailResponse:
+      type: object
+      required: [campaign]
+      properties:
+        campaign:
+          allOf:
+            - $ref: "#/components/schemas/CampaignSummary"
+            - type: object
+              required: [channels, steps]
+              properties:
+                channels:
+                  type: array
+                  description: Every channel/provider pair this program ever used
+                  items: { $ref: "#/components/schemas/ChannelProvider" }
+                steps:
+                  type: array
+                  description: Per-step breakdown; empty for a one-shot campaign
+                  items: { $ref: "#/components/schemas/ProgramStep" }
+
+    CampaignListResponse:
+      type: object
+      required: [generated_at, meta, campaigns]
+      properties:
+        generated_at: { type: string, format: date-time }
+        meta: { $ref: "#/components/schemas/PageMeta" }
+        campaigns:
+          type: array
+          items: { $ref: "#/components/schemas/CampaignSummary" }
+
+    SendLog:
+      type: object
+      required:
+        - id
+        - dispatch_run_id
+        - campaign_id
+        - program_id
+        - step_id
+        - user_id
+        - channel
+        - provider
+        - template_ref
+        - status
+        - provider_message_id
+        - latency_ms
+        - error_category
+        - error_message
+        - fallbacks_used
+        - occurred_at
+      properties:
+        id: { type: string }
+        dispatch_run_id: { type: string }
+        campaign_id:
+          type: string
+          description: Wire id — drip_{enrollment}_{step} for a drip
+        program_id: { type: string }
+        step_id:
+          type: string
+          nullable: true
+        user_id:
+          type: string
+          description: The client's opaque identifier — already held by the platform; not an address
+        channel: { type: string }
+        provider: { type: string }
+        template_ref:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [sent, failed]
+        provider_message_id:
+          type: string
+          nullable: true
+        latency_ms:
+          type: integer
+          nullable: true
+          description: Time inside the provider call alone — not the run duration
+        error_category:
+          type: string
+          nullable: true
+          description: delivery_failure | user_not_found | missing_phone — machine-readable, group on this
+        error_message:
+          type: string
+          nullable: true
+          description: SCRUBBED — addresses/phones/IPs replaced with [REDACTED]; diagnostic code survives
+        fallbacks_used:
+          type: integer
+          description: How many referenced variables fell back; 0 healthy, == token count means nothing resolved
+        occurred_at: { type: string, format: date-time }
+
+    SendListResponse:
+      type: object
+      required: [generated_at, meta, sends]
+      properties:
+        generated_at: { type: string, format: date-time }
+        meta: { $ref: "#/components/schemas/PageMeta" }
+        sends:
+          type: array
+          items: { $ref: "#/components/schemas/SendLog" }
+
+    LogEntry:
+      type: object
+      required:
+        - id
+        - ts
+        - level
+        - component
+        - request_id
+        - campaign_id
+        - message
+        - stack
+        - context
+      properties:
+        id: { type: string }
+        ts: { type: string, format: date-time }
+        level: { $ref: "#/components/schemas/LogLevel" }
+        component:
+          type: string
+          description: Dotted subsystem name — treat unknown values as valid
+        request_id:
+          type: string
+          nullable: true
+        campaign_id:
+          type: string
+          nullable: true
+          description: Wire id bound to the dispatch request
+        message:
+          type: string
+          description: PII-scrubbed — render what you receive; [REDACTED] is intentional
+        stack:
+          type: string
+          nullable: true
+          description: Scrubbed
+        context:
+          type: object
+          nullable: true
+          description: Structured fields, values scrubbed recursively
+
+    LogListResponse:
+      type: object
+      required: [generated_at, meta, logs]
+      properties:
+        generated_at: { type: string, format: date-time }
+        meta: { $ref: "#/components/schemas/PageMeta" }
+        logs:
+          type: array
+          items: { $ref: "#/components/schemas/LogEntry" }
+
+    SingleLogResponse:
+      type: object
+      required: [log]
+      properties:
+        log: { $ref: "#/components/schemas/LogEntry" }
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    ReadyResponse:
+      type: object
+      required: [ready, checks]
+      properties:
+        ready: { type: boolean }
+        checks:
+          type: object
+          required: [required_env, dispatch_config, event_config, state_database]
+          properties:
+            required_env: { type: boolean }
+            dispatch_config: { type: boolean }
+            event_config: { type: boolean }
+            state_database: { type: boolean }

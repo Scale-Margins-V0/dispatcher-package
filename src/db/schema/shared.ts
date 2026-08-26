@@ -247,6 +247,7 @@ export type CampaignEventRow = {
   event: string;
   provider: string;
   provider_message_id: string | null;
+  sender_id?: string | null;
   /** Provider clock. */
   occurred_at: Date;
   /** Server clock at persist time. */

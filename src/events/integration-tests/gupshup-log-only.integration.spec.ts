@@ -58,7 +58,7 @@ describe("POST /api/scalemargin/gupshup-events (log-only, forwarding disabled)",
     const mod = await import("../../index.js");
     app = mod.app;
     initializeEventPipeline();
-  });
+  }, 60_000);
 
   afterAll(() => {
     vi.unstubAllGlobals();

@@ -116,7 +116,11 @@ describe("resolveDynamicValues — query (sqlite lookup backend)", () => {
   });
 
   afterEach(() => {
-    rmSync(workDir, { recursive: true, force: true });
+    try {
+      rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* ignore Windows file lock on temporary sqlite db */
+    }
   });
 
   const sqliteConfig = (placeholders: Record<string, unknown>) =>

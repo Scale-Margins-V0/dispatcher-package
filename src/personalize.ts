@@ -326,5 +326,39 @@ export function personalize(
       value
     );
   }
+
+  // Pre-computed async variables passed directly
+  if (resolved) {
+    for (const [name, val] of Object.entries(resolved)) {
+      if (typeof val === "string") {
+        result = result.replaceAll(
+          new RegExp(`\\{\\{${escapeReg(name)}\\}\\}`, "g"),
+          val
+        );
+      }
+    }
+  }
+
+  // Standard user identity fields
+  if (user) {
+    if (user.email) {
+      result = result.replaceAll(/\{\{email\}\}/g, user.email);
+    }
+    if (user.user_id) {
+      result = result.replaceAll(/\{\{user_id\}\}/g, user.user_id);
+    }
+    // Direct user.fields (e.g. first_name, age, company_name, custom fields)
+    if (user.fields) {
+      for (const [fieldName, fieldValue] of Object.entries(user.fields)) {
+        if (fieldValue !== undefined && fieldValue !== null) {
+          result = result.replaceAll(
+            new RegExp(`\\{\\{${escapeReg(fieldName)}\\}\\}`, "g"),
+            String(fieldValue)
+          );
+        }
+      }
+    }
+  }
+
   return result;
 }

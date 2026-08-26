@@ -162,9 +162,6 @@ const fallback = z
   .max(4000, "Fallback cannot exceed 4000 characters")
   .nullable();
 
-/*
- * Create Variable Schema
- */
 export const ZCreateVariableSchema = z.object({
   name: placeholderName,
   definition: ZVariableDefinitionSchema,
@@ -176,9 +173,7 @@ export const ZCreateVariableSchema = z.object({
 
 export type ZCreateVariable = z.infer<typeof ZCreateVariableSchema>;
 
-/*
- * Update Variable Schema
- *
+/**
  * Every field is optional, but the whole `definition` moves together — a
  * partial definition would let a caller turn a `query` into a `field` while
  * leaving the SQL behind, which is a half-migrated row nobody asked for.
@@ -198,16 +193,9 @@ export const ZUpdateVariableSchema = z
 
 export type ZUpdateVariable = z.infer<typeof ZUpdateVariableSchema>;
 
-/*
- * Path parameter
- */
 export const ZVariableNameParamSchema = z.object({ name: placeholderName });
 
 export type ZVariableNameParam = z.infer<typeof ZVariableNameParamSchema>;
-
-/*
- * List query
- */
 
 export const DEFAULT_PAGE_SIZE = 25;
 export const MAX_PAGE_SIZE = 100;

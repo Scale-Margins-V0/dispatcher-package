@@ -4,6 +4,8 @@ import { loadEventsConfig, type EventsConfig } from "../events/config.js";
 import { getTelemetryStatus } from "../telemetry/posthog.js";
 import { getDispatchConfig, getIdType, configPathFromEnv } from "../user-lookup/config.js";
 import { lookupUsers } from "../user-lookup/index.js";
+import { envYamlPath, loadEnvYaml } from "../env-yaml.js";
+import { registry } from "../providers/senders.js";
 
 type StatusValue = "ok" | "degraded" | "error";
 
@@ -133,6 +135,65 @@ function summarizeProviders(
       },
     },
   ];
+}
+
+export interface SenderDiagnostic {
+  id: string;
+  channel: "email" | "whatsapp";
+  provider: string;
+  from?: string;
+  weight: number;
+  enabled: boolean;
+  organizations?: string[];
+  breaker_state: "closed" | "open" | "half-open";
+  credentials_satisfied: boolean;
+}
+
+function summarizeSenders(): SenderDiagnostic[] {
+  try {
+    const yaml = loadEnvYaml();
+    return yaml.senders.map((s) => {
+      let satisfied = true;
+      if (s.provider === "sendgrid") {
+        satisfied = Boolean(
+          s.sendgrid?.api_key?.trim() ||
+            (s.sendgrid?.api_key_env && process.env[s.sendgrid.api_key_env]?.trim()) ||
+            process.env.SENDGRID_API_KEY
+        );
+      } else if (s.provider === "gupshup") {
+        const mode = s.gupshup?.mode || "api_key";
+        if (mode === "api_key") {
+          satisfied = Boolean(
+            s.gupshup?.api_key?.trim() ||
+              (s.gupshup?.api_key_env && process.env[s.gupshup.api_key_env]?.trim()) ||
+              process.env.GUPSHUP_API_KEY
+          );
+        } else {
+          satisfied = Boolean(
+            (s.gupshup?.user_id?.trim() ||
+              (s.gupshup?.user_id_env && process.env[s.gupshup.user_id_env]?.trim()) ||
+              process.env.GUPSHUP_USER_ID) &&
+              (s.gupshup?.password?.trim() ||
+                (s.gupshup?.password_env && process.env[s.gupshup.password_env]?.trim()) ||
+                process.env.GUPSHUP_PASSWORD)
+          );
+        }
+      }
+      return {
+        id: s.id,
+        channel: s.channel,
+        provider: s.provider,
+        from: s.from,
+        weight: s.weight ?? 1,
+        enabled: s.enabled !== false,
+        organizations: s.organizations,
+        breaker_state: registry.getBreakerState(s.id)?.state ?? "closed",
+        credentials_satisfied: satisfied,
+      };
+    });
+  } catch {
+    return [];
+  }
 }
 
 function safeError(error: unknown): string {
@@ -266,6 +327,8 @@ export async function buildDiagnosticsReport(
   config: {
     dispatch_config_path: string;
     dispatch_config_present: boolean;
+    env_yaml_path: string | null;
+    env_yaml_present: boolean;
     email_provider: string;
     image_storage_provider: string;
     user_lookup_backend?: string;
@@ -283,6 +346,7 @@ export async function buildDiagnosticsReport(
     events?: ReturnType<typeof summarizeEventsConfig>;
     telemetry: ReturnType<typeof getTelemetryStatus>;
     providers: ProviderDiagnostic[];
+    senders: SenderDiagnostic[];
   };
   env: {
     required: Record<string, boolean>;
@@ -316,6 +380,8 @@ export async function buildDiagnosticsReport(
     config: {
       dispatch_config_path: dispatchConfigPath,
       dispatch_config_present: existsSync(dispatchConfigPath),
+      env_yaml_path: envYamlPath(),
+      env_yaml_present: Boolean(envYamlPath()),
       email_provider: emailProvider,
       image_storage_provider: process.env.IMAGE_STORAGE_PROVIDER || "none",
       user_lookup_backend: dispatchConfig.user_lookup.backend,
@@ -332,6 +398,7 @@ export async function buildDiagnosticsReport(
       events: summarizeEventsConfig(eventsConfig),
       telemetry: getTelemetryStatus(),
       providers: summarizeProviders(emailProvider, eventsConfig),
+      senders: summarizeSenders(),
     },
     env: {
       required: envPresence(REQUIRED_ENV),

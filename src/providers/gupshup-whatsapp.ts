@@ -15,7 +15,7 @@ import { applyGupshupTag } from "../events/outbound/gupshup-tagger.js";
 import { componentLogger } from "../logging/logger.js";
 import { personalize, type PersonalizeDispatchContext } from "../personalize.js";
 import type { UserRecord } from "../user-lookup/types.js";
-import type { SendContext, SendResult } from "./types.js";
+import type { SendContext, SendResult, SenderConfig } from "./types.js";
 
 const log = componentLogger("providers.gupshup");
 
@@ -235,6 +235,50 @@ export function resolveGupshupConfig(): GupshupConfig | null {
   }
 
   return null;
+}
+
+export function gupshupConfigFromSender(sender: SenderConfig): GupshupConfig | null {
+  const g = sender.gupshup;
+  if (!g) return resolveGupshupConfig();
+
+  const mode = g.mode || (g.api_key || g.api_key_env ? "apikey" : "enterprise");
+  const mediaDefaults = mediaDefaultsFromEnv();
+  const msgType = g.message_type || process.env.GUPSHUP_MESSAGE_TYPE?.trim() || "HSM";
+  const templateLanguage = g.template_language || process.env.GUPSHUP_TEMPLATE_LANGUAGE?.trim() || "en";
+
+  const apiKey = g.api_key?.trim() || (g.api_key_env ? process.env[g.api_key_env]?.trim() : undefined);
+  const userId = g.user_id?.trim() || (g.user_id_env ? process.env[g.user_id_env]?.trim() : undefined);
+  const password = g.password?.trim() || (g.password_env ? process.env[g.password_env]?.trim() : undefined);
+
+  if (mode === "apikey" || apiKey) {
+    return {
+      mode: "apikey",
+      apiKey: apiKey || process.env.GUPSHUP_API_KEY?.trim(),
+      ...(userId && password ? { userId, password } : {}),
+      msgType,
+      srcName: g.src_name?.trim() || process.env.GUPSHUP_SRC_NAME?.trim(),
+      source: g.source?.trim() || process.env.GUPSHUP_SOURCE?.trim(),
+      templateApiUrl: g.template_api_url?.trim() || "https://api.gupshup.io/wa/api/v1/template/msg",
+      enterpriseApiUrl: g.enterprise_api_url?.trim() || "https://smsgupshup.com",
+      ...mediaDefaults,
+      templateLanguage,
+    };
+  }
+
+  if (userId && password) {
+    return {
+      mode: "enterprise",
+      userId,
+      password,
+      msgType,
+      templateApiUrl: g.template_api_url?.trim() || "https://api.gupshup.io/wa/api/v1/template/msg",
+      enterpriseApiUrl: g.enterprise_api_url?.trim() || "https://smsgupshup.com",
+      ...mediaDefaults,
+      templateLanguage,
+    };
+  }
+
+  return resolveGupshupConfig();
 }
 
 function parseHasCta(value: unknown): boolean | undefined {

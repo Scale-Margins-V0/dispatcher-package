@@ -166,6 +166,7 @@ export const campaignEvents = sqliteTable(
     event: text("event").notNull(),
     provider: text("provider").notNull(),
     provider_message_id: text("provider_message_id"),
+    sender_id: text("sender_id"),
     occurred_at: ts("occurred_at").notNull(),
     received_at: ts("received_at").notNull(),
     metadata: json("metadata"),

@@ -74,13 +74,22 @@ export function describeSendGridError(error: unknown): string {
 
 export class SendGridProvider implements EmailProvider {
   name = "sendgrid";
+  private mail: {
+    setApiKey: (key: string) => void;
+    send: (...args: any[]) => Promise<any>;
+  };
 
   constructor(apiKey?: string) {
     const key = apiKey || process.env.SENDGRID_API_KEY;
     if (!key) {
       throw new Error("SENDGRID_API_KEY is required for SendGrid provider");
     }
-    sgMail.setApiKey(key);
+    const MailServiceClass =
+      (sgMailModule as unknown as { MailService?: new () => any }).MailService ||
+      (sgMailModule as unknown as { default?: { MailService?: new () => any } }).default?.MailService ||
+      sgMail;
+    this.mail = typeof MailServiceClass === "function" ? new (MailServiceClass as any)() : sgMail;
+    this.mail.setApiKey(key);
   }
 
   async send(message: EmailMessage): Promise<SendResult> {
@@ -110,7 +119,7 @@ export class SendGridProvider implements EmailProvider {
         ? applySendGridCustomArgs(base, message.context)
         : base;
       ensureOpenTrackingPixelPlaceholder(payload as Record<string, unknown>);
-      const [response] = await sgMail.send(payload as unknown as Parameters<typeof sgMail.send>[0]);
+      const [response] = await this.mail.send(payload as any);
 
       return {
         success: response.statusCode >= 200 && response.statusCode < 300,

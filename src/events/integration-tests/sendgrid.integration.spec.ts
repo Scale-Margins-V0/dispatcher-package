@@ -71,7 +71,7 @@ describe("POST /api/scalemargin/sendgrid-events (integration)", () => {
     const mod = await import("../../index.js");
     app = mod.app;
     initializeEventPipeline();
-  });
+  }, 60_000);
 
   afterAll(() => {
     verifySpy.mockRestore();

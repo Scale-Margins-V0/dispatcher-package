@@ -11,15 +11,19 @@ let warnedMissingConfigSet = false;
  */
 export function applySesMessageTags(
   input: SendEmailCommandInput,
-  ctx: SendContext
+  ctx: SendContext,
+  configSetName?: string
 ): SendEmailCommandInput {
   const configurationSetName =
-    process.env.SES_EVENT_CONFIG_SET || process.env.SES_CONFIGURATION_SET || undefined;
+    configSetName ||
+    process.env.SES_EVENT_CONFIG_SET ||
+    process.env.SES_CONFIGURATION_SET ||
+    undefined;
   if (!configurationSetName && !warnedMissingConfigSet) {
     warnedMissingConfigSet = true;
     componentLogger(LogComponent.events).warn(
       { provider: "ses", error_category: "missing_config" },
-      "SES_EVENT_CONFIG_SET is not set — outbound messages carry no tags, so SNS " +
+      "SES_EVENT_CONFIG_SET is not set — outbound messages carry no configuration set name, so SNS " +
         "delivery and open events cannot be correlated back to a campaign"
     );
   }

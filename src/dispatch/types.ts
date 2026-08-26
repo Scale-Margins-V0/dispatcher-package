@@ -9,12 +9,21 @@ export type DispatchPayload = {
     subject?: string;
     html_body?: string;
     text_body?: string;
+    /** Template ID/name for WhatsApp templates (Freshchat/Gupshup). */
+    template_id?: string;
+    template_name?: string;
     /** WhatsApp media template caption with {{placeholders}} — triggers SENDMEDIAMESSAGE API. */
     caption?: string;
     /** Public HTTPS URL for the WhatsApp media asset (image, etc.). */
     media_url?: string;
+    /** Header type for WhatsApp media templates ("image" | "document" | "video"). */
+    header_type?: "image" | "document" | "video";
+    /** Pre-ordered parameters/variables array from Atlas/campaign (can contain resolved strings and {{placeholders}}). */
+    params?: string[];
+    variables?: string[];
     /** Indicates if WhatsApp template/message contains Call-To-Action buttons. */
     has_cta?: boolean;
+    is_complex?: boolean;
   };
   personalization_fields?: string[];
   images?: Array<{
@@ -54,5 +63,9 @@ export type DispatchPayload = {
      * one-time activation link.
      */
     onsite?: OnsiteConfigInput;
+    /** Pin this dispatch to one configured sender; see src/providers/senders.ts. */
+    sender_id?: string;
+    from_email?: string;
+    sender_strict?: boolean;
   };
 };

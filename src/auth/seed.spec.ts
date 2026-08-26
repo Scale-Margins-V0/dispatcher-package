@@ -64,8 +64,10 @@ describe("seedDefaultAdmin", () => {
     const contents = readFileSync(credFile, "utf8");
     expect(contents).toMatch(/email: admin@scalemargins\.tech/);
     expect(contents).toMatch(/password: \S+/);
-    // 0600 permissions (owner rw only)
-    expect(statSync(credFile).mode & 0o777).toBe(0o600);
+    // 0600 permissions (owner rw only on POSIX)
+    if (process.platform !== "win32") {
+      expect(statSync(credFile).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("uses an env-provided password and never writes it to the credentials file", async () => {

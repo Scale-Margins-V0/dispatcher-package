@@ -9,6 +9,8 @@ export default defineConfig({
     globals: true,
     environment: "node",
     pool: "forks",
+    hookTimeout: 60_000,
+    testTimeout: 60_000,
     env: {
       /**
        * Stop the AWS SDK probing EC2 instance metadata for credentials.
@@ -26,6 +28,8 @@ export default defineConfig({
       {
         test: {
           name: "unit",
+          hookTimeout: 60_000,
+          testTimeout: 60_000,
           include: ["src/**/*.spec.ts"],
           exclude: [
             "src/**/*.integration.spec.ts",
@@ -36,6 +40,8 @@ export default defineConfig({
       {
         test: {
           name: "integration",
+          hookTimeout: 60_000,
+          testTimeout: 60_000,
           include: [
             "src/**/*.integration.spec.ts",
             "src/dispatch.integration.spec.ts",

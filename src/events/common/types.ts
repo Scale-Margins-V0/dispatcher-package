@@ -11,6 +11,7 @@ export type InboundProviderName =
   | "sendgrid"
   | "ses"
   | "gupshup"
+  | "freshchat"
   | "link_click"
   | "onsite";
 

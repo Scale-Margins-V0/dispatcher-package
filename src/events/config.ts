@@ -4,6 +4,7 @@ import yaml from "js-yaml";
 import { z } from "zod";
 import { componentLogger } from "../logging/logger.js";
 import { LogComponent } from "../logging/conventions.js";
+import { loadEnvYaml } from "../env-yaml.js";
 
 const providerBlock = z.object({
   enabled: z.boolean(),
@@ -74,7 +75,23 @@ function parseProviderList(raw: string | undefined): Array<"sendgrid" | "ses" | 
  */
 export function applyProviderEnablementFromEnv(cfg: EventsConfig): void {
   const sgEnv = sendgridSigningEnvName(cfg);
-  cfg.providers.sendgrid.enabled = Boolean(process.env[sgEnv]?.trim());
+  const sgHasEnv = Boolean(process.env[sgEnv]?.trim());
+  let sgHasSenderKey = false;
+  try {
+    const yaml = loadEnvYaml();
+    sgHasSenderKey = yaml.senders.some(
+      (s) =>
+        s.provider === "sendgrid" &&
+        (Boolean(s.sendgrid?.event_webhook_public_key?.trim()) ||
+          Boolean(
+            s.sendgrid?.event_webhook_public_key_env &&
+              process.env[s.sendgrid.event_webhook_public_key_env]?.trim()
+          ))
+    );
+  } catch {
+    /* ignore */
+  }
+  cfg.providers.sendgrid.enabled = sgHasEnv || sgHasSenderKey;
   cfg.providers.ses.enabled = true;
   // `enabled` here gates FORWARDING to the backend event caller. Gupshup forwards
   // by default (like SES) — the webhook always accepts + logs payloads, and now also
@@ -217,7 +234,23 @@ export function loadEventsConfig(): EventsConfig {
 export function assertEventsConfigEnv(cfg: EventsConfig): void {
   if (cfg.providers.sendgrid.enabled) {
     const k = sendgridSigningEnvName(cfg);
-    if (!process.env[k]?.trim()) {
+    const envHasKey = Boolean(process.env[k]?.trim());
+    let senderHasKey = false;
+    try {
+      const yaml = loadEnvYaml();
+      senderHasKey = yaml.senders.some(
+        (s) =>
+          s.provider === "sendgrid" &&
+          (Boolean(s.sendgrid?.event_webhook_public_key?.trim()) ||
+            Boolean(
+              s.sendgrid?.event_webhook_public_key_env &&
+                process.env[s.sendgrid.event_webhook_public_key_env]?.trim()
+            ))
+      );
+    } catch {
+      /* ignore */
+    }
+    if (!envHasKey && !senderHasKey) {
       throw new Error(`[events] SendGrid enabled but ${k} is not set`);
     }
   }

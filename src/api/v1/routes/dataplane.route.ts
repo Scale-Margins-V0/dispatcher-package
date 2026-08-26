@@ -118,6 +118,8 @@ router.route("/build").get(asyncApi(DataPlaneController.getBuild));
 
 router.route("/state").get(asyncApi(DataPlaneController.getState));
 
+router.route("/senders").get(asyncApi(DataPlaneController.listSendersHandler));
+
 /*
  * Campaigns — the durable rollup and its per-recipient send log. Read-only:
  * a campaign is something the platform decided, not something authored here.

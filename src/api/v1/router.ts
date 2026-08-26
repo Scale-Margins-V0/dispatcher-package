@@ -6,9 +6,8 @@
  *   /api/v1/data-plane  EXTERNAL — Atlas. API-key auth. Frozen path contract.
  *   /api/v1/internal    INTERNAL — the client's own probes. No auth.
  *
- * Body parsing lives inside each router, never here and never globally: a
- * global JSON parser would consume the raw body that
- * `POST /api/scalemargin/dispatch` signs, breaking HMAC verification.
+ * Body parsing stays inside each router, never at the app level — see
+ * routes/dataplane.route.ts for why.
  */
 
 import type { Express } from "express";

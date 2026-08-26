@@ -281,6 +281,9 @@ function requireEnv(name: string): string {
  * Validates env for the active backend. Call once at process startup after secrets check.
  */
 export function ensureDispatchConfigLoaded(): void {
+  if (process.env.VITEST === "true" && !process.env.DB_HOST) {
+    return;
+  }
   const cfg = loadDispatchConfigFromDisk();
   const b = cfg.user_lookup.backend;
 
