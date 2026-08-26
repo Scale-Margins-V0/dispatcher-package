@@ -38,6 +38,7 @@ const eventsSchema = z.object({
       sendgrid: providerBlock,
       ses: providerBlock,
       gupshup: providerBlock,
+      freshchat: providerBlock.optional(),
     }),
   }),
 });
@@ -54,15 +55,19 @@ function gupshupSecretEnvName(cfg: EventsConfig): string {
   return cfg.providers.gupshup.secret_env ?? "GUPSHUP_WEBHOOK_SECRET";
 }
 
+function freshchatSecretEnvName(cfg: EventsConfig): string {
+  return cfg.providers.freshchat?.secret_env ?? "FRESHCHAT_WEBHOOK_SECRET";
+}
+
 /** Comma-separated provider names → normalized set. */
-function parseProviderList(raw: string | undefined): Array<"sendgrid" | "ses" | "gupshup"> {
+function parseProviderList(raw: string | undefined): Array<"sendgrid" | "ses" | "gupshup" | "freshchat"> {
   if (!raw?.trim()) {
     return [];
   }
-  const out: Array<"sendgrid" | "ses" | "gupshup"> = [];
+  const out: Array<"sendgrid" | "ses" | "gupshup" | "freshchat"> = [];
   for (const token of raw.split(",")) {
     const t = token.trim().toLowerCase();
-    if (t === "sendgrid" || t === "ses" || t === "gupshup") {
+    if (t === "sendgrid" || t === "ses" || t === "gupshup" || t === "freshchat") {
       out.push(t);
     }
   }
@@ -93,20 +98,41 @@ export function applyProviderEnablementFromEnv(cfg: EventsConfig): void {
   }
   cfg.providers.sendgrid.enabled = sgHasEnv || sgHasSenderKey;
   cfg.providers.ses.enabled = true;
-  // `enabled` here gates FORWARDING to the backend event caller. Gupshup forwards
-  // by default (like SES) — the webhook always accepts + logs payloads, and now also
-  // forwards them. GUPSHUP_WEBHOOK_SECRET, when set, additionally HMAC-verifies the
-  // incoming signature; without it the webhook is open (unauthenticated). Turn
-  // forwarding off with EVENT_PROVIDERS_DISABLED=gupshup.
+  // `enabled` here gates FORWARDING to the backend event caller.
+  // Gupshup forwards by default (like SES) with signature stamp verification.
+  // Freshchat receipts do not echo an authenticity tag, so Freshchat enables
+  // when a webhook secret is configured or when explicitly enabled.
   cfg.providers.gupshup.enabled = true;
 
+  const fcEnv = freshchatSecretEnvName(cfg);
+  const fcHasEnv = Boolean(process.env[fcEnv]?.trim());
+  let fcHasSenderSecret = false;
+  try {
+    const yaml = loadEnvYaml();
+    fcHasSenderSecret = yaml.senders.some(
+      (s) =>
+        s.provider === "freshchat" &&
+        (Boolean(s.freshchat?.webhook_secret?.trim()) ||
+          Boolean(
+            s.freshchat?.webhook_secret_env &&
+              process.env[s.freshchat.webhook_secret_env]?.trim()
+          ))
+    );
+  } catch {
+    /* ignore */
+  }
+  if (!cfg.providers.freshchat) {
+    cfg.providers.freshchat = { enabled: false, secret_env: "FRESHCHAT_WEBHOOK_SECRET" };
+  }
+  cfg.providers.freshchat.enabled = fcHasEnv || fcHasSenderSecret;
+
   for (const p of parseProviderList(process.env.EVENT_PROVIDERS_DISABLED)) {
-    cfg.providers[p].enabled = false;
+    if (cfg.providers[p]) cfg.providers[p]!.enabled = false;
   }
   const forceOn = parseProviderList(process.env.EVENT_PROVIDERS_ENABLED);
   if (forceOn.length > 0) {
     for (const p of forceOn) {
-      cfg.providers[p].enabled = true;
+      if (cfg.providers[p]) cfg.providers[p]!.enabled = true;
     }
   }
 }
@@ -129,6 +155,7 @@ function defaultConfig(): EventsConfig {
       sendgrid: { enabled: false, signing_key_env: "SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY" },
       ses: { enabled: true, configuration_set_env: "SES_EVENT_CONFIG_SET" },
       gupshup: { enabled: false, secret_env: "GUPSHUP_WEBHOOK_SECRET" },
+      freshchat: { enabled: false, secret_env: "FRESHCHAT_WEBHOOK_SECRET" },
     },
   };
 }
@@ -160,6 +187,10 @@ export function logResolvedEventsConfig(cfg: EventsConfig): void {
         gupshup: {
           enabled: cfg.providers.gupshup.enabled,
           secret_env: cfg.providers.gupshup.secret_env,
+        },
+        freshchat: {
+          enabled: Boolean(cfg.providers.freshchat?.enabled),
+          secret_env: cfg.providers.freshchat?.secret_env,
         },
       },
     },
@@ -261,6 +292,31 @@ export function assertEventsConfigEnv(cfg: EventsConfig): void {
         { provider: "gupshup", secret_env: s, error_category: "unauthenticated_webhook" },
         "Gupshup inbound webhook is OPEN — the signing secret is unset, so " +
           "POST /api/scalemargin/gupshup-events accepts unauthenticated payloads"
+      );
+    }
+  }
+  if (cfg.providers.freshchat?.enabled) {
+    const s = freshchatSecretEnvName(cfg);
+    let senderHasSecret = false;
+    try {
+      const yaml = loadEnvYaml();
+      senderHasSecret = yaml.senders.some(
+        (snd) =>
+          snd.provider === "freshchat" &&
+          (Boolean(snd.freshchat?.webhook_secret?.trim()) ||
+            Boolean(
+              snd.freshchat?.webhook_secret_env &&
+                process.env[snd.freshchat.webhook_secret_env]?.trim()
+            ))
+      );
+    } catch {
+      /* ignore */
+    }
+    if (!process.env[s]?.trim() && !senderHasSecret) {
+      componentLogger(LogComponent.config).warn(
+        { provider: "freshchat", secret_env: s, error_category: "unauthenticated_webhook" },
+        "Freshchat inbound webhook is OPEN — the signing secret is unset, so " +
+          "POST /api/scalemargin/freshchat-events accepts unauthenticated payloads"
       );
     }
   }

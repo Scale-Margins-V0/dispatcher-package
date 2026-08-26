@@ -38,9 +38,21 @@ function logGupshupPayload(req: express.Request): void {
     { provider: "gupshup", header_names: headerNames(req), body_bytes: rawBody.length },
     "Inbound webhook received"
   );
-  // The body carries recipient phone numbers, so it is debug-only: off in
-  // production, available when someone is actually debugging a correlation bug.
   log.debug({ provider: "gupshup", body: rawBody }, "Inbound webhook payload");
+}
+
+function logFreshchatPayload(req: express.Request): void {
+  const rawBody = Buffer.isBuffer(req.body)
+    ? req.body.toString("utf-8")
+    : typeof req.body === "string"
+      ? req.body
+      : JSON.stringify(req.body ?? {});
+
+  log.info(
+    { provider: "freshchat", header_names: headerNames(req), body_bytes: rawBody.length },
+    "Inbound webhook received"
+  );
+  log.debug({ provider: "freshchat", body: rawBody }, "Inbound webhook payload");
 }
 
 export function registerInboundWebhookRoutes(app: Express): void {
@@ -144,5 +156,38 @@ export function registerInboundWebhookRoutes(app: Express): void {
       }
       await gupshupWebhookHandler(req, res, next);
     }
+  );
+
+  let freshchatWebhookHandler:
+    | ReturnType<typeof createInboundWebhookHandler>
+    | undefined;
+  const handleFreshchatWebhook: express.RequestHandler = async (req, res, next) => {
+    // Always log the raw payload for inspection.
+    logFreshchatPayload(req);
+    // Forwarding to the backend event caller is ON by default. Disable (log only)
+    // via EVENT_PROVIDERS_DISABLED=freshchat. FRESHCHAT_WEBHOOK_SECRET, when set, adds
+    // HMAC/bearer signature verification on top of forwarding.
+    if (!isProviderEnabled("freshchat")) {
+      res.status(200).json({ received: true, forwarded: false });
+      return;
+    }
+    if (!freshchatWebhookHandler) {
+      freshchatWebhookHandler = createInboundWebhookHandler(
+        getInboundAdapter("freshchat"),
+        true
+      );
+    }
+    await freshchatWebhookHandler(req, res, next);
+  };
+
+  app.post(
+    "/api/scalemargin/freshchat-events",
+    express.text({ type: () => true, limit: "1mb" }),
+    handleFreshchatWebhook
+  );
+  app.post(
+    "/api/scalemargin/freshchat-notifications",
+    express.text({ type: () => true, limit: "1mb" }),
+    handleFreshchatWebhook
   );
 }
