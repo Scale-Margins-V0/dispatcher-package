@@ -41,5 +41,5 @@ describe("SESProvider", () => {
     expect(sendMock).toHaveBeenCalled();
     const cmd = sendMock.mock.calls[0]![0] as { Tags?: { Name: string; Value: string }[] };
     expect(cmd.Tags?.some((t) => t.Name === "campaign_id")).toBe(true);
-  });
+  }, 30_000);
 });

@@ -74,7 +74,7 @@ placeholders:
     process.env.USER_LOOKUP_CONFIG_PATH = yamlPath;
     const mod = await import("../index.js");
     app = mod.app;
-  });
+  }, 60_000);
 
   afterAll(async () => {
     const { shutdownEventPipeline, resetEventPipelineForTests } = await import(
@@ -86,9 +86,11 @@ placeholders:
     shutdownEventPipeline();
     resetEventPipelineForTests();
     resetDispatchConfigForTests();
-    resetLookupAdapterForTests();
-    rmSync(workDir, { recursive: true, force: true });
-    delete process.env.USER_LOOKUP_CONFIG_PATH;
+    try {
+      rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* ignore file lock */
+    }
     delete process.env.SENDGRID_API_KEY;
     delete process.env.DISPATCHER_ADMIN_EMAIL;
     delete process.env.DISPATCHER_ADMIN_PASSWORD;

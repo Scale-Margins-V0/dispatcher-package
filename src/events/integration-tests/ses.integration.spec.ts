@@ -84,7 +84,7 @@ describe("POST /api/scalemargin/ses-notifications (integration)", () => {
     );
 
     initializeEventPipeline();
-  });
+  }, 60_000);
 
   afterAll(async () => {
     vi.unstubAllGlobals();

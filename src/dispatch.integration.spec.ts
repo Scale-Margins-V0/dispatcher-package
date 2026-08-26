@@ -28,6 +28,29 @@ vi.mock("./providers/index.js", () => ({
   }),
 }));
 
+vi.mock("./providers/senders.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./providers/senders.js")>();
+  return {
+    ...actual,
+    sendWithFailover: vi.fn(async (message: any, chain: any[], _channel: string) => {
+      const res = await sendMock(message);
+      const s = chain[0] || { config: { id: "default-email", channel: "email", provider: "ses" } };
+      return {
+        success: res?.success ?? true,
+        finalSender: s,
+        attempts: [{ sender_id: s.config.id, provider: s.config.provider, success: true, duration_ms: 1 }],
+        messageId: res?.messageId || "m1",
+      };
+    }),
+    resolveSenderChainForRecipient: vi.fn((_userId: string, channel: string) => [
+      {
+        config: { id: "default-email", channel, provider: "ses", weight: 1, enabled: true },
+        provider: { name: "mock", send: sendMock },
+      },
+    ]),
+  };
+});
+
 const fetchMock = vi.hoisted(() =>
   vi.fn(() =>
     Promise.resolve({
