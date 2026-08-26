@@ -40,7 +40,10 @@ import { processDispatch, type DispatchPayload } from "./dispatch/processor.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerLogsApiRoutes } from "./logs-api.js";
 import { recordDispatchActivity } from "./admin/activity.js";
-import { programOf, recordDispatchProgramForPayload } from "./db/repos/dispatch-programs.js";
+import {
+  programOf,
+  recordDispatchProgramForPayload,
+} from "./db/repos/dispatch-programs.js";
 import { refreshCampaignSummarySafe } from "./db/repos/campaign-summary.js";
 import { initializeEventPipeline } from "./events/index.js";
 import { loadRepoDotEnv } from "./load-repo-dotenv.js";
@@ -70,6 +73,8 @@ import {
 import { telemetry } from "./telemetry/posthog.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
+import { ensureEnvYamlValid } from "./env-yaml.js";
+import { resolveSenderPin } from "./providers/senders.js";
 
 // ---------------------------------------------------------------------------
 // Startup validation — fail fast on missing config
@@ -90,7 +95,7 @@ if (
   if (process.env.VITEST !== "true") {
     componentLogger(LogComponent.config).warn(
       { local_dev: true },
-      "Placeholder SCALEMARGIN_* secrets in use — set real values for Atlas HMAC. Not for production."
+      "Placeholder SCALEMARGIN_* secrets in use — set real values for Atlas HMAC. Not for production.",
     );
   }
 }
@@ -118,6 +123,14 @@ try {
 } catch (error) {
   telemetry.captureException(error, { component: "dispatch_config" });
   console.error("[FATAL] Dispatch configuration invalid:", error);
+  process.exit(1);
+}
+
+try {
+  ensureEnvYamlValid();
+} catch (error) {
+  telemetry.captureException(error, { component: "env_yaml_config" });
+  console.error("[FATAL] Multi-sender .env.yaml invalid:", error);
   process.exit(1);
 }
 
@@ -167,7 +180,7 @@ if (FROM_EMAIL === DEFAULT_FROM_EMAIL && process.env.VITEST !== "true") {
   componentLogger("server").warn(
     `FROM_EMAIL is not set — sending as ${DEFAULT_FROM_EMAIL}. ` +
       "That address cannot be verified with any provider (example.com is reserved), " +
-      "so every send will be rejected. Set FROM_EMAIL to a verified sender."
+      "so every send will be rejected. Set FROM_EMAIL to a verified sender.",
   );
 }
 
@@ -179,15 +192,15 @@ if (FROM_EMAIL === DEFAULT_FROM_EMAIL && process.env.VITEST !== "true") {
 // Limit raised to 10MB to accommodate base64-encoded campaign images
 app.use(
   "/api/scalemargin/dispatch",
-  express.text({ type: "application/json", limit: "10mb" })
+  express.text({ type: "application/json", limit: "10mb" }),
 );
 app.use(
   "/api/scalemargin/validate-pii",
-  express.text({ type: "application/json", limit: "1mb" })
+  express.text({ type: "application/json", limit: "1mb" }),
 );
 app.use(
   "/api/scalemargin/diagnostics",
-  express.text({ type: "application/json", limit: "1mb" })
+  express.text({ type: "application/json", limit: "1mb" }),
 );
 
 // Serve locally-stored campaign images (for IMAGE_STORAGE_PROVIDER=local)
@@ -238,7 +251,7 @@ app.post(
     });
     const report = await buildDiagnosticsReport(req.body ?? {});
     res.json(report);
-  }
+  },
 );
 
 // Signed lookup smoke test for Atlas. Returns counts and field names only.
@@ -248,7 +261,7 @@ app.post(
   async (req, res) => {
     const userIds: string[] = Array.isArray(req.body?.user_ids)
       ? req.body.user_ids.filter(
-          (value: unknown): value is string => typeof value === "string"
+          (value: unknown): value is string => typeof value === "string",
         )
       : [];
 
@@ -290,7 +303,7 @@ app.post(
         pii_conversion_ok: false,
       });
     }
-  }
+  },
 );
 
 // ---------------------------------------------------------------------------
@@ -302,18 +315,18 @@ app.post(
 
 if (process.env.EVENT_TEST_CSV_PATH) {
   const csvHandler = createEventTestCsvCaptureHandler(
-    process.env.EVENT_TEST_CSV_PATH
+    process.env.EVENT_TEST_CSV_PATH,
   );
   app.post(
     "/api/webhooks/campaign-analytics/capture",
     express.text({ type: "application/json", limit: "10mb" }),
     verifyAnalyticsHmacSignature,
-    csvHandler
+    csvHandler,
   );
   if (process.env.VITEST !== "true") {
     componentLogger(LogComponent.config).info(
       { path: process.env.EVENT_TEST_CSV_PATH },
-      "Event-test CSV capture enabled"
+      "Event-test CSV capture enabled",
     );
   }
 }
@@ -330,6 +343,24 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   const startedAt = performance.now();
   bindCampaignId(String(payload.campaign_id ?? "unknown"));
 
+  // Synchronous pin / organization validation before accepting
+  const pinResult = resolveSenderPin(payload);
+  if (!pinResult.ok) {
+    dispatchLog.warn(
+      {
+        channel: payload.channel,
+        organization_id: payload.metadata?.organization_id,
+        pin_error: pinResult.error,
+      },
+      "Dispatch request rejected due to invalid sender pin or unauthorized organization",
+    );
+    res.status(400).json({
+      accepted: false,
+      error: pinResult.error,
+    });
+    return;
+  }
+
   dispatchLog.info(
     {
       channel: payload.channel,
@@ -337,7 +368,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
       organization_id: payload.metadata?.organization_id,
       dispatch_kind: payload.metadata?.dispatch_kind ?? "campaign",
     },
-    "Dispatch request accepted"
+    "Dispatch request accepted",
   );
 
   // Record wire id → program before any event is emitted. A drip step's
@@ -348,7 +379,9 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   // Acknowledge immediately
   telemetry.capture("dispatcher_dispatch_accepted", {
     channel: payload.channel,
-    recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+    recipient_count: Array.isArray(payload.user_ids)
+      ? payload.user_ids.length
+      : 0,
     has_images: Boolean(payload.images?.length),
   });
   recordDispatchActivity({
@@ -357,61 +390,84 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
     ...programOf(payload),
     organization_id: payload.metadata?.organization_id,
     channel: String(payload.channel ?? "unknown"),
-    provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
+    provider:
+      payload.metadata?.sender_id ||
+      (payload.channel === "whatsapp"
+        ? (process.env.WHATSAPP_PROVIDER || "whatsapp")
+        : (process.env.EMAIL_PROVIDER || "ses")),
     status: "accepted",
-    recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
+    recipient_count: Array.isArray(payload.user_ids)
+      ? payload.user_ids.length
+      : 0,
     occurred_at: new Date().toISOString(),
   });
   res.status(202).json({
     accepted: true,
+    dispatch_id: activityId,
+    dispatchId: activityId,
     message: "Campaign dispatch received",
   });
 
   // Process asynchronously
-  processDispatch(payload, FROM_EMAIL, activityId).then((result) => {
-    recordDispatchActivity({
-      id: activityId,
-      campaign_id: String(payload.campaign_id ?? "unknown"),
-      ...programOf(payload),
-      organization_id: payload.metadata?.organization_id,
-      channel: String(payload.channel ?? "unknown"),
-      provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
-      status: "completed",
-      recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
-      sent_count: result?.sent,
-      failed_count: result?.failed,
-      resolution_total: result?.resolution_total,
-      resolution_fallbacks: result?.resolution_fallbacks,
-      duration_ms: Math.round(performance.now() - startedAt),
-      occurred_at: new Date().toISOString(),
+  processDispatch(payload, FROM_EMAIL, activityId)
+    .then((result) => {
+      recordDispatchActivity({
+        id: activityId,
+        campaign_id: String(payload.campaign_id ?? "unknown"),
+        ...programOf(payload),
+        organization_id: payload.metadata?.organization_id,
+        channel: String(payload.channel ?? "unknown"),
+        provider:
+          payload.metadata?.sender_id ||
+          (payload.channel === "whatsapp"
+            ? (process.env.WHATSAPP_PROVIDER || "whatsapp")
+            : (process.env.EMAIL_PROVIDER || "ses")),
+        status: "completed",
+        recipient_count: Array.isArray(payload.user_ids)
+          ? payload.user_ids.length
+          : 0,
+        sent_count: result?.sent,
+        failed_count: result?.failed,
+        resolution_total: result?.resolution_total,
+        resolution_fallbacks: result?.resolution_fallbacks,
+        duration_ms: Math.round(performance.now() - startedAt),
+        occurred_at: new Date().toISOString(),
+      });
+      refreshCampaignSummarySafe(programOf(payload).program_id);
+    })
+    .catch((error) => {
+      recordDispatchActivity({
+        id: activityId,
+        campaign_id: String(payload.campaign_id ?? "unknown"),
+        ...programOf(payload),
+        organization_id: payload.metadata?.organization_id,
+        channel: String(payload.channel ?? "unknown"),
+        provider:
+          payload.metadata?.sender_id ||
+          (payload.channel === "whatsapp"
+            ? (process.env.WHATSAPP_PROVIDER || "whatsapp")
+            : (process.env.EMAIL_PROVIDER || "ses")),
+        status: "failed",
+        recipient_count: Array.isArray(payload.user_ids)
+          ? payload.user_ids.length
+          : 0,
+        duration_ms: Math.round(performance.now() - startedAt),
+        occurred_at: new Date().toISOString(),
+        error_category:
+          error instanceof Error ? error.name : "processing_error",
+        error_message: error instanceof Error ? error.message : String(error),
+        error_stack: error instanceof Error ? error.stack : undefined,
+      });
+      refreshCampaignSummarySafe(programOf(payload).program_id);
+      telemetry.captureException(error, {
+        component: "dispatch_processor",
+        channel: payload.channel,
+      });
+      dispatchLog.error(
+        { err: error instanceof Error ? error : new Error(String(error)) },
+        `Campaign ${payload.campaign_id} failed`,
+      );
     });
-    refreshCampaignSummarySafe(programOf(payload).program_id);
-  }).catch((error) => {
-    recordDispatchActivity({
-      id: activityId,
-      campaign_id: String(payload.campaign_id ?? "unknown"),
-      ...programOf(payload),
-      organization_id: payload.metadata?.organization_id,
-      channel: String(payload.channel ?? "unknown"),
-      provider: payload.channel === "whatsapp" ? "gupshup" : (process.env.EMAIL_PROVIDER || "ses"),
-      status: "failed",
-      recipient_count: Array.isArray(payload.user_ids) ? payload.user_ids.length : 0,
-      duration_ms: Math.round(performance.now() - startedAt),
-      occurred_at: new Date().toISOString(),
-      error_category: error instanceof Error ? error.name : "processing_error",
-      error_message: error instanceof Error ? error.message : String(error),
-      error_stack: error instanceof Error ? error.stack : undefined,
-    });
-    refreshCampaignSummarySafe(programOf(payload).program_id);
-    telemetry.captureException(error, {
-      component: "dispatch_processor",
-      channel: payload.channel,
-    });
-    dispatchLog.error(
-      { err: error instanceof Error ? error : new Error(String(error)) },
-      `Campaign ${payload.campaign_id} failed`
-    );
-  });
 });
 registerInboundWebhookRoutes(app);
 

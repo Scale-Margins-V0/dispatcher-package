@@ -64,6 +64,13 @@
       "when": 1786949215849,
       "tag": "0008_chief_titanium_man",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1787241224667,
+      "tag": "0009_abandoned_otto_octavius",
+      "breakpoints": true
     }
   ]
 }

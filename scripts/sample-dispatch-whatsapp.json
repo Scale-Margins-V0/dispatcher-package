@@ -1,0 +1,13 @@
+{
+  "campaign_id": "test-campaign-wa-001",
+  "channel": "whatsapp",
+  "user_ids": ["sm-001", "USR004"],
+  "content": {
+    "text_body": "{\"template_name\": \"welcome_test\", \"language\": \"en\", \"params\": [\"{{first_name}}\"]}"
+  },
+  "metadata": {
+    "organization_id": "org_test_123",
+    "sender_id": "default-wa",
+    "analytics_callback_url": "http://127.0.0.1:3200/api/webhooks/campaign-analytics"
+  }
+}

@@ -12,6 +12,7 @@ admin-dist/
 .env
 .env.*
 !.env.example
+!.env.yaml.example
 
 # Local SQLite / data dir (seeded DBs)
 data/

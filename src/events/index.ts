@@ -38,6 +38,8 @@ import { sendGridInboundWireAllowed } from "./sendgrid/inbound-filter.js";
 import { createSesInboundAdapter } from "./ses/adapter.js";
 import { telemetry } from "../telemetry/posthog.js";
 
+import { loadEnvYaml } from "../env-yaml.js";
+
 const log = componentLogger("events");
 
 let buffer: EventBuffer | null = null;
@@ -158,6 +160,9 @@ export function shutdownEventPipeline(): void {
 export async function emitEvent(envelope: EventEnvelope): Promise<void> {
   const cfg = getRuntimeConfig();
   ensureIdempotency(envelope.event);
+  if (envelope.event.metadata) {
+    envelope.event.metadata = scrubPii(envelope.event.metadata) as StandardizedEvent["metadata"];
+  }
   // Console store first: dispatch-side events are recorded even when the
   // callback URL is empty and forwarding later fails validation.
   await persistCampaignEvents([envelope.event]);
@@ -180,28 +185,112 @@ export async function emitEvent(envelope: EventEnvelope): Promise<void> {
   }
 }
 
+export function getAllSendGridPublicKeys(): string[] {
+  const keys = new Set<string>();
+  const envName = getRuntimeConfig().providers.sendgrid.signing_key_env ?? "SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY";
+  const defaultEnv = process.env[envName]?.trim();
+  if (defaultEnv) keys.add(defaultEnv);
+
+  try {
+    const envYaml = loadEnvYaml();
+    for (const sender of envYaml.senders) {
+      if (sender.provider === "sendgrid") {
+        if (sender.sendgrid?.event_webhook_public_key?.trim()) {
+          keys.add(sender.sendgrid.event_webhook_public_key.trim());
+        }
+        if (sender.sendgrid?.event_webhook_public_key_env) {
+          const v = process.env[sender.sendgrid.event_webhook_public_key_env]?.trim();
+          if (v) keys.add(v);
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return Array.from(keys);
+}
+
+export function getAllGupshupWebhookSecrets(): string[] {
+  const secrets = new Set<string>();
+  const envName = getRuntimeConfig().providers.gupshup.secret_env ?? "GUPSHUP_WEBHOOK_SECRET";
+  const defaultEnv = process.env[envName]?.trim();
+  if (defaultEnv) secrets.add(defaultEnv);
+
+  try {
+    const envYaml = loadEnvYaml();
+    for (const sender of envYaml.senders) {
+      if (sender.provider === "gupshup") {
+        if (sender.gupshup?.webhook_secret?.trim()) {
+          secrets.add(sender.gupshup.webhook_secret.trim());
+        }
+        if (sender.gupshup?.webhook_secret_env) {
+          const v = process.env[sender.gupshup.webhook_secret_env]?.trim();
+          if (v) secrets.add(v);
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return Array.from(secrets);
+}
+
 export function getInboundAdapter(
   name: "sendgrid" | "ses" | "gupshup"
 ): InboundEventAdapter {
-  const cfg = getRuntimeConfig();
   if (name === "sendgrid") {
-    const envName =
-      cfg.providers.sendgrid.signing_key_env ??
-      "SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY";
-    const key = process.env[envName];
-    if (!key)
-      {throw new Error(`Missing ${envName} for SendGrid inbound adapter`);}
-    return createSendGridInboundAdapter(key);
+    const keys = getAllSendGridPublicKeys();
+    if (keys.length === 0) {
+      const envName = getRuntimeConfig().providers.sendgrid.signing_key_env ?? "SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY";
+      throw new Error(`Missing ${envName} for SendGrid inbound adapter`);
+    }
+    if (keys.length === 1) {
+      return createSendGridInboundAdapter(keys[0]!);
+    }
+    const adapters = keys.map((k) => createSendGridInboundAdapter(k));
+    return {
+      name: "sendgrid",
+      channel: "email",
+      verifySignature: async (req) => {
+        for (const a of adapters) {
+          const ok = await Promise.resolve(a.verifySignature(req));
+          if (ok) return true;
+        }
+        return false;
+      },
+      parseEvents: (rawBody) => adapters[0]!.parseEvents(rawBody),
+      extractCorrelation: (item) => adapters[0]!.extractCorrelation(item),
+      stripPii: (item) => adapters[0]!.stripPii(item),
+      toStandardEvent: (item, corr) => adapters[0]!.toStandardEvent(item, corr),
+    };
   }
   if (name === "ses") {
     return createSesInboundAdapter();
   }
   if (name === "gupshup") {
-    const envName =
-      cfg.providers.gupshup.secret_env ?? "GUPSHUP_WEBHOOK_SECRET";
-    // Secret optional: when unset the adapter skips signature verification (open webhook).
-    const secret = process.env[envName] ?? "";
-    return createGupshupInboundAdapter(secret);
+    const secrets = getAllGupshupWebhookSecrets();
+    if (secrets.length === 0) {
+      return createGupshupInboundAdapter("");
+    }
+    if (secrets.length === 1) {
+      return createGupshupInboundAdapter(secrets[0]!);
+    }
+    const adapters = secrets.map((s) => createGupshupInboundAdapter(s));
+    return {
+      name: "gupshup",
+      channel: "whatsapp",
+      verifySignature: async (req) => {
+        for (const a of adapters) {
+          const ok = await Promise.resolve(a.verifySignature(req));
+          if (ok) return true;
+        }
+        return false;
+      },
+      parseEvents: (rawBody) => adapters[0]!.parseEvents(rawBody),
+      extractCorrelation: (item) => adapters[0]!.extractCorrelation(item),
+      stripPii: (item) => adapters[0]!.stripPii(item),
+      toStandardEvent: (item, corr) => adapters[0]!.toStandardEvent(item, corr),
+    };
   }
   throw new Error(`Unknown adapter: ${name}`);
 }

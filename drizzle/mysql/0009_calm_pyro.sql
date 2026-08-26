@@ -1,0 +1,1 @@
+ALTER TABLE `campaign_events` ADD `sender_id` varchar(191);

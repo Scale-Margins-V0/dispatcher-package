@@ -16,15 +16,39 @@ import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 import type { EmailProvider, EmailMessage, SendResult, BulkSendResult } from "./types.js";
 import { applySesMessageTags } from "../events/outbound/ses-tagger.js";
 
+export interface SESProviderOptions {
+  region?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  configurationSet?: string;
+}
+
 export class SESProvider implements EmailProvider {
   name = "ses";
   private client: SESClient;
+  private configurationSet?: string;
 
-  constructor(region?: string) {
+  constructor(optsOrRegion?: string | SESProviderOptions) {
+    const opts = typeof optsOrRegion === "string" ? { region: optsOrRegion } : optsOrRegion ?? {};
+    const region = opts.region || process.env.AWS_REGION || "ap-south-1";
+    this.configurationSet = opts.configurationSet;
+
+    const accessKeyId = opts.accessKeyId || process.env.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = opts.secretAccessKey || process.env.AWS_SECRET_ACCESS_KEY;
+
     this.client = new SESClient({
-      region: region || process.env.AWS_REGION || "ap-south-1",
+      region,
+      ...(accessKeyId && secretAccessKey
+        ? {
+            credentials: {
+              accessKeyId: accessKeyId.trim(),
+              secretAccessKey: secretAccessKey.trim(),
+            },
+          }
+        : {}),
     });
-    const akidCheck = process.env.AWS_ACCESS_KEY_ID?.trim();
+
+    const akidCheck = accessKeyId?.trim();
     if (
       akidCheck &&
       !/^(AKIA|ASIA)[A-Z0-9]{16}$/.test(akidCheck) &&
@@ -73,7 +97,7 @@ export class SESProvider implements EmailProvider {
         }),
       };
       const input = message.context
-        ? applySesMessageTags(baseInput, message.context)
+        ? applySesMessageTags(baseInput, message.context, this.configurationSet)
         : baseInput;
       const command = new SendEmailCommand(input);
       const result = await this.client.send(command);
