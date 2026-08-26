@@ -1,0 +1,13 @@
+{
+  "event_type": "outbound_message_event",
+  "account_id": "cognustechnology-891329088856850736-c5ea315ae5e8e4d17588334",
+  "event_time": 1724667890000,
+  "data": {
+    "request_id": "fc-req-failed-99",
+    "message_id": "wamid.failed",
+    "status": "FAILED",
+    "phone_number": "917984379458",
+    "failure_code": 4131,
+    "failure_reason": "Marketing frequency cap reached"
+  }
+}

@@ -65,6 +65,8 @@ const freshchatConfigSchema = z.object({
   template_language: z.string().optional(),
   from_number: z.string().optional(),
   from_number_env: z.string().optional(),
+  webhook_secret: z.string().optional(),
+  webhook_secret_env: z.string().optional(),
 });
 
 const senderFailoverSchema = z.object({

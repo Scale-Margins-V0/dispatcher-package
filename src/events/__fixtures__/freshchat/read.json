@@ -1,0 +1,14 @@
+{
+  "event_type": "outbound_message_event",
+  "account_id": "cognustechnology-891329088856850736-c5ea315ae5e8e4d17588334",
+  "event_time": 1724667950000,
+  "data": {
+    "request_id": "fc-req-12345",
+    "message_id": "wamid.HBgLMjE2OTc3NzE2NTQ4FQIAERgSMzEwREQ1MDM1QzgxREQzNTI3AA==",
+    "status": "READ",
+    "phone_number": "917984379458",
+    "to": {
+      "phone_number": "917984379458"
+    }
+  }
+}
