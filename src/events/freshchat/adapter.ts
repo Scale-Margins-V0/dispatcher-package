@@ -230,6 +230,17 @@ function deepCloneDeleteKeys(
   return out;
 }
 
+function safeCompareTokens(a: string, b: string): boolean {
+  try {
+    const bufA = Buffer.from(a, "utf8");
+    const bufB = Buffer.from(b, "utf8");
+    if (bufA.length !== bufB.length) return false;
+    return timingSafeEqual(bufA, bufB);
+  } catch {
+    return false;
+  }
+}
+
 export function createFreshchatInboundAdapter(secret?: string): InboundEventAdapter {
   const trimmedSecret = secret?.trim() || "";
 
@@ -248,7 +259,7 @@ export function createFreshchatInboundAdapter(secret?: string): InboundEventAdap
         const token = authHeader.startsWith("Bearer ")
           ? authHeader.slice(7).trim()
           : authHeader.trim();
-        if (token === trimmedSecret) return true;
+        if (safeCompareTokens(token, trimmedSecret)) return true;
       }
 
       // Check X-Freshchat-Signature or X-Webhook-Secret / X-ScaleMargin-Signature

@@ -98,13 +98,33 @@ export function applyProviderEnablementFromEnv(cfg: EventsConfig): void {
   }
   cfg.providers.sendgrid.enabled = sgHasEnv || sgHasSenderKey;
   cfg.providers.ses.enabled = true;
-  // `enabled` here gates FORWARDING to the backend event caller. Gupshup & Freshchat forward
-  // by default (like SES) — the webhook always accepts + logs payloads, and forwards them.
+  // `enabled` here gates FORWARDING to the backend event caller.
+  // Gupshup forwards by default (like SES) with signature stamp verification.
+  // Freshchat receipts do not echo an authenticity tag, so Freshchat enables
+  // when a webhook secret is configured or when explicitly enabled.
   cfg.providers.gupshup.enabled = true;
-  if (!cfg.providers.freshchat) {
-    cfg.providers.freshchat = { enabled: true, secret_env: "FRESHCHAT_WEBHOOK_SECRET" };
+
+  const fcEnv = freshchatSecretEnvName(cfg);
+  const fcHasEnv = Boolean(process.env[fcEnv]?.trim());
+  let fcHasSenderSecret = false;
+  try {
+    const yaml = loadEnvYaml();
+    fcHasSenderSecret = yaml.senders.some(
+      (s) =>
+        s.provider === "freshchat" &&
+        (Boolean(s.freshchat?.webhook_secret?.trim()) ||
+          Boolean(
+            s.freshchat?.webhook_secret_env &&
+              process.env[s.freshchat.webhook_secret_env]?.trim()
+          ))
+    );
+  } catch {
+    /* ignore */
   }
-  cfg.providers.freshchat.enabled = true;
+  if (!cfg.providers.freshchat) {
+    cfg.providers.freshchat = { enabled: false, secret_env: "FRESHCHAT_WEBHOOK_SECRET" };
+  }
+  cfg.providers.freshchat.enabled = fcHasEnv || fcHasSenderSecret;
 
   for (const p of parseProviderList(process.env.EVENT_PROVIDERS_DISABLED)) {
     if (cfg.providers[p]) cfg.providers[p]!.enabled = false;
@@ -135,7 +155,7 @@ function defaultConfig(): EventsConfig {
       sendgrid: { enabled: false, signing_key_env: "SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY" },
       ses: { enabled: true, configuration_set_env: "SES_EVENT_CONFIG_SET" },
       gupshup: { enabled: false, secret_env: "GUPSHUP_WEBHOOK_SECRET" },
-      freshchat: { enabled: true, secret_env: "FRESHCHAT_WEBHOOK_SECRET" },
+      freshchat: { enabled: false, secret_env: "FRESHCHAT_WEBHOOK_SECRET" },
     },
   };
 }
