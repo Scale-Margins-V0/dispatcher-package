@@ -1,0 +1,18 @@
+{
+  "event_type": "outbound_message_event",
+  "account_id": "cognustechnology-891329088856850736-c5ea315ae5e8e4d17588334",
+  "event_time": 1724667890000,
+  "data": {
+    "request_id": "fc-req-12345",
+    "message_id": "wamid.HBgLMjE2OTc3NzE2NTQ4FQIAERgSMzEwREQ1MDM1QzgxREQzNTI3AA==",
+    "status": "DELIVERED",
+    "phone_number": "917984379458",
+    "to": {
+      "phone_number": "917984379458"
+    },
+    "from": {
+      "phone_number": "918306107771"
+    },
+    "template_name": "study_abroad_enquiry"
+  }
+}

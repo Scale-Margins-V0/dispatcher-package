@@ -26,6 +26,12 @@ import {
   type GupshupReceipt,
 } from "./gupshup/adapter.js";
 import { forwardGupshupReceipts } from "./gupshup/receipt-forwarder.js";
+import {
+  createFreshchatInboundAdapter,
+  extractFreshchatReceipt,
+  type FreshchatReceipt,
+} from "./freshchat/adapter.js";
+import { forwardFreshchatReceipts } from "./freshchat/receipt-forwarder.js";
 import { isDbInitialized } from "../db/client.js";
 import { deliverDueBatch, enqueueEvents } from "./outbox.js";
 import { componentLogger } from "../logging/logger.js";
@@ -235,8 +241,33 @@ export function getAllGupshupWebhookSecrets(): string[] {
   return Array.from(secrets);
 }
 
+export function getAllFreshchatWebhookSecrets(): string[] {
+  const secrets = new Set<string>();
+  const envName = getRuntimeConfig().providers.freshchat?.secret_env ?? "FRESHCHAT_WEBHOOK_SECRET";
+  const defaultEnv = process.env[envName]?.trim();
+  if (defaultEnv) secrets.add(defaultEnv);
+
+  try {
+    const envYaml = loadEnvYaml();
+    for (const sender of envYaml.senders) {
+      if (sender.provider === "freshchat") {
+        if (sender.freshchat?.webhook_secret?.trim()) {
+          secrets.add(sender.freshchat.webhook_secret.trim());
+        }
+        if (sender.freshchat?.webhook_secret_env) {
+          const v = process.env[sender.freshchat.webhook_secret_env]?.trim();
+          if (v) secrets.add(v);
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return Array.from(secrets);
+}
+
 export function getInboundAdapter(
-  name: "sendgrid" | "ses" | "gupshup"
+  name: "sendgrid" | "ses" | "gupshup" | "freshchat"
 ): InboundEventAdapter {
   if (name === "sendgrid") {
     const keys = getAllSendGridPublicKeys();
@@ -292,13 +323,38 @@ export function getInboundAdapter(
       toStandardEvent: (item, corr) => adapters[0]!.toStandardEvent(item, corr),
     };
   }
+  if (name === "freshchat") {
+    const secrets = getAllFreshchatWebhookSecrets();
+    if (secrets.length === 0) {
+      return createFreshchatInboundAdapter("");
+    }
+    if (secrets.length === 1) {
+      return createFreshchatInboundAdapter(secrets[0]!);
+    }
+    const adapters = secrets.map((s) => createFreshchatInboundAdapter(s));
+    return {
+      name: "freshchat",
+      channel: "whatsapp",
+      verifySignature: async (req) => {
+        for (const a of adapters) {
+          const ok = await Promise.resolve(a.verifySignature(req));
+          if (ok) return true;
+        }
+        return false;
+      },
+      parseEvents: (rawBody) => adapters[0]!.parseEvents(rawBody),
+      extractCorrelation: (item) => adapters[0]!.extractCorrelation(item),
+      stripPii: (item) => adapters[0]!.stripPii(item),
+      toStandardEvent: (item, corr) => adapters[0]!.toStandardEvent(item, corr),
+    };
+  }
   throw new Error(`Unknown adapter: ${name}`);
 }
 
 export function isProviderEnabled(
-  name: "sendgrid" | "ses" | "gupshup"
+  name: "sendgrid" | "ses" | "gupshup" | "freshchat"
 ): boolean {
-  return getRuntimeConfig().providers[name].enabled;
+  return Boolean(getRuntimeConfig().providers[name]?.enabled);
 }
 
 /**
@@ -350,6 +406,7 @@ export function createInboundWebhookHandler(
     const envelopes: EventEnvelope[] = [];
     const standardized: StandardizedEvent[] = [];
     const gupshupReceipts: GupshupReceipt[] = [];
+    const freshchatReceipts: FreshchatReceipt[] = [];
     const cfg = getRuntimeConfig();
     let sendgridUncorrelated = 0;
     let sendgridUncorrelatedSample: unknown = null;
@@ -393,6 +450,17 @@ export function createInboundWebhookHandler(
             droppedOtherNoCorrelation++;
             log.warn(
               { provider: "gupshup", error_category: "no_correlation" },
+              "Dropped event — missing correlation and not a forwardable receipt"
+            );
+          }
+        } else if (adapter.name === "freshchat") {
+          const receipt = extractFreshchatReceipt(item);
+          if (receipt) {
+            freshchatReceipts.push(receipt);
+          } else {
+            droppedOtherNoCorrelation++;
+            log.warn(
+              { provider: "freshchat", error_category: "no_correlation" },
               "Dropped event — missing correlation and not a forwardable receipt"
             );
           }
@@ -505,11 +573,14 @@ export function createInboundWebhookHandler(
     if (gupshupReceipts.length > 0) {
       await forwardGupshupReceipts(gupshupReceipts, getSecret());
     }
+    if (freshchatReceipts.length > 0) {
+      await forwardFreshchatReceipts(freshchatReceipts, getSecret());
+    }
 
     res.status(200).json({
       received: true,
       count: envelopes.length,
-      receipts: gupshupReceipts.length,
+      receipts: gupshupReceipts.length + freshchatReceipts.length,
     });
   };
 }

@@ -118,6 +118,8 @@ export interface FreshchatSenderConfig {
   template_language?: string;
   from_number?: string;
   from_number_env?: string;
+  webhook_secret?: string;
+  webhook_secret_env?: string;
 }
 
 export interface SenderFailoverConfig {
