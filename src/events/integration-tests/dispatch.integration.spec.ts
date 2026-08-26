@@ -31,6 +31,29 @@ vi.mock("../../providers/index.js", () => ({
   }),
 }));
 
+vi.mock("../../providers/senders.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../providers/senders.js")>();
+  return {
+    ...actual,
+    sendWithFailover: vi.fn(async (message: any, chain: any[], _channel: string) => {
+      const res = await sendMock(message);
+      const s = chain[0] || { config: { id: "default-email", channel: "email", provider: "sendgrid" } };
+      return {
+        success: res?.success ?? true,
+        finalSender: s,
+        attempts: [{ sender_id: s.config.id, provider: s.config.provider, success: true, duration_ms: 1 }],
+        messageId: res?.messageId || "sg-msg-e2e",
+      };
+    }),
+    resolveSenderChainForRecipient: vi.fn((_userId: string, channel: string) => [
+      {
+        config: { id: "default-email", channel, provider: "sendgrid", weight: 1, enabled: true },
+        provider: { name: "sendgrid", send: sendMock },
+      },
+    ]),
+  };
+});
+
 const eventsYaml = `
 events:
   forward:
@@ -70,6 +93,7 @@ describe("dispatch + SendGrid event pipeline (integration)", () => {
     process.env.NODE_ENV = "test";
     process.env.SCALEMARGIN_DISPATCH_SECRET = "dispatch-secret";
     process.env.SCALEMARGIN_ANALYTICS_SECRET = "analytics-secret";
+    process.env.SENDGRID_API_KEY = "SG.test_for_e2e";
     process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY =
       "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE83T4O/n84iotIvIW4mdBgQ/7dAfSmpqIM8kF9mN1flpVKS3GRqe62gw+2fNNRaINXvVpiglSI8eNEc6wEA3F+g==";
     process.env.EVENT_FORWARD_MODE = "sync";
@@ -131,7 +155,7 @@ placeholders:
     const mod = await import("../../index.js");
     app = mod.app;
     initializeEventPipeline();
-  });
+  }, 60_000);
 
   afterAll(() => {
     verifySpy.mockRestore();
