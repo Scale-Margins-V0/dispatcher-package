@@ -25,7 +25,7 @@ data ever reaches ScaleMargin.
 The dispatcher must be able to reach your customer database, your email
 provider, and `api.scalemargin.com`. It does **not** need to accept inbound
 traffic from the internet unless you want provider webhooks (delivery and open
-tracking) or want to manage it from the ScaleMargin platform — see §8.
+tracking) or want to manage it from the ScaleMargin platform — see §9.
 
 ---
 
@@ -46,12 +46,14 @@ map in `config/dispatch.yaml` and nothing else.
 
 ## 3. Get the files
 
-Create a directory and put three files in it:
+Create a directory and put these files in it:
 
 ```
 dispatcher/
   docker-compose.yml     from §4 below
   .env                   from §5 below — you fill this in
+  .env.yaml              from §7 below — only if you send from
+                         more than one account
   config/
     dispatch.yaml        from §6 below — you fill this in
 ```
@@ -101,6 +103,9 @@ services:
       # Which table and columns to read from your customer database.
       # Without this the dispatcher runs in MOCK mode and mails nobody real.
       - ./config/dispatch.yaml:/app/config/dispatch.yaml:ro
+      # Multiple sending accounts (§7). DELETE this line if you use one account —
+      # Docker creates an empty directory here if the file does not exist.
+      - ./.env.yaml:/app/.env.yaml:ro
       # Local runtime state. Small, but keep it across restarts.
       - dispatcher-data:/app/data
     depends_on:
@@ -333,7 +338,199 @@ almost never what you want.
 
 ---
 
-## 7. Start it
+## 7. Sending from more than one account (optional)
+
+Skip this section entirely if you send from a single address. Everything above
+already works — one provider, one `FROM_EMAIL`, done.
+
+Add `.env.yaml` when you want any of:
+
+- **Several sending accounts**, with traffic split between them
+- **Automatic failover** — if one account starts rejecting messages, the next takes over
+- **Different accounts per organization**, when you run more than one brand
+- **WhatsApp as well as email**
+
+The file sits next to `.env` and is mounted read-only by the compose file in §4.
+
+### 7.1 Keep the secrets out of this file
+
+Every credential can be written two ways:
+
+<!-- prettier-ignore -->
+| In `.env.yaml` | Meaning |
+| --- | --- |
+| `api_key_env: SENDGRID_API_KEY` | **Recommended.** Read the value from `SENDGRID_API_KEY` in your `.env` |
+| `api_key: SG.xxxxx` | The literal key, written here |
+
+Prefer the `_env` form. It keeps every secret in one file — `.env`, already
+locked down with `chmod 600` — and leaves `.env.yaml` safe to read, diff and
+hand to a colleague.
+
+> ⚠️ **The `_env` suffix is the whole difference.** `api_key: SENDGRID_API_KEY`
+> does **not** read an environment variable. It sets your API key to the literal
+> text `SENDGRID_API_KEY`, and the first send fails with an authentication
+> error. The dispatcher cannot warn you, because any string is a plausible key
+> as far as it knows.
+
+### 7.2 A working example
+
+Two email accounts and one WhatsApp account:
+
+```yaml
+version: 1
+
+routing:
+  failover:
+    max_attempts: 2          # attempts per recipient, across accounts
+    on_timeout: false        # never retry an unclear outcome — avoids duplicates
+    on_identity_error: false # an unverified sender is a config fault, not a blip
+    breaker:
+      failure_threshold: 5   # consecutive failures before an account is parked
+      cooldown_ms: 60000     # how long it stays parked
+  default_sender:
+    email: primary-ses
+    whatsapp: primary-wa
+
+senders:
+  - id: primary-ses
+    channel: email
+    provider: ses
+    organizations: ["*"] # ["*"] = every org, or ["org_1", "org_2"]
+    from: "campaigns@your-domain.com"
+    reply_to: "support@your-domain.com"
+    weight: 3 # roughly 3x the traffic of a weight-1 account
+    enabled: true
+    ses:
+      region: ap-south-1
+      configuration_set: ses-events # needed for open/click/bounce tracking
+      access_key_id_env: AWS_ACCESS_KEY_ID
+      secret_access_key_env: AWS_SECRET_ACCESS_KEY
+
+  - id: backup-sendgrid
+    channel: email
+    provider: sendgrid
+    organizations: ["*"]
+    from: "campaigns@your-domain.com"
+    weight: 1
+    enabled: true
+    sendgrid:
+      api_key_env: SENDGRID_API_KEY
+      event_webhook_public_key_env: SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY
+
+  - id: primary-wa
+    channel: whatsapp
+    provider: gupshup
+    organizations: ["*"]
+    weight: 1
+    enabled: true
+    gupshup:
+      mode: api_key # api_key | enterprise
+      api_key_env: GUPSHUP_API_KEY
+      src_name: YourAppName
+      source: "919999999999" # sender number, digits only
+      default_template: welcome_v1
+      template_language: en
+      webhook_secret_env: GUPSHUP_WEBHOOK_SECRET
+```
+
+A template covering every provider, including Freshchat for WhatsApp, ships in
+the package as `.env.yaml.example`.
+
+### 7.3 What each field does
+
+**Per account:**
+
+<!-- prettier-ignore -->
+| Field | Meaning |
+| --- | --- |
+| `id` | Your name for the account. It appears in reporting and logs — make it recognisable |
+| `channel` | `email` or `whatsapp` |
+| `provider` | `ses`, `sendgrid`, `gupshup` or `freshchat` |
+| `organizations` | `["*"]` for all, or a list of organization IDs this account may send for |
+| `from` | The sending address. Must be verified with the provider |
+| `reply_to` | Optional. Where replies go, if different |
+| `weight` | Share of traffic. `3` gets roughly three times as much as `1`. **`0` means never chosen automatically** |
+| `enabled` | `false` parks the account without deleting its configuration |
+
+**Routing:**
+
+<!-- prettier-ignore -->
+| Field | Meaning |
+| --- | --- |
+| `default_sender` | Which account to use per channel when nothing else applies |
+| `max_attempts` | How many accounts to try for one recipient before giving up |
+| `on_timeout` | Retry when the outcome is unclear. **Leave `false`** — a timeout often means the message *was* sent, and retrying delivers it twice |
+| `on_identity_error` | Retry on an unverified-sender error. **Leave `false`** — that is broken configuration, and the next account fails the same way |
+| `failure_threshold` | Consecutive failures before an account is parked |
+| `cooldown_ms` | How long it stays parked before being tried again |
+
+Recipients are spread across accounts by a stable hash, so the same recipient
+consistently uses the same account. That warms sender reputation evenly instead
+of at random, and keeps a person's mail coming from one address.
+
+### 7.4 Check it loaded
+
+```bash
+docker compose up -d
+docker compose logs dispatcher | grep -i "env.yaml"
+```
+
+<!-- prettier-ignore -->
+| What you see | Meaning |
+| --- | --- |
+| `Loaded .env.yaml multi-sender configuration` | Working |
+| `No .env.yaml found — using single-sender back-compat configuration from environment` | Not picked up. The dispatcher **still sends**, using the single account from `.env` |
+| `references missing env var 'X'` | An `_env` field names a variable that is not in your `.env` |
+
+The middle line is the one to watch for. A `.env.yaml` that fails to load stops
+nothing — sending carries on with one account, and you only notice when the
+traffic split and failover you configured never happen.
+
+To see what the dispatcher actually loaded:
+
+```bash
+curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
+  localhost:3100/api/v1/data-plane/senders | jq
+```
+
+```json
+{
+  "generated_at": "2026-08-27T10:00:00.000Z",
+  "senders": [
+    {
+      "id": "primary-ses",
+      "channel": "email",
+      "provider": "ses",
+      "from": "campaigns@your-domain.com",
+      "weight": 3,
+      "enabled": true,
+      "organizations": ["*"],
+      "breaker_state": "closed"
+    }
+  ]
+}
+```
+
+`breaker_state` is `closed` when healthy, `open` when the account has been
+parked after repeated failures, and `half_open` while it is being tried again.
+No credentials appear in this response, so it is safe to paste into a support
+thread.
+
+### 7.5 Changing it later
+
+`.env.yaml` is read once at startup:
+
+```bash
+docker compose restart dispatcher
+```
+
+If the file has a mistake, the dispatcher logs the problem and falls back to
+single-sender — it does not refuse to start. Always re-check the log line in
+§7.4 after a change.
+
+---
+
+## 8. Start it
 
 ```bash
 docker compose up -d
@@ -383,7 +580,7 @@ you nominate.
 
 ---
 
-## 8. Exposing the dispatcher (only if you need to)
+## 9. Exposing the dispatcher (only if you need to)
 
 Everything above works with the dispatcher bound to localhost. You need inbound
 access for two optional things:
@@ -426,7 +623,7 @@ secure cookies correctly.
 
 ---
 
-## 9. Day-two operations
+## 10. Day-two operations
 
 ### Upgrading
 
@@ -481,7 +678,7 @@ docker compose down -v         # stop and DELETE all campaign history. Careful.
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom                                                            | Cause                                                         | Fix                                                                                                                    |
 | ------------------------------------------------------------------ | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -491,14 +688,17 @@ docker compose down -v         # stop and DELETE all campaign history. Careful.
 | `manifest unknown`                                                 | That version tag does not exist                               | Use the exact tag from our release note; do not invent version numbers                                                 |
 | `exec format error`                                                | Image architecture mismatch                                   | Tell us your platform — we will publish a matching build                                                               |
 | Sends fail with `403 Forbidden` or `Email address is not verified` | `FROM_EMAIL` not verified in your provider                    | Verify that exact address, or use one that is                                                                          |
-| Campaigns report success but reach nobody real                     | `config/dispatch.yaml` not mounted → mock mode                | Check the volume mount and step 4 in §7                                                                                |
+| Campaigns report success but reach nobody real                     | `config/dispatch.yaml` not mounted → mock mode                | Check the volume mount and step 4 in §8                                                                                |
 | `getaddrinfo ENOTFOUND` for your database                          | `DB_HOST` unreachable from the container                      | §6.3 — usually `host.docker.internal`                                                                                  |
 | `Resolved 0/N users` on every send                                 | `id_column` or `id_type` mismatch                             | Confirm the column holds the ID ScaleMargin sends                                                                      |
 | Personalization shows fallbacks everywhere                         | `fields` map points at wrong columns                          | Compare `config/dispatch.yaml` with your schema                                                                        |
 | `password authentication failed` at boot                           | `DISPATCHER_DB_PASSWORD` changed after the volume was created | Postgres keeps the original password. Either restore it, or `docker compose down -v` and start fresh (deletes history) |
-| No opens or clicks recorded                                        | Provider webhooks not configured, or dispatcher not reachable | §8, and confirm `SES_EVENT_CONFIG_SET` for SES                                                                         |
+| No opens or clicks recorded                                        | Provider webhooks not configured, or dispatcher not reachable | §9, and confirm `SES_EVENT_CONFIG_SET` for SES                                                                         |
 | `/admin` returns 503                                               | **Expected** — no console is shipped in this image            | Manage through the ScaleMargin platform                                                                                |
-| ScaleMargin cannot reach the dispatcher                            | Not exposed, or `DISPATCHER_ATLAS_KEY` unset                  | §8, and confirm the key is set and shared                                                                              |
+| Traffic split / failover not happening                             | `.env.yaml` did not load; still on a single account           | §7.4 — check the boot log                                                                                              |
+| Provider rejects every message with an auth error                  | Used `api_key:` where you meant `api_key_env:`                | §7.1                                                                                                                   |
+| `.env.yaml` exists but the dispatcher cannot read it               | Docker created it as a *directory* because the file was missing when you first ran `up` | `rm -rf .env.yaml`, create the real file, then `docker compose up -d` |
+| ScaleMargin cannot reach the dispatcher                            | Not exposed, or `DISPATCHER_ATLAS_KEY` unset                  | §9, and confirm the key is set and shared                                                                              |
 | `EADDRINUSE` on 3100                                               | Something else on that port                                   | Change the host side: `"127.0.0.1:3200:3100"`                                                                          |
 
 Still stuck? Send us:
@@ -513,7 +713,7 @@ connection strings.
 
 ---
 
-## 11. Security summary
+## 12. Security summary
 
 - The dispatcher holds **read-only** credentials to your customer database.
 - Customer data never leaves your network. ScaleMargin receives counts, opaque
