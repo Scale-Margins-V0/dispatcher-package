@@ -507,14 +507,10 @@ export class FreshchatWhatsAppProvider {
           has_cta: msg.template.has_cta ?? msg.hasCta,
           cta_value:
             msg.template.cta_value ??
-            msg.template.cta_url ??
-            msg.ctaValue ??
-            msg.ctaUrl,
+            msg.ctaValue,
           cta_values:
             msg.template.cta_values ??
-            msg.template.cta_urls ??
-            msg.ctaValues ??
-            msg.ctaUrls,
+            msg.ctaValues,
         };
       }
     }
