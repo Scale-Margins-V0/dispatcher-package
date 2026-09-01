@@ -153,7 +153,7 @@ describe("freshchat-whatsapp provider", () => {
     expect(body.data.message_template.rich_template_data).toBeUndefined();
   });
 
-  it("sends Media Template with document header (PDF)", async () => {
+  it("sends Media Template with document header (PDF) and filename", async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 202,
@@ -191,9 +191,71 @@ describe("freshchat-whatsapp provider", () => {
     expect(body.data.message_template.rich_template_data.header).toEqual({
       type: "document",
       media_url: "https://example.com/invoices/inv_123.pdf",
-      media: { url: "https://example.com/invoices/inv_123.pdf" },
+      filename: "inv_123.pdf",
     });
     expect(body.data.message_template.rich_template_data.body).toBeUndefined();
+    expect(body.data.message_template.rich_template_data.button).toBeUndefined();
+  });
+
+  it("sends Media Template with dynamic single and multiple CTA buttons", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      text: async () =>
+        JSON.stringify({
+          request_id: "cta_req_505",
+          status: "Request created successfully",
+        }),
+    });
+
+    const senderConfig: SenderConfig = {
+      id: "fc-cta",
+      channel: "whatsapp",
+      provider: "freshchat",
+      freshchat: {
+        api_key: "cta-token",
+        source: "+919876543210",
+        namespace: "cta-ns",
+      },
+    };
+
+    const provider = new FreshchatWhatsAppProvider(freshchatConfigFromSender(senderConfig));
+    const mockUser: UserRecord = {
+      user_id: "usr_cta_1",
+      email: "usr_cta_1@example.com",
+      fields: {
+        first_name: "Priya",
+        order_id: "ORD-999",
+      },
+    };
+
+    const result = await provider.send({
+      to: "+919876543211",
+      freshchatSpec: {
+        template_name: "order_confirmation_cta",
+        params: ["{{first_name}}"],
+        cta_values: [
+          "https://example.com/orders/{{order_id}}",
+          "https://example.com/support/{{first_name}}",
+        ],
+      },
+      user: mockUser,
+      personalizeCtx: { campaign_id: "camp_cta", organization_id: "org_cta" },
+    });
+
+    expect(result.success).toBe(true);
+    const [, req] = fetchMock.mock.calls[0];
+    const body = JSON.parse(req.body);
+    expect(body.data.message_template.rich_template_data.button).toEqual([
+      {
+        subType: "url",
+        params: [{ data: "https://example.com/orders/ORD-999" }],
+      },
+      {
+        subType: "url",
+        params: [{ data: "https://example.com/support/Priya" }],
+      },
+    ]);
   });
 
   it("sends Dynamic with Values template resolving unresolved placeholders and keeping resolved strings", async () => {
@@ -311,7 +373,6 @@ describe("freshchat-whatsapp provider", () => {
     expect(body.data.message_template.rich_template_data.header).toEqual({
       type: "image",
       media_url: "https://cdn.example/diwali.png",
-      media: { url: "https://cdn.example/diwali.png" },
     });
     expect(body.data.message_template.rich_template_data.body.params).toEqual([
       { data: "Rohan" },
