@@ -651,8 +651,6 @@ export class FreshchatWhatsAppProvider {
       const responseText = await response.text();
       let data: Record<string, unknown> = {};
 
-      console.log("Freshchat response text:", responseText);
-
       try {
         data = JSON.parse(responseText);
       } catch {
