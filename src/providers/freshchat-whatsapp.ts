@@ -33,7 +33,11 @@ export interface FreshchatTemplateSpec {
   namespace?: string;
   params?: string[];
   media_url?: string;
-  header_type?: "image" | "document" | "video";
+  header_type?: "image" | "document" | "video" | "text";
+  filename?: string;
+  has_cta?: boolean;
+  cta_value?: string;
+  cta_values?: string[];
 }
 
 export interface FreshchatWhatsAppPayload {
@@ -55,17 +59,23 @@ export interface FreshchatWhatsAppPayload {
       };
       rich_template_data?: {
         header?: {
-          type: "image" | "document" | "video";
+          type: "image" | "document" | "video" | "text";
           media_url?: string;
-          media?: {
-            url?: string;
-          };
+          filename?: string;
+          text?: string;
         };
         body?: {
           params?: Array<{
             data: string;
           }>;
         };
+        button?: Array<{
+          subType?: string;
+          sub_type?: string;
+          params?: Array<{
+            data: string;
+          }>;
+        }>;
       };
     };
   };
@@ -81,16 +91,21 @@ export interface FreshchatSendParams {
     params?: string[];
     attributes?: string[];
     has_cta?: boolean;
+    cta_value?: string;
+    cta_values?: string[];
     storage?: string;
     namespace?: string;
     media_url?: string;
-    header_type?: "image" | "document" | "video";
+    header_type?: "image" | "document" | "video" | "text";
+    filename?: string;
   };
   caption?: string;
   mediaUrl?: string;
   mediaMsgType?: string;
   isTemplate?: boolean;
   hasCta?: boolean;
+  ctaValue?: string;
+  ctaValues?: string[];
   context?: SendContext;
   user?: UserRecord;
   personalizeCtx?: PersonalizeDispatchContext;
@@ -198,6 +213,60 @@ export function freshchatConfigFromSender(sender: SenderConfig): FreshchatConfig
   };
 }
 
+export function extractFilenameFromUrl(
+  url: string,
+  fallback = "document.pdf"
+): string {
+  try {
+    const pathname = new URL(url).pathname;
+    const base = pathname.split("/").filter(Boolean).pop();
+    if (base && base.includes(".")) {
+      return decodeURIComponent(base);
+    }
+  } catch {
+    const clean = url.split("?")[0]?.split("#")[0] ?? "";
+    const base = clean.split("/").filter(Boolean).pop();
+    if (base && base.includes(".")) {
+      return base;
+    }
+  }
+  return fallback;
+}
+
+export function detectMediaHeaderType(
+  mediaUrl: string,
+  explicitType?: "image" | "document" | "video" | "text"
+): "image" | "document" | "video" | "text" {
+  if (explicitType) {
+    return explicitType;
+  }
+  const clean = mediaUrl.split("?")[0]?.split("#")[0]?.toLowerCase() ?? "";
+  if (
+    clean.endsWith(".pdf") ||
+    clean.endsWith(".doc") ||
+    clean.endsWith(".docx") ||
+    clean.endsWith(".xls") ||
+    clean.endsWith(".xlsx") ||
+    clean.endsWith(".ppt") ||
+    clean.endsWith(".pptx") ||
+    clean.endsWith(".txt") ||
+    clean.endsWith(".csv")
+  ) {
+    return "document";
+  }
+  if (
+    clean.endsWith(".mp4") ||
+    clean.endsWith(".mov") ||
+    clean.endsWith(".3gp") ||
+    clean.endsWith(".mkv") ||
+    clean.endsWith(".webm") ||
+    clean.endsWith(".avi")
+  ) {
+    return "video";
+  }
+  return "image";
+}
+
 export function parseFreshchatTemplateSpec(
   content: Record<string, unknown> | undefined,
   images?: Array<{ url: string }>,
@@ -214,7 +283,42 @@ export function parseFreshchatTemplateSpec(
     (content && typeof content.media_url === "string" && content.media_url.trim() ? content.media_url.trim() : undefined) ||
     images?.[0]?.url;
 
-  const headerType = (content?.header_type as "image" | "document" | "video" | undefined) || undefined;
+  const headerType = (content?.header_type as "image" | "document" | "video" | "text" | undefined) || undefined;
+  const filename =
+    typeof content?.filename === "string" && content.filename.trim()
+      ? content.filename.trim()
+      : undefined;
+
+  const hasCta =
+    typeof content?.has_cta === "boolean"
+      ? content.has_cta
+      : typeof content?.hasCTA === "boolean"
+        ? content.hasCTA
+        : undefined;
+
+  const ctaValue =
+    typeof content?.cta_value === "string" && content.cta_value.trim()
+      ? content.cta_value.trim()
+      : typeof content?.ctaValue === "string" && content.ctaValue.trim()
+        ? content.ctaValue.trim()
+        : typeof content?.cta_url === "string" && content.cta_url.trim()
+          ? content.cta_url.trim()
+          : typeof content?.ctaUrl === "string" && content.ctaUrl.trim()
+            ? content.ctaUrl.trim()
+            : undefined;
+
+  const ctaValues =
+    Array.isArray(content?.cta_values) && content.cta_values.length > 0
+      ? content.cta_values.map((u) => String(u).trim()).filter(Boolean)
+      : Array.isArray(content?.ctaValues) && content.ctaValues.length > 0
+        ? content.ctaValues.map((u) => String(u).trim()).filter(Boolean)
+        : Array.isArray(content?.cta_urls) && content.cta_urls.length > 0
+          ? content.cta_urls.map((u) => String(u).trim()).filter(Boolean)
+          : Array.isArray(content?.ctaUrls) && content.ctaUrls.length > 0
+            ? content.ctaUrls.map((u) => String(u).trim()).filter(Boolean)
+            : Array.isArray(content?.button_params) && content.button_params.length > 0
+              ? content.button_params.map((u) => String(u).trim()).filter(Boolean)
+              : undefined;
 
   // 1. Direct array of params or variables from Atlas payload
   const arrayParams =
@@ -229,6 +333,10 @@ export function parseFreshchatTemplateSpec(
       params: stringParams,
       media_url: mediaUrl,
       header_type: headerType,
+      filename,
+      has_cta: hasCta,
+      cta_value: ctaValue,
+      cta_values: ctaValues,
     };
   }
 
@@ -247,6 +355,10 @@ export function parseFreshchatTemplateSpec(
       params: placeholders.length > 0 ? placeholders : undefined,
       media_url: mediaUrl,
       header_type: headerType,
+      filename,
+      has_cta: hasCta,
+      cta_value: ctaValue,
+      cta_values: ctaValues,
     };
   }
 
@@ -276,6 +388,10 @@ export function parseFreshchatTemplateSpec(
             : undefined,
           media_url: parsed.media_url || mediaUrl,
           header_type: parsed.header_type || headerType,
+          filename: parsed.filename || filename,
+          has_cta: parsed.has_cta ?? parsed.hasCTA ?? hasCta,
+          cta_value: parsed.cta_value || parsed.ctaValue || parsed.cta_url || parsed.ctaUrl || ctaValue,
+          cta_values: parsed.cta_values || parsed.ctaValues || parsed.cta_urls || parsed.ctaUrls || ctaValues,
         };
       }
     } catch {
@@ -306,6 +422,10 @@ export function parseFreshchatTemplateSpec(
             : undefined,
           media_url: parsed.media_url || mediaUrl,
           header_type: parsed.header_type || headerType,
+          filename: parsed.filename || filename,
+          has_cta: parsed.has_cta ?? parsed.hasCTA ?? hasCta,
+          cta_value: parsed.cta_value || parsed.ctaValue || parsed.cta_url || parsed.ctaUrl || ctaValue,
+          cta_values: parsed.cta_values || parsed.ctaValues || parsed.cta_urls || parsed.ctaUrls || ctaValues,
         };
       } catch {}
     }
@@ -314,6 +434,10 @@ export function parseFreshchatTemplateSpec(
       template_name: fallback,
       media_url: mediaUrl,
       header_type: headerType,
+      filename,
+      has_cta: hasCta,
+      cta_value: ctaValue,
+      cta_values: ctaValues,
     };
   }
 
@@ -379,6 +503,14 @@ export class FreshchatWhatsAppProvider {
           params: msg.template.params || msg.template.attributes,
           media_url: msg.template.media_url || explicitMediaUrl,
           header_type: msg.template.header_type,
+          filename: msg.template.filename,
+          has_cta: msg.template.has_cta ?? msg.hasCta,
+          cta_value:
+            msg.template.cta_value ??
+            msg.ctaValue,
+          cta_values:
+            msg.template.cta_values ??
+            msg.ctaValues,
         };
       }
     }
@@ -430,36 +562,64 @@ export class FreshchatWhatsAppProvider {
 
     const mediaUrl = explicitMediaUrl || templateSpec.media_url;
 
-    // Attach rich_template_data only if media header or body params exist
-    if (personalizedParams.length > 0 || mediaUrl) {
+    // Collect dynamic CTA buttons / values if supplied
+    const ctaItems: string[] = [];
+    const rawCtaList = templateSpec.cta_values;
+    if (Array.isArray(rawCtaList) && rawCtaList.length > 0) {
+      for (const u of rawCtaList) {
+        if (typeof u === "string" && u.trim()) {
+          ctaItems.push(u.trim());
+        }
+      }
+    } else {
+      const singleCta = templateSpec.cta_value;
+      if (typeof singleCta === "string" && singleCta.trim()) {
+        ctaItems.push(singleCta.trim());
+      }
+    }
+
+    // Attach rich_template_data if media header, body params, or dynamic CTA buttons exist
+    if (personalizedParams.length > 0 || mediaUrl || ctaItems.length > 0) {
       messageTemplate.rich_template_data = {};
 
       if (mediaUrl) {
-        let headerType: "image" | "document" | "video" = "image";
-        if (templateSpec.header_type) {
-          headerType = templateSpec.header_type;
-        } else {
-          const lower = mediaUrl.toLowerCase();
-          if (lower.endsWith(".pdf") || lower.endsWith(".doc") || lower.endsWith(".docx")) {
-            headerType = "document";
-          } else if (lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".3gp")) {
-            headerType = "video";
-          }
-        }
-
-        messageTemplate.rich_template_data.header = {
+        const headerType = detectMediaHeaderType(mediaUrl, templateSpec.header_type);
+        const headerObj: NonNullable<
+          NonNullable<
+            FreshchatWhatsAppPayload["data"]["message_template"]["rich_template_data"]
+          >["header"]
+        > = {
           type: headerType,
           media_url: mediaUrl,
-          media: {
-            url: mediaUrl,
-          },
         };
+
+        if (headerType === "document") {
+          headerObj.filename =
+            templateSpec.filename?.trim() ||
+            extractFilenameFromUrl(mediaUrl, "document.pdf");
+        }
+
+        messageTemplate.rich_template_data.header = headerObj;
       }
 
       if (personalizedParams.length > 0) {
         messageTemplate.rich_template_data.body = {
           params: personalizedParams.map((param) => ({ data: String(param) })),
         };
+      }
+
+      if (ctaItems.length > 0) {
+        const personalizedCtas = ctaItems.map((item) => {
+          if (user && personalizeCtx) {
+            return personalize(item, user, personalizeCtx, resolvedVars);
+          }
+          return item;
+        });
+
+        messageTemplate.rich_template_data.button = personalizedCtas.map((cta) => ({
+          subType: "url",
+          params: [{ data: String(cta) }],
+        }));
       }
     }
 
@@ -490,6 +650,7 @@ export class FreshchatWhatsAppProvider {
 
       const responseText = await response.text();
       let data: Record<string, unknown> = {};
+
       try {
         data = JSON.parse(responseText);
       } catch {

@@ -1,0 +1,462 @@
+# Development — running the dispatcher from source
+
+**This is the developer guide.** To *deploy* the prebuilt image, see the
+[README](../README.md); it needs neither Node nor pnpm.
+
+Express service that:
+
+1. Accepts **signed** campaign dispatch webhooks from ScaleMargin (`POST /api/scalemargin/dispatch`).
+2. Resolves recipients via **configurable user lookup** (SQLite, MySQL, Postgres, HTTP, or mock).
+3. Sends email through **AWS SES** or **SendGrid**.
+4. Ingests **provider event webhooks** (SendGrid, SES/SNS, Gupshup) and forwards **HMAC-signed** analytics batches to ScaleMargin callback URLs.
+
+---
+
+## Prerequisites
+
+- **Node.js** 20+ (global `fetch` and current syntax; CI often uses 22).
+- **pnpm** 9.x — the repo pins it in `package.json` (`packageManager`). Enable via Corepack:
+
+  ```bash
+  corepack enable
+  corepack prepare pnpm@9.15.4 --activate
+  ```
+
+---
+
+## Install
+
+From the repository root:
+
+```bash
+pnpm install
+```
+
+This installs dependencies and respects `pnpm-lock.yaml` for reproducible builds.
+
+**Build** (TypeScript → `dist/`):
+
+```bash
+pnpm run build
+```
+
+**Run compiled output**:
+
+```bash
+pnpm run start
+```
+
+(`start` runs `node dist/index.js` — run `build` first.)
+
+---
+
+## Environment variables
+
+1. **Copy the template** (never commit real secrets):
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit `.env`** with your values. The authoritative list of variables, grouped by feature, lives in [`.env.example`](../.env.example). Highlights:
+
+| Area | Required (typical prod) | Notes |
+|------|---------------------------|--------|
+| Core | `SCALEMARGIN_DISPATCH_SECRET`, `SCALEMARGIN_ANALYTICS_SECRET` | HMAC for inbound dispatch vs outbound analytics. |
+| Server | `PORT`, `FROM_EMAIL`, `EMAIL_PROVIDER` | `EMAIL_PROVIDER` is `ses` or `sendgrid`. |
+| SendGrid mail | `SENDGRID_API_KEY` | When `EMAIL_PROVIDER=sendgrid`. |
+| SES mail | `AWS_REGION`, credentials or IAM role | When `EMAIL_PROVIDER=ses`. |
+| Event pipeline | See **Events** in `.env.example` | SendGrid inbound needs `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` when enabled in `config/events.yaml`. |
+
+3. **Local-only placeholders** — For quick local runs without Atlas secrets:
+
+   ```bash
+   pnpm run dev:local
+   ```
+
+   With `LOCAL_DEV=1`, missing `SCALEMARGIN_*` values get insecure defaults (see comments in `.env.example`). **Do not use in production.**
+
+4. **Path overrides** (optional):
+
+   - `USER_LOOKUP_CONFIG_PATH` — defaults to `./config/dispatch.yaml` if that file exists.
+   - `EVENTS_CONFIG_PATH` — defaults to `./config/events.yaml` if that file exists.
+
+---
+
+## Configuration YAML
+
+### Dispatch: user lookup and placeholders
+
+- **Example:** [`config/dispatch.example.yaml`](../config/dispatch.example.yaml)
+- **Runtime file:** `config/dispatch.yaml` (create by copying the example)
+
+```bash
+cp config/dispatch.example.yaml config/dispatch.yaml
+# Edit config/dispatch.yaml — backend (sqlite | mysql | postgres | http | mock), DB paths, HTTP profile URL, placeholders, etc.
+```
+
+If `config/dispatch.yaml` is **missing**, the app uses a **mock** user lookup with safe defaults so the server can still boot.
+
+Details of fields, HTTP adapter, and SQL views: [`docs/user-lookup-contract.md`](../docs/user-lookup-contract.md).
+
+### Events: inbound webhooks and forwarding
+
+- **Example:** [`config/events.example.yaml`](../config/events.example.yaml)
+- **Runtime file:** `config/events.yaml` (optional)
+
+```bash
+cp config/events.example.yaml config/events.yaml
+# Edit providers.sendgrid / ses / gupshup enabled flags, forward mode, buffer, inbound_event_types, etc.
+```
+
+If `config/events.yaml` is **missing**, built-in defaults apply (see example header): SES inbound may be on; SendGrid inbound often **off** until you set keys and enable it.
+
+- **Pipeline contract** (event types, adapters, extension): [`docs/event-pipeline-contract.md`](../docs/event-pipeline-contract.md)
+- **PII handling:** [`docs/pii-guarantees.md`](../docs/pii-guarantees.md)
+
+### Local data directory
+
+[`data/`](../data/) is **gitignored** (SQLite DBs, event buffers, local CSV captures). Create it as needed; `pnpm run seed:sqlite` can populate a dispatch DB — see [`docs/testing.md`](../docs/testing.md).
+
+---
+
+## State database
+
+The dispatcher keeps its **own** SQL database, separate from the client
+user-lookup database (`DB_*`). It stores the dynamic variables (placeholders),
+dispatch/webhook activity and failures, structured application logs, the
+campaign→analytics-callback registry, and a durable analytics **event outbox**.
+This is what makes variables editable at runtime and keeps operational history
+across restarts.
+
+**Attach any SQL database via `DISPATCHER_DB_*`** (no code changes, migrations
+run automatically at startup):
+
+| Variable | Meaning |
+| --- | --- |
+| `DISPATCHER_DB_DIALECT` | `sqlite` (default), `mysql`, or `postgres` |
+| `DISPATCHER_DB_URL` | connection string (or SQLite file path / `file:` URL) |
+| `DISPATCHER_DB_HOST/PORT/USER/PASSWORD/NAME` | discrete settings if you prefer not to use a URL |
+
+- **Zero-config default:** with nothing set, the dispatcher uses a local SQLite
+  file at `./data/dispatcher.db` — it is stateful out of the box. Mount/persist
+  `data/` (or attach a networked DB) to keep state across container restarts.
+- **Production:** point `DISPATCHER_DB_*` at a MySQL or Postgres instance. A
+  dedicated database/schema (e.g. `dispatcher_state`) is recommended.
+- Single-replica model: the event outbox does not use row-claim locking, so run
+  one dispatcher replica per state database.
+
+Retention (a background sweep prunes on an hourly tick):
+
+| Variable | Default | Applies to |
+| --- | --- | --- |
+| `DISPATCHER_LOG_RETENTION_DAYS` | 14 | `app_logs` age cap |
+| `DISPATCHER_LOG_MAX_ROWS` | 200000 | `app_logs` row cap (oldest deleted) |
+| `DISPATCHER_LOG_LEVEL` | `info` | minimum level written |
+| `DISPATCHER_OUTBOX_MAX_ATTEMPTS` | 10 | delivery attempts before an event is marked failed |
+
+Dispatch/webhook history is kept 90 days; delivered outbox rows 7 days; failed
+outbox rows 30 days; unused callback registrations 30 days.
+
+### Docker Compose
+
+[`docker-compose.yml`](../docker-compose.yml) brings up the dispatcher with a MySQL
+state database:
+
+```bash
+docker compose up --build          # dispatcher + MySQL 8
+docker compose --profile postgres up --build   # dispatcher + Postgres 16
+```
+
+Set `DISPATCHER_ADMIN_USER` / `DISPATCHER_ADMIN_PASSWORD` in `.env` to enable the
+admin GUI at `http://localhost:3100/admin`.
+
+---
+
+## Run the server (development)
+
+**Watch mode** (TypeScript directly via `tsx`). Loads repo-root **`.env`** into the process (same rules as the event-test scripts: last duplicate key in the file wins; non-empty shell exports are not overwritten).
+
+```bash
+pnpm run dev
+```
+
+**Watch + local dev secrets** (see above):
+
+```bash
+pnpm run dev:local
+```
+
+Operations checks:
+
+```bash
+curl http://localhost:3100/health
+curl http://localhost:3100/version
+curl http://localhost:3100/status
+```
+
+### Internal operations GUI
+
+The dashboard is served by the same Express process at `/admin`, with real
+multi-user authentication (individual accounts, roles, and invitations) powered
+by [Better Auth](https://better-auth.com). Its tables live in the
+[state database](#state-database) and migrate automatically.
+
+**First-boot default account.** On the first start with an empty database the
+dispatcher seeds a default **owner** in the `ScaleMargin` organization:
+
+- email — `DISPATCHER_ADMIN_EMAIL` (default `admin@scalemargins.tech`)
+- password — `DISPATCHER_ADMIN_PASSWORD` if set (min 12 chars); otherwise a strong
+  random password is generated, **printed once to the logs**, and written to
+  `data/initial-admin-credentials.txt` (chmod 600). Sign in, change it under
+  **Settings → Account**, then delete that file.
+
+Set `BETTER_AUTH_SECRET` to a random 32+ character value in production so
+sessions survive redeploys (otherwise one is generated and persisted to
+`data/.better-auth-secret`). Set `DISPATCHER_PUBLIC_URL` so invitation links and
+secure-cookie behavior use the correct host.
+
+**Members & invitations (Settings pages).** The console is **invite-only** — no
+public self-registration. Under **Settings** an owner/admin can manage members
+and roles (`owner`/`admin`/`member`), invite teammates by email (each invite
+produces a **copyable link**, also emailed automatically when `EMAIL_PROVIDER`
+is configured), and change their own password. A brand-new invitee opens the
+invite link, sets a name and password, and is signed straight into the console.
+
+The dashboard also includes runtime/configuration status, recent dispatches,
+failures (with the real error message and stack trace), analytics webhook
+attempts, a **Logs** viewer over the structured application logs (each entry
+expands inline to show its full message, stack, and context), and a read-write
+**Variables** editor (below). Dispatch/webhook activity, failures, logs, and
+accounts are persisted in the [state database](#state-database) and survive
+restarts (subject to the retention windows below). Recipient identifiers and
+message content are still never stored — only opaque `user_id`s.
+
+#### Dynamic variables
+
+Personalization placeholders (`{{name}}`) are created/edited/enabled/deleted in
+the **Variables** page and apply to the next dispatch with no restart. Each has a
+**source**:
+
+| Source | Resolves to | Notes |
+| --- | --- | --- |
+| **Field** | a column from the connected lookup DB | e.g. `first_name` |
+| **Concatenation** | a safe string expression | `'Hi ' + first_name + ' at ' + company_name` |
+| **Constant** | a fixed value | org-wide labels, campaign names |
+| **SQL query** | first row/column of a `SELECT` against the connected lookup DB | tokens `{{user_id}}`/`{{email}}`/`{{campaign_id}}`/`{{organization_id}}` are **bound parameters**, not string-interpolated (injection-safe); SELECT/WITH only, single statement, timed out |
+| **API fetch** | a value pulled from an HTTP endpoint via a JSON path | `url`/`headers`/`body` interpolate the same tokens plus `{{field.NAME}}`; timeout + response-size capped |
+
+**SQL** and **API** values resolve **per recipient** (so they can be
+personalized), cached within a campaign run so an identical query/URL executes
+once, concurrency-capped, and **fall back** (to the variable's fallback, with a
+warning in Logs) if resolution fails — a slow or broken source never wedges a
+campaign. The editor's **Test** button resolves a candidate definition live
+against a sample user so you can preview the value before saving.
+
+> Security: SQL/API sources are admin-defined and run with the dispatcher's
+> trust. SQL is SELECT-only and parameter-bound; API is http(s) only with
+> timeouts and size caps. **API header values (e.g. `Authorization`) are stored
+> in the state DB** and redacted in API responses — treat that DB accordingly.
+
+_(The previous single shared-credential login — `DISPATCHER_ADMIN_USER` /
+`DISPATCHER_ADMIN_SESSION_SECRET` — has been replaced by the account system above.)_
+
+#### Observability: `/logs` API + log webhook
+
+Configured under **Settings → Observability**.
+
+**`GET /logs`** — a query API over the persisted structured logs, for external
+log tooling. Authenticate with `Authorization: Bearer <token>` (generate/rotate
+the token in Settings — it's shown once and stored hashed; a valid admin session
+also works, and `DISPATCHER_LOGS_API_TOKEN` env overrides the stored token).
+Query params: `from`/`to` (ISO or epoch ms), `since` (`15m`/`2h`/`7d`), `level`
+or `min_level`, `component`, `campaign_id`, `request_id`, `q` (message search),
+`limit` (≤1000), `cursor` (keyset), `order` (`desc`/`asc`).
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  "https://dispatcher.example.com/logs?since=1h&min_level=warn&limit=50"
+```
+
+**Log webhook** — POST each log at or above a configurable **minimum level**
+(default `warn`) to an endpoint you set, as a JSON body, optionally HMAC-signed
+(`X-Dispatcher-Log-Signature: sha256=…` when a signing secret is set). Delivery
+is fire-and-forget, concurrency-capped, and drops under overload — a slow or
+dead endpoint never blocks the app. `warn`+ is the safe default; setting the
+minimum to `trace`/`info` forwards a high-volume firehose. The signing secret is
+stored in the state DB and redacted in API responses.
+
+For local development, run the dispatcher and Vite in separate terminals:
+
+```bash
+pnpm run dev
+pnpm run dev:admin
+```
+
+Vite serves `http://localhost:5173/admin/` with hot reload and proxies the admin
+API to the dispatcher on port 3100. `pnpm run build` produces both the server in
+`dist/` and the static dashboard in `admin-dist/`; production still runs one
+Node process and one container.
+
+`/health` stays minimal for container probes. `/version` returns package/build identity, and `/status` returns readiness-style config status without probing client databases or provider credentials.
+
+Main routes:
+
+- `POST /api/scalemargin/dispatch` — ScaleMargin campaign dispatch (HMAC: `X-ScaleMargin-Signature`).
+- `POST /api/scalemargin/diagnostics` — signed redacted support report.
+- `POST /api/scalemargin/sendgrid-events` — SendGrid Event Webhook (when enabled in events config).
+- `POST /api/scalemargin/ses-notifications` — SES via SNS.
+- `POST /api/scalemargin/gupshup-events` — Gupshup (when enabled).
+
+---
+
+## Diagnostics and support reports
+
+`POST /api/scalemargin/diagnostics` uses the same `X-ScaleMargin-Signature` HMAC as dispatch requests and the same raw-body signing rule. It returns version metadata, selected config modes, enabled event providers, env presence booleans, placeholder names, and optional user-lookup counts.
+
+It must never return secret values, provider API keys, DB credentials, raw PII, or full resolved recipient records.
+
+```bash
+SECRET="your-dispatch-secret"
+BODY='{"checks":["user_lookup"],"sample_user_ids":["u_001"]}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')
+
+curl -fsS -X POST http://localhost:3100/api/scalemargin/diagnostics \
+  -H "content-type: application/json" \
+  -H "X-ScaleMargin-Signature: sha256=$SIG" \
+  --data "$BODY"
+```
+
+---
+
+## Anonymous telemetry
+
+Dispatcher telemetry is enabled by default with ScaleMargin's dispatcher PostHog project and sends to `POSTHOG_HOST` (`https://eu.i.posthog.com` by default). `POSTHOG_API_KEY` and `POSTHOG_HOST` can override the built-in project if ScaleMargin rotates telemetry projects. Disable telemetry completely with:
+
+```bash
+DISPATCHER_TELEMETRY_DISABLED=1
+```
+
+Telemetry is anonymous-by-design. It records low-volume operational events such as startup, dispatch accepted/completed, provider send failures, provider webhook auth/config failures, analytics-forward failures, diagnostics requests, shutdown, and sanitized exceptions. It does **not** capture `/health`, `/version`, `/status`, or successful provider webhook receipts (those flooded quota via K8s probes and inbound event volume).
+
+Telemetry must not include user PII, raw request bodies, resolved recipient records, campaign ids, dispatch ids, user ids, provider API responses, database values, raw exception messages, raw stack traces, or secret/env values. Error analytics are sent as sanitized `dispatcher_error` events with category-style metadata plus a stack hash.
+
+Optional:
+
+```bash
+DISPATCHER_TELEMETRY_DISTINCT_ID=<stable-client-deployment-id>
+```
+
+The value is hashed before it is sent.
+
+---
+
+## Release maintenance
+
+Use Changesets for dispatcher release notes and package version bumps:
+
+```bash
+pnpm changeset
+pnpm run version
+```
+
+Commit the generated `package.json`, `pnpm-lock.yaml`, `CHANGELOG.md`, and consumed changeset updates. Push a tag named `dispatcher-v<version>` from that commit to publish Docker images and a GitHub Release:
+
+```bash
+VERSION=$(node -p 'require("./package.json").version')
+git tag "dispatcher-v${VERSION}"
+git push origin "dispatcher-v${VERSION}"
+```
+
+The release workflow publishes `ghcr.io/scale-margins-v0/scalemargin-dispatcher:<version>`, `:v<version>`, and `:latest`. Roll back by redeploying the last known-good version tag in client infrastructure.
+
+---
+
+## Tests
+
+```bash
+pnpm test                 # unit + integration
+pnpm run test:unit        # fast unit specs only
+pnpm run test:integration # includes SQLite / HTTP / dispatch E2E style tests
+pnpm run test:coverage    # with coverage (if configured)
+```
+
+More detail: [`docs/testing.md`](../docs/testing.md).
+
+---
+
+## Optional: dual-secret + SendGrid local smoke test
+
+SendGrid-focused setup (API key, Event Webhook, env vars, troubleshooting) lives in **[`docs/sendgrid.readme.md`](../docs/sendgrid.readme.md)**.
+
+SES-focused setup (configuration set, SNS, event types including **Subscriptions**, `pnpm run dev:ses-event-test`) lives in **[`docs/ses.readme.md`](../docs/ses.readme.md)**.
+
+End-to-end flow (ngrok, real sends, CSV capture of signed analytics) is documented here:
+
+[`docs/event-dual-secret-local-test.md`](../docs/event-dual-secret-local-test.md)
+
+Entry point:
+
+```bash
+pnpm run dev:event-test
+```
+
+SES equivalent (SNS → `/api/scalemargin/ses-notifications`, CSV capture):
+
+```bash
+pnpm run dev:ses-event-test
+```
+
+Gupshup WhatsApp (template send + `POST /api/scalemargin/gupshup-events`, CSV capture). Set `GUPSHUP_*` and `GUPSHUP_EVENT_TEST_*` env vars as in [`.env.example`](../.env.example):
+
+```bash
+pnpm run dev:gupshup-event-test
+```
+
+---
+
+## Database seeding
+
+```bash
+pnpm run seed:sqlite
+pnpm run seed:mysql    # set DB_* env vars first
+pnpm run seed:postgres
+```
+
+See [`docs/testing.md`](../docs/testing.md) for paths and env vars.
+
+---
+
+## Project layout (short)
+
+| Path | Role |
+|------|------|
+| `src/index.ts` | Express app, dispatch route, provider webhook routes, optional CSV capture for local tests. |
+| `src/events/` | Event pipeline (config, adapters, forwarder, buffer, scrubber). |
+| `src/providers/` | SES / SendGrid send implementations. |
+| `src/user-lookup/` | Dispatch-time user resolution. |
+| `config/*.example.yaml` | Copy to `config/*.yaml` for local/prod. |
+| `scripts/` | Seeds, HTTP profile mock, `event-dual-secret-test-server.ts`, `ses-dual-secret-test-server.ts`, `gupshup-dual-secret-test-server.ts`. |
+
+---
+
+## Documentation index
+
+| Document | Topic |
+|----------|--------|
+| [`.env.example`](../.env.example) | All environment variables (commented). |
+| [`docs/swagger/atlas-api.yaml`](../docs/swagger/atlas-api.yaml) | **API reference for the Atlas integration** (OpenAPI) — endpoints, auth, response fields, error handling. |
+| [`docs/architecture.md`](../docs/architecture.md) | How the service works end to end: boot, dispatch lifecycle, channels, provider config, event pipeline. |
+| [`docs/user-lookup-contract.md`](../docs/user-lookup-contract.md) | Dispatch YAML and user lookup backends. |
+| [`docs/event-pipeline-contract.md`](../docs/event-pipeline-contract.md) | Standardized events, forwarding, SendGrid allowlist. |
+| [`docs/pii-guarantees.md`](../docs/pii-guarantees.md) | What is stripped before analytics POSTs. |
+| [`docs/sendgrid.readme.md`](../docs/sendgrid.readme.md) | SendGrid: env, dashboard, webhooks, local testing, troubleshooting. |
+| [`docs/ses.readme.md`](../docs/ses.readme.md) | SES: configuration set, SNS, event types, `dev:ses-event-test`. |
+| [`docs/event-dual-secret-local-test.md`](../docs/event-dual-secret-local-test.md) | ngrok, SendGrid webhook, CSV capture, `dev:event-test`. |
+| [`docs/testing.md`](../docs/testing.md) | Vitest, seeds, mocks. |
+
+---
+
+## License / support
+
+This repository is a **reference implementation** for integrating with ScaleMargin Atlas webhooks. Adjust policies, secrets, and infrastructure to match your organization before production use.
