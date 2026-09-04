@@ -223,6 +223,14 @@ DB_SSL=true
 # ─────────────────────────────────────────────────────────────
 DISPATCHER_ATLAS_KEY=
 
+#    Browser origins allowed to call that API (comma-separated,
+#    absolute, https). LEAVE UNSET unless you are told otherwise:
+#    unset means no CORS headers at all, so only server-to-server
+#    calls work — which is the safe default, because anything
+#    calling from a browser must carry DISPATCHER_ATLAS_KEY.
+#    "*" is accepted but warns at boot; list real origins instead.
+DISPATCHER_ATLAS_CORS_ORIGINS=https://atlas.scalemargin.com
+
 # ─────────────────────────────────────────────────────────────
 # 6. Service identity
 #    Used for signed links and session security. Any long
@@ -381,12 +389,12 @@ version: 1
 
 routing:
   failover:
-    max_attempts: 2          # attempts per recipient, across accounts
-    on_timeout: false        # never retry an unclear outcome — avoids duplicates
+    max_attempts: 2 # attempts per recipient, across accounts
+    on_timeout: false # never retry an unclear outcome — avoids duplicates
     on_identity_error: false # an unverified sender is a config fault, not a blip
     breaker:
-      failure_threshold: 5   # consecutive failures before an account is parked
-      cooldown_ms: 60000     # how long it stays parked
+      failure_threshold: 5 # consecutive failures before an account is parked
+      cooldown_ms: 60000 # how long it stays parked
   default_sender:
     email: primary-ses
     whatsapp: primary-wa
@@ -621,6 +629,28 @@ secure cookies correctly.
 
 `/api/v1/internal/*` is for your own monitoring and should **not** be exposed.
 
+### Browser access to the management API (CORS)
+
+By default the dispatcher sends **no CORS headers**, so a web page cannot call
+`/api/v1/data-plane/*` — only server-to-server calls work. That is deliberate:
+any browser able to reach that API must carry `DISPATCHER_ATLAS_KEY`, and that
+key grants full read access and cannot be revoked without a restart.
+
+Set `DISPATCHER_ATLAS_CORS_ORIGINS` only if ScaleMargin tells you their console
+calls your dispatcher directly from the browser rather than from their backend:
+
+```bash
+DISPATCHER_ATLAS_CORS_ORIGINS=https://atlas.scalemargin.com,https://staging.atlas.example
+```
+
+Comma-separated, absolute origins, scheme included. The dispatcher warns at boot
+if you use `*`, list an unparseable entry, or use plaintext `http://` for
+anything other than localhost — the last one would put your API key on the wire
+in clear.
+
+Authentication is a bearer header rather than a cookie, so the dispatcher never
+sends `Access-Control-Allow-Credentials`.
+
 ---
 
 ## 10. Day-two operations
@@ -680,26 +710,26 @@ docker compose down -v         # stop and DELETE all campaign history. Careful.
 
 ## 11. Troubleshooting
 
-| Symptom                                                            | Cause                                                         | Fix                                                                                                                    |
-| ------------------------------------------------------------------ | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Container exits immediately, `[FATAL] Missing required env vars`   | `SCALEMARGIN_*_SECRET` blank                                  | Fill both in `.env`                                                                                                    |
-| `denied` or `unauthorized` pulling the image                       | Not an auth problem — the image is public and needs no login  | Check the tag is spelled right; then tell us, it may be a publishing fault on our side                                 |
-| Pull hangs or times out                                            | Egress to `ghcr.io` is filtered                               | Allowlist `ghcr.io` and `pkg-containers.githubusercontent.com` — §3                                                    |
-| `manifest unknown`                                                 | That version tag does not exist                               | Use the exact tag from our release note; do not invent version numbers                                                 |
-| `exec format error`                                                | Image architecture mismatch                                   | Tell us your platform — we will publish a matching build                                                               |
-| Sends fail with `403 Forbidden` or `Email address is not verified` | `FROM_EMAIL` not verified in your provider                    | Verify that exact address, or use one that is                                                                          |
-| Campaigns report success but reach nobody real                     | `config/dispatch.yaml` not mounted → mock mode                | Check the volume mount and step 4 in §8                                                                                |
-| `getaddrinfo ENOTFOUND` for your database                          | `DB_HOST` unreachable from the container                      | §6.3 — usually `host.docker.internal`                                                                                  |
-| `Resolved 0/N users` on every send                                 | `id_column` or `id_type` mismatch                             | Confirm the column holds the ID ScaleMargin sends                                                                      |
-| Personalization shows fallbacks everywhere                         | `fields` map points at wrong columns                          | Compare `config/dispatch.yaml` with your schema                                                                        |
-| `password authentication failed` at boot                           | `DISPATCHER_DB_PASSWORD` changed after the volume was created | Postgres keeps the original password. Either restore it, or `docker compose down -v` and start fresh (deletes history) |
-| No opens or clicks recorded                                        | Provider webhooks not configured, or dispatcher not reachable | §9, and confirm `SES_EVENT_CONFIG_SET` for SES                                                                         |
-| `/admin` returns 503                                               | **Expected** — no console is shipped in this image            | Manage through the ScaleMargin platform                                                                                |
-| Traffic split / failover not happening                             | `.env.yaml` did not load; still on a single account           | §7.4 — check the boot log                                                                                              |
-| Provider rejects every message with an auth error                  | Used `api_key:` where you meant `api_key_env:`                | §7.1                                                                                                                   |
-| `.env.yaml` exists but the dispatcher cannot read it               | Docker created it as a *directory* because the file was missing when you first ran `up` | `rm -rf .env.yaml`, create the real file, then `docker compose up -d` |
-| ScaleMargin cannot reach the dispatcher                            | Not exposed, or `DISPATCHER_ATLAS_KEY` unset                  | §9, and confirm the key is set and shared                                                                              |
-| `EADDRINUSE` on 3100                                               | Something else on that port                                   | Change the host side: `"127.0.0.1:3200:3100"`                                                                          |
+| Symptom                                                            | Cause                                                                                   | Fix                                                                                                                    |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Container exits immediately, `[FATAL] Missing required env vars`   | `SCALEMARGIN_*_SECRET` blank                                                            | Fill both in `.env`                                                                                                    |
+| `denied` or `unauthorized` pulling the image                       | Not an auth problem — the image is public and needs no login                            | Check the tag is spelled right; then tell us, it may be a publishing fault on our side                                 |
+| Pull hangs or times out                                            | Egress to `ghcr.io` is filtered                                                         | Allowlist `ghcr.io` and `pkg-containers.githubusercontent.com` — §3                                                    |
+| `manifest unknown`                                                 | That version tag does not exist                                                         | Use the exact tag from our release note; do not invent version numbers                                                 |
+| `exec format error`                                                | Image architecture mismatch                                                             | Tell us your platform — we will publish a matching build                                                               |
+| Sends fail with `403 Forbidden` or `Email address is not verified` | `FROM_EMAIL` not verified in your provider                                              | Verify that exact address, or use one that is                                                                          |
+| Campaigns report success but reach nobody real                     | `config/dispatch.yaml` not mounted → mock mode                                          | Check the volume mount and step 4 in §8                                                                                |
+| `getaddrinfo ENOTFOUND` for your database                          | `DB_HOST` unreachable from the container                                                | §6.3 — usually `host.docker.internal`                                                                                  |
+| `Resolved 0/N users` on every send                                 | `id_column` or `id_type` mismatch                                                       | Confirm the column holds the ID ScaleMargin sends                                                                      |
+| Personalization shows fallbacks everywhere                         | `fields` map points at wrong columns                                                    | Compare `config/dispatch.yaml` with your schema                                                                        |
+| `password authentication failed` at boot                           | `DISPATCHER_DB_PASSWORD` changed after the volume was created                           | Postgres keeps the original password. Either restore it, or `docker compose down -v` and start fresh (deletes history) |
+| No opens or clicks recorded                                        | Provider webhooks not configured, or dispatcher not reachable                           | §9, and confirm `SES_EVENT_CONFIG_SET` for SES                                                                         |
+| `/admin` returns 503                                               | **Expected** — no console is shipped in this image                                      | Manage through the ScaleMargin platform                                                                                |
+| Traffic split / failover not happening                             | `.env.yaml` did not load; still on a single account                                     | §7.4 — check the boot log                                                                                              |
+| Provider rejects every message with an auth error                  | Used `api_key:` where you meant `api_key_env:`                                          | §7.1                                                                                                                   |
+| `.env.yaml` exists but the dispatcher cannot read it               | Docker created it as a _directory_ because the file was missing when you first ran `up` | `rm -rf .env.yaml`, create the real file, then `docker compose up -d`                                                  |
+| ScaleMargin cannot reach the dispatcher                            | Not exposed, or `DISPATCHER_ATLAS_KEY` unset                                            | §9, and confirm the key is set and shared                                                                              |
+| `EADDRINUSE` on 3100                                               | Something else on that port                                                             | Change the host side: `"127.0.0.1:3200:3100"`                                                                          |
 
 Still stuck? Send us:
 
