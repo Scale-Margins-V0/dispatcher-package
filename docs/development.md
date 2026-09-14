@@ -78,24 +78,32 @@ pnpm run start
 
 4. **Path overrides** (optional):
 
-   - `USER_LOOKUP_CONFIG_PATH` — defaults to `./config/dispatch.yaml` if that file exists.
+   - `USER_LOOKUP_CONFIG_PATH` — defaults to `./config/dispatch.yaml` if that file exists (deprecated path; prefer `user_lookup:` in `.env.yaml`).
    - `EVENTS_CONFIG_PATH` — defaults to `./config/events.yaml` if that file exists.
 
 ---
 
 ## Configuration YAML
 
-### Dispatch: user lookup and placeholders
+### Dispatch: user lookup
 
-- **Example:** [`config/dispatch.example.yaml`](../config/dispatch.example.yaml)
-- **Runtime file:** `config/dispatch.yaml` (create by copying the example)
+- **Example:** [`.env.yaml.example`](../.env.yaml.example)
+- **Runtime file:** `.env.yaml` (create by copying the example)
 
 ```bash
-cp config/dispatch.example.yaml config/dispatch.yaml
-# Edit config/dispatch.yaml — backend (sqlite | mysql | postgres | http | mock), DB paths, HTTP profile URL, placeholders, etc.
+cp .env.yaml.example .env.yaml
+# Edit the `user_lookup:` block — mode (database | network | mock), connection, source, fields.
 ```
 
-If `config/dispatch.yaml` is **missing**, the app uses a **mock** user lookup with safe defaults so the server can still boot.
+Resolved in order, first hit wins, never merged per key:
+
+1. `.env.yaml` → `user_lookup:`
+2. `config/dispatch.yaml` — **deprecated**, warns at boot (override the path with `USER_LOOKUP_CONFIG_PATH`)
+3. Neither → a **mock** user lookup with safe defaults, so the server still boots
+
+`placeholders:` has no `.env.yaml` equivalent. Variables live in the state DB;
+a `dispatch.yaml` `placeholders:` block is seeded into that table once on first
+boot (`src/variables/import-yaml.ts`) and edited through the API thereafter.
 
 Details of fields, HTTP adapter, and SQL views: [`docs/user-lookup-contract.md`](../docs/user-lookup-contract.md).
 

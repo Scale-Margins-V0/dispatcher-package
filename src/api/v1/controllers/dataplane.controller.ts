@@ -79,6 +79,14 @@ import {
   type ZVariableDefinition,
 } from "../validators/dataplane.validator.js";
 import { API_VERSION, STATUS_WINDOW_DAYS } from "../version.js";
+import { getDispatchConfig } from "../../../user-lookup/config.js";
+import {
+  isSourceSupported,
+  lookupMode,
+  supportedVariableSources,
+  unsupportedSourceMessage,
+  type VariableSource,
+} from "../../../variables/guard.js";
 
 const log = componentLogger(LogComponent.apiDataplane);
 
@@ -198,9 +206,18 @@ export async function getState(_req: Request, res: Response): Promise<void> {
     );
   }
 
+  const lookup = getDispatchConfig().user_lookup;
+
   res.json({
     generated_at: new Date().toISOString(),
     status: { state, checks },
+    lookup: {
+      mode: lookupMode(),
+      backend: lookupMode() === "database" ? lookup.backend : null,
+      // Atlas greys out the unsupported options by reading this list rather
+      // than hard-coding the rule, so a new source type needs no UI change.
+      supported_variable_sources: supportedVariableSources(),
+    },
     dispatch: {
       window_days: days,
       dispatched: dispatch?.dispatched ?? null,
@@ -458,6 +475,23 @@ export async function getVariableHandler(
 }
 
 /** POST /variables */
+
+/**
+ * Refuses a source this dispatcher cannot resolve. Returns true when it has
+ * already answered, so the caller just bails.
+ */
+function rejectUnsupportedSource(res: Response, source: VariableSource): boolean {
+  if (isSourceSupported(source)) return false;
+  log.warn(
+    { source, lookup_mode: lookupMode() },
+    "Variable write rejected — source unsupported in this lookup mode"
+  );
+  apiError(res, "invalid_request", "Request failed validation", [
+    { path: "definition.source", message: unsupportedSourceMessage(source) },
+  ]);
+  return true;
+}
+
 export async function createVariableHandler(
   req: Request,
   res: Response,
@@ -471,6 +505,8 @@ export async function createVariableHandler(
   }
 
   const { name, definition, fallback = null, sample, enabled } = parsed.data;
+  if (rejectUnsupportedSource(res, definition.source)) return;
+
   if (await getVariable(name)) {
     log.warn({ variable: name }, "Variable create rejected — name already exists");
     apiError(res, "conflict", `Variable "${name}" already exists`);
@@ -545,6 +581,8 @@ export async function updateVariableHandler(
   }
 
   const { name, definition, fallback, sample, enabled } = parsed.data;
+  // Also catches a change *into* an unsupported source, not just a create.
+  if (definition !== undefined && rejectUnsupportedSource(res, definition.source)) return;
   if (name !== undefined && name !== current && (await getVariable(name))) {
     log.warn(
       { variable: current, rename_to: name },

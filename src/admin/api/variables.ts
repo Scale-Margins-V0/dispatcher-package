@@ -31,6 +31,7 @@ import { rowToPlaceholderEntry } from "../../variables/mapping.js";
 import { HEADER_MASK, redactConfig } from "../../variables/redaction.js";
 import { testVariableDefinition } from "../../variables/resolver.js";
 import { refreshPlaceholders } from "../../variables/service.js";
+import { isSourceSupported, unsupportedSourceMessage } from "../../variables/guard.js";
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -182,6 +183,17 @@ function badRequest(res: Response, error: z.ZodError): void {
   });
 }
 
+/** Mirrors the data-plane guard: one rule, enforced on every write surface. */
+function rejectUnsupportedSource(res: Response, source: PlaceholderEntry["source"]): boolean {
+  if (isSourceSupported(source)) return false;
+  res.status(422).json({
+    error: "unsupported_variable_source",
+    message: unsupportedSourceMessage(source),
+    field: "source",
+  });
+  return true;
+}
+
 /** Express 4 does not catch async handler rejections — wrap them. */
 export const asyncHandler =
   (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
@@ -206,6 +218,7 @@ export const registerVariableRoutes = (app: Express): void => {
     asyncHandler(async (req: Request, res: Response) => {
       const parsed = variablePayloadSchema.safeParse(req.body);
       if (!parsed.success) return badRequest(res, parsed.error);
+      if (rejectUnsupportedSource(res, parsed.data.source)) return;
       if (await getVariable(parsed.data.name)) {
         res.status(409).json({ error: `Variable "${parsed.data.name}" already exists` });
         return;
@@ -228,6 +241,7 @@ export const registerVariableRoutes = (app: Express): void => {
         res.status(404).json({ error: `Variable "${currentName}" not found` });
         return;
       }
+      if (rejectUnsupportedSource(res, parsed.data.source)) return;
       if (parsed.data.name !== currentName && (await getVariable(parsed.data.name))) {
         res.status(409).json({ error: `Variable "${parsed.data.name}" already exists` });
         return;

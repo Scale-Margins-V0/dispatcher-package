@@ -6,6 +6,7 @@ import { getDispatchConfig, getIdType, configPathFromEnv } from "../user-lookup/
 import { lookupUsers } from "../user-lookup/index.js";
 import { envYamlPath, loadEnvYaml } from "../env-yaml.js";
 import { registry } from "../providers/senders.js";
+import { lookupMode } from "../variables/guard.js";
 
 type StatusValue = "ok" | "degraded" | "error";
 
@@ -332,6 +333,7 @@ export async function buildDiagnosticsReport(
     email_provider: string;
     image_storage_provider: string;
     user_lookup_backend?: string;
+    user_lookup_mode?: string;
     user_lookup_source?: {
       kind?: string;
       name?: string;
@@ -385,6 +387,7 @@ export async function buildDiagnosticsReport(
       email_provider: emailProvider,
       image_storage_provider: process.env.IMAGE_STORAGE_PROVIDER || "none",
       user_lookup_backend: dispatchConfig.user_lookup.backend,
+      user_lookup_mode: lookupMode(),
       user_lookup_source: dispatchConfig.user_lookup.source
         ? {
             kind: dispatchConfig.user_lookup.source.kind,

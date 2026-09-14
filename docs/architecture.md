@@ -39,16 +39,19 @@ Order matters; every step is fail-fast except the last:
 2. `LOCAL_DEV=1` → insecure placeholder `SCALEMARGIN_*` secrets (never prod).
 3. Required env check → `SCALEMARGIN_DISPATCH_SECRET`,
    `SCALEMARGIN_ANALYTICS_SECRET`. Missing → `process.exit(1)`.
-4. `ensureDispatchConfigLoaded()` — parses `config/dispatch.yaml` through Zod
-   and validates the env the chosen lookup backend needs. Invalid → exit.
+4. `ensureDispatchConfigLoaded()` — resolves `user_lookup` (`.env.yaml` →
+   `config/dispatch.yaml` → mock) through Zod and validates whatever the chosen
+   mode needs: a reachable connection in `database` mode, a URL and token in
+   `network` mode. Invalid → exit.
 5. `initDispatcherDb()` — opens the **state DB** and runs Drizzle migrations.
    Failure → exit.
 6. `initializeEventPipeline()` — resolves the events config, asserts enabled
    providers have their keys, starts the batched flusher timer.
 7. Routes are registered, `startServer()` listens on `PORT` (default 3100).
 
-Config is **cached per process**. `config/dispatch.yaml`, `config/events.yaml`
-and every `process.env` read at boot need a restart to take effect. The one
+Config is **cached per process**. `.env.yaml`, `config/dispatch.yaml`,
+`config/events.yaml` and every `process.env` read at boot need a restart to take
+effect. The one
 exception is personalization variables (§6), which are DB-backed and hot.
 
 ---
@@ -57,11 +60,11 @@ exception is personalization variables (§6), which are DB-backed and hot.
 
 | | **Client user-lookup DB** | **Dispatcher state DB** |
 | --- | --- | --- |
-| Env prefix | `DB_*` | `DISPATCHER_DB_*` |
+| Configured by | `user_lookup:` in `.env.yaml` (legacy: `DB_*`) | `DISPATCHER_DB_*` |
 | Owner | you / the client | this service |
 | Holds | recipient PII (email, phone, names) | variables, dispatch + webhook activity, failures, app logs, campaign events, callback registry, event outbox, admin accounts |
 | Written by dispatcher | never | always |
-| Configured in | `config/dispatch.yaml` | env only |
+| Reached via | a SQL connection, an HTTPS lookup endpoint, or not at all | env only |
 
 State DB defaults to SQLite at `./data/dispatcher.db`; point
 `DISPATCHER_DB_DIALECT/URL/...` at MySQL or Postgres for production. Schema is
@@ -181,27 +184,53 @@ Same skeleton, different provider (`GupshupWhatsAppProvider`), plus:
 
 ## 5. User lookup — how recipients are resolved
 
-`config/dispatch.yaml` → `user_lookup` (Zod schema in
-`src/user-lookup/config.ts`). Backends: `sqlite | mysql | postgres | http |
-mock`; `USER_LOOKUP_BACKEND` env overrides the file. Missing file → mock
-backend + default placeholders so the server still boots.
+`.env.yaml` → `user_lookup` (Zod schema in `src/user-lookup/schema.ts`,
+translated to the internal `DispatchConfig` by `src/user-lookup/from-env-yaml.ts`).
+Three modes: `database` (`mysql | postgres | sqlite`), `network` (a fixed
+POST contract — see [`user-lookup-network-contract.md`](./user-lookup-network-contract.md)),
+and `mock`.
+
+Resolution is **per file, never per key**: `.env.yaml` → `config/dispatch.yaml`
+(deprecated, warns) → mock + default placeholders, so the server still boots
+either way. `USER_LOOKUP_BACKEND` still overrides whichever file won.
+
+`network` mode has no SQL connection, so `source: query` variables cannot
+resolve. `src/variables/guard.ts` is the single authority: it refuses those
+writes, and `/state` advertises the same list it enforces (asserted against each
+other in `guard.spec.ts`, so the platform's UI cannot drift from the rule).
 
 ```yaml
 user_lookup:
+  mode: database
   backend: sqlite
-  sqlite: { file: ./data/dispatch.sqlite }
+  connection: { file: ./data/dispatch.sqlite }
   source: { kind: table, name: users, id_column: user_id, id_type: string }
-  fields:                 # logical name → SQL column / JSON path
+  fields:                 # logical name → SQL column / JSON key
     first_name: first_name
     email: email
     phone: phone_no
   batch: { max_ids_per_query: 1000, dedupe: true }
 ```
 
+```yaml
+user_lookup:
+  mode: network
+  network: { url: https://…/lookup, token: …, timeout_ms: 3000, retries: 2 }
+  fields: { email: email, phone: phone }      # the names we ask for
+```
+
 - SQL backends build a parameterized `WHERE id IN (...)` in chunks
   (`src/user-lookup/sql-build.ts`); `id_type` controls casting.
-- HTTP backend posts a batch of ids to your profile API, with
-  bearer/header/none auth, timeout and retries (`adapters/http.ts`).
+- `NetworkAdapter` (`adapters/network.ts`) POSTs `{ user_ids, fields }` and reads
+  `{ users: [...] }`. Ids are compared **as strings**, so a JSON `42` matches
+  `"42"` — a widening that cannot drop a recipient. 4xx never retries (the
+  credential is wrong; repeating cannot help); 5xx and timeouts back off. A
+  failed chunk costs only its own recipients, never the campaign.
+- `dispatch.yaml`'s flexible `http` backend (`adapters/http.ts`) still exists for
+  the deprecation window and retires with that file.
+- Credentials resolve through `src/user-lookup/connection.ts`: inline
+  `user_lookup.connection` first, then `DB_*` with a warning. Per file, never
+  merged — `missingConnectionFields()` names whichever source won.
 - `fields.email` is what the send path reads. A config without it only warns —
   and then every recipient silently has no address.
 - `POST /api/scalemargin/validate-pii` is the signed smoke test: counts and
@@ -214,8 +243,9 @@ Contract details: [`user-lookup-contract.md`](./user-lookup-contract.md).
 ## 6. Personalization and dynamic variables
 
 `{{name}}` tokens are resolved by `src/personalize.ts` against a registry that
-comes from the **state DB** when it is up, falling back to
-`config/dispatch.yaml`'s `placeholders` (`getPlaceholderRegistry()`).
+comes from the **state DB** when it is up, falling back to `config/dispatch.yaml`'s
+`placeholders` (`getPlaceholderRegistry()`). `.env.yaml` has no `placeholders:`
+block — variables are DB-backed by design.
 
 | Source | Resolved | Notes |
 | --- | --- | --- |
@@ -444,8 +474,8 @@ this service carries recipient addresses, IPs, or message content — only opaqu
 
 ```
 .env                      secrets, provider selection, hosts, feature flags   (client-defined)
-.env.yaml                 email senders + structured deployment config        (client-defined)
-config/dispatch.yaml      user lookup backend + field map + default placeholders
+.env.yaml                 user lookup + email senders + deployment config      (client-defined)
+config/dispatch.yaml      DEPRECATED — user lookup, superseded by .env.yaml's user_lookup:
 config/events.yaml        event forwarding mode, buffer, inbound provider flags
 state DB                  variables (live-editable), observability settings, API keys, accounts
 ```

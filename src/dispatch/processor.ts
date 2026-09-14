@@ -21,6 +21,7 @@ import { deriveTemplateRef } from "./template-ref.js";
 import { ensurePlaceholdersFresh } from "../variables/service.js";
 import { processWhatsAppDispatch } from "./whatsapp.js";
 import type { DispatchPayload } from "./types.js";
+import { scrubPii } from "../events/scrubber.js";
 
 export type { DispatchPayload } from "./types.js";
 
@@ -263,6 +264,12 @@ export async function processDispatch(
     const sendStartedAt = performance.now();
     const result = await sendWithFailover(message, chain, "email");
     const latencyMs = Math.round(performance.now() - sendStartedAt);
+    // Provider errors are untrusted text. SES names the recipient in
+    // "…is not authorized to perform 'ses:SendEmail' on resource …/noreply@…",
+    // so scrub before it reaches a log line or the send-log table.
+    const errorMessage = result.success
+      ? ""
+      : scrubPii(result.error ?? "provider send failed");
 
     if (!result.success) {
       telemetry.capture("dispatcher_provider_send_failed", {
@@ -277,7 +284,7 @@ export async function processDispatch(
           sender_id: result.finalSender.config.id,
           provider: result.finalSender.config.provider,
           error_category: result.error_category || "delivery_failure",
-          error_message: result.error ?? "provider send failed",
+          error_message: errorMessage,
           attempts: result.attempts.length,
           duration_ms: latencyMs,
         },
@@ -296,7 +303,7 @@ export async function processDispatch(
         ? {}
         : {
             error_category: result.error_category || "delivery_failure",
-            error_message: result.error ?? "provider send failed",
+            error_message: errorMessage,
           }),
       fallbacks_used:
         (fallbackCounts.get(userId) ?? 0) +

@@ -2,6 +2,18 @@
 
 This document describes the stable integration surface between ScaleMargin dispatch payloads, your user data, and rendered email content.
 
+> **The configuration shape below is deprecated.** Lookup config now lives under
+> `user_lookup:` in `.env.yaml` — see [`.env.yaml.example`](../.env.yaml.example)
+> and §6 of the [README](../README.md). `config/dispatch.yaml` is still read when
+> `.env.yaml` has no `user_lookup` block, and warns at boot; support for it will
+> be removed in a future release.
+>
+> The `UserRecord` contract itself is unchanged — every mode produces the same
+> shape. For the HTTP mode specifically, the current fixed contract is
+> [`user-lookup-network-contract.md`](user-lookup-network-contract.md); the
+> flexible `http` backend described under "SQL vs HTTP field mapping" below is
+> the legacy one and retires with `dispatch.yaml`.
+
 ## Lookup: inputs and outputs
 
 - **Input:** `user_ids: string[]` — opaque identifiers exactly as ScaleMargin sends them on the wire (always strings).
@@ -18,8 +30,8 @@ interface UserRecord {
 ```
 
 - **`email` (top level):** Used by `src/index.ts` as `message.to` unless `DEV_RECIPIENT_EMAIL` is set.
-- **`fields`:** Open map. Keys are defined by `user_lookup.fields` in `config/dispatch.yaml`. The `email` key should normally be populated as well so `{{email}}` personalization works.
-- **Adding fields:** Add a line under `user_lookup.fields` and a matching entry under `placeholders`. No TypeScript changes are required.
+- **`fields`:** Open map. Keys are defined by `user_lookup.fields` in `.env.yaml` (or `config/dispatch.yaml`, deprecated). The `email` key should normally be populated as well so `{{email}}` personalization works.
+- **Adding fields:** Add a line under `user_lookup.fields`, then define the matching variable from the ScaleMargin platform. No TypeScript changes are required.
 
 ## SQL vs HTTP field mapping
 
@@ -50,8 +62,14 @@ Invalid IDs for the configured type are skipped with a warning; the rest of the 
 
 ## Configuration files
 
-- Default path: `./config/dispatch.yaml` (override with `USER_LOOKUP_CONFIG_PATH`).
-- If the file is **missing**, the server starts with **mock** user lookup and built-in placeholders (demo-friendly).
-- If the file is **present but invalid**, the process exits with a Zod validation error.
+Resolved in order, first hit wins — per file, never merged per key:
 
-See [config/dispatch.example.yaml](../config/dispatch.example.yaml) for a full example.
+1. `.env.yaml` → `user_lookup:` — the current location. See [`.env.yaml.example`](../.env.yaml.example).
+2. `./config/dispatch.yaml` (override with `USER_LOOKUP_CONFIG_PATH`) — **deprecated**, warns at boot.
+3. Neither present → **mock** user lookup with built-in placeholders (demo-friendly).
+
+If a file is **present but invalid**, the process exits with a Zod validation error.
+
+`placeholders:` in `dispatch.yaml` is seeded into the `variables` table on first
+boot and edited from the ScaleMargin platform thereafter. It has no equivalent in
+`.env.yaml` and does not need one.

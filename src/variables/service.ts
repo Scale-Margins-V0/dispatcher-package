@@ -9,6 +9,10 @@ import { isDbInitialized } from "../db/client.js";
 import { listVariables } from "../db/repos/variables.js";
 import { rowToPlaceholderEntry } from "./mapping.js";
 import type { PlaceholderEntry } from "../user-lookup/config.js";
+import { componentLogger } from "../logging/logger.js";
+import { inactiveSources } from "./guard.js";
+
+const log = componentLogger("variables");
 
 const TTL_MS = 30_000;
 
@@ -23,11 +27,30 @@ export function getPlaceholderSnapshot(): Record<string, PlaceholderEntry> | nul
 export async function refreshPlaceholders(): Promise<void> {
   if (!isDbInitialized()) return;
   const rows = await listVariables();
+  const inactive = new Set(inactiveSources());
   const next: Record<string, PlaceholderEntry> = {};
+  let skipped = 0;
+
   for (const row of rows) {
     if (!row.enabled) continue;
+    // Retained in the table, just not resolvable here — switching back to a
+    // database lookup restores them untouched.
+    if (inactive.has(row.source as PlaceholderEntry["source"])) {
+      skipped += 1;
+      continue;
+    }
     next[row.name] = rowToPlaceholderEntry(row);
   }
+
+  // One aggregated line, not one per variable: a campaign with fifty of these
+  // should not produce fifty warnings.
+  if (skipped > 0) {
+    log.warn(
+      { count: skipped, sources: [...inactive], error_category: "unsupported_variable_source" },
+      `${skipped} variable(s) need a SQL connection and are inactive in this lookup mode — their fallbacks are used`
+    );
+  }
+
   snapshot = next;
   loadedAt = Date.now();
 }

@@ -41,7 +41,7 @@ pnpm run seed:mysql
 pnpm run seed:postgres
 ```
 
-Then point `config/dispatch.yaml` at the same database (see [config/dispatch.example.yaml](../config/dispatch.example.yaml)) and set `USER_LOOKUP_BACKEND` accordingly.
+Then point `user_lookup:` in `.env.yaml` at the same database (see [.env.yaml.example](../.env.yaml.example)), setting `mode: database` and the matching `backend`.
 
 ## HTTP profile mock server
 

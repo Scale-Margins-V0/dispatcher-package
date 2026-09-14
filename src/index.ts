@@ -75,6 +75,7 @@ import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 import { ensureEnvYamlValid } from "./env-yaml.js";
 import { resolveSenderPin } from "./providers/senders.js";
+import { dispatcherPort } from "./dispatcher-settings.js";
 
 // ---------------------------------------------------------------------------
 // Startup validation — fail fast on missing config
@@ -160,7 +161,7 @@ app.disable("x-powered-by");
 // Express emit Secure admin cookies when that proxy reports HTTPS.
 app.set("trust proxy", 1);
 app.use(requestIdMiddleware);
-const PORT = parseInt(process.env.PORT || "3100", 10);
+const PORT = dispatcherPort();
 /** Placeholder sender. No provider can verify it — example.com is IANA-reserved. */
 const DEFAULT_FROM_EMAIL = "noreply@example.com";
 const FROM_EMAIL = process.env.FROM_EMAIL || DEFAULT_FROM_EMAIL;

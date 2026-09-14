@@ -267,6 +267,11 @@ paths:
           URL-encoded at send time.
         * A masked header value (`••••••••`) is rejected on create — there is no
           stored secret to preserve yet. Send the real value.
+        * `source` must appear in `lookup.supported_variable_sources` from
+          `/state`. In network and mock mode there is no SQL connection, so
+          `query` is refused with `400 invalid_request` on
+          `details[].path = "definition.source"`. Read that list rather than
+          hard-coding the rule.
 
         `sample` is ignored for field/computed/constant — the dispatcher renders
         those against a fictional sample record itself. For query/api it is
@@ -341,6 +346,12 @@ paths:
           never read a bearer token can still round-trip its definition. A
           header the caller omits is dropped.
         * `enabled: false` disables resolution while keeping the definition.
+        * A replaced definition is checked against
+          `lookup.supported_variable_sources` the same way a create is, so
+          switching an existing variable to `query` in network mode is refused.
+          Variables already stored as `query` are left alone — switching lookup
+          mode never deletes them; they sit inactive on their fallback until a
+          SQL connection returns.
       tags: [Variables]
       requestBody:
         required: true
@@ -1005,9 +1016,40 @@ components:
 
     StateResponse:
       type: object
-      required: [generated_at, status, dispatch, resolution, catalog, outbox]
+      required: [generated_at, status, lookup, dispatch, resolution, catalog, outbox]
       properties:
         generated_at: { type: string, format: date-time }
+        lookup:
+          type: object
+          required: [mode, backend, supported_variable_sources]
+          description: >
+            How this dispatcher resolves recipients. Read this before offering
+            variable source options in a UI — the write endpoints enforce
+            exactly the list below and return 422 for anything else.
+          properties:
+            mode:
+              type: string
+              enum: [database, network, mock]
+              description: >
+                database — a SQL connection to the customer database.
+                network — an HTTPS lookup endpoint the client hosts.
+                mock — nothing configured; fabricated recipients, mails nobody real.
+            backend:
+              type: string
+              enum: [mysql, postgres, sqlite]
+              nullable: true
+              description: The SQL dialect in database mode; null in network and mock mode
+            supported_variable_sources:
+              type: array
+              description: >
+                Variable sources this dispatcher can actually resolve. `query`
+                runs SQL, so it is absent unless mode is database. Read the list
+                rather than hard-coding the rule — a new source type then needs
+                no UI change.
+              items:
+                type: string
+                enum: [field, computed, constant, query, api]
+              example: [field, computed, constant, api]
         status:
           type: object
           required: [state, checks]

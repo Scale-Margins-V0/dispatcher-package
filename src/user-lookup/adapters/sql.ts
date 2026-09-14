@@ -20,6 +20,7 @@ import {
   type SqlDialect,
 } from "../sql-build.js";
 import type { UserLookupAdapter, UserRecord } from "../types.js";
+import { resolveConnection, type ResolvedConnection } from "../connection.js";
 
 const log = componentLogger("user-lookup.sql");
 
@@ -27,8 +28,18 @@ export class SqlAdapter implements UserLookupAdapter {
   private mysqlPool: MysqlPool | null = null;
   private pgPool: PgPool | null = null;
   private sqliteDb: Database.Database | null = null;
+  private resolved: ResolvedConnection | null = null;
 
   constructor(private readonly cfg: DispatchConfig) {}
+
+  /**
+   * `.env.yaml` `user_lookup.connection` when present, else `DB_*`. Resolved
+   * once per adapter so the two precedence paths cannot diverge between pools.
+   */
+  private get connection(): ResolvedConnection {
+    this.resolved ??= resolveConnection(this.dialect, this.cfg.user_lookup.connection);
+    return this.resolved;
+  }
 
   private get dialect(): SqlDialect {
     const b = this.cfg.user_lookup.backend;
@@ -38,14 +49,13 @@ export class SqlAdapter implements UserLookupAdapter {
 
   private getMysqlPool(): MysqlPool {
     if (!this.mysqlPool) {
+      const { host, port, user, password, database } = this.connection;
       this.mysqlPool = createPool({
-        host: process.env.DB_HOST || "localhost",
-        port: parseInt(process.env.DB_PORT || "3306", 10),
-        user: process.env.DB_USER || "root",
-        password:
-          process.env.DB_PASSWORD ??
-          (process.env.DB_ALLOW_EMPTY_PASSWORD === "true" ? "" : ""),
-        database: process.env.DB_NAME || "mysql",
+        host,
+        port,
+        user,
+        password,
+        database,
         waitForConnections: true,
         connectionLimit: 10,
       });
@@ -55,18 +65,14 @@ export class SqlAdapter implements UserLookupAdapter {
 
   private getPgPool(): PgPool {
     if (!this.pgPool) {
+      const { host, port, user, password, database, ssl } = this.connection;
       this.pgPool = new PgPool({
-        host: process.env.DB_HOST || "localhost",
-        port: parseInt(process.env.DB_PORT || "5432", 10),
-        user: process.env.DB_USER || "postgres",
-        password:
-          process.env.DB_PASSWORD ??
-          (process.env.DB_ALLOW_EMPTY_PASSWORD === "true" ? "" : ""),
-        database: process.env.DB_NAME || "postgres",
-        ssl:
-          process.env.DB_SSL === "true" || process.env.DB_SSL === "1"
-            ? { rejectUnauthorized: false }
-            : undefined,
+        host,
+        port,
+        user,
+        password,
+        database,
+        ssl: ssl ? { rejectUnauthorized: false } : undefined,
       });
     }
     return this.pgPool;
@@ -74,8 +80,7 @@ export class SqlAdapter implements UserLookupAdapter {
 
   private getSqliteDb(): Database.Database {
     if (!this.sqliteDb) {
-      const file = getSqliteFile(this.cfg);
-      this.sqliteDb = new Database(file);
+      this.sqliteDb = new Database(getSqliteFile(this.cfg));
     }
     return this.sqliteDb;
   }

@@ -5,10 +5,11 @@
 import type { DispatchConfig } from "./config.js";
 import {
   getDispatchConfig,
-  loadDispatchConfigFromDisk,
+  loadDispatchConfig,
   resetDispatchConfigForTests,
 } from "./config.js";
 import { HttpAdapter } from "./adapters/http.js";
+import { NetworkAdapter } from "./adapters/network.js";
 import { MockAdapter } from "./adapters/mock.js";
 import { SqlAdapter } from "./adapters/sql.js";
 import type { UserLookupAdapter, UserRecord } from "./types.js";
@@ -32,7 +33,10 @@ function createAdapter(cfg: DispatchConfig): UserLookupAdapter {
     case "sqlite":
       return new SqlAdapter(cfg);
     case "http":
-      return new HttpAdapter(cfg);
+      // Both `.env.yaml` network mode and dispatch.yaml's `http` backend map to
+      // "http" internally; only the former carries a `network` block. The
+      // legacy adapter retires with dispatch.yaml.
+      return cfg.user_lookup.network ? new NetworkAdapter(cfg) : new HttpAdapter(cfg);
     default: {
       const x: never = cfg.user_lookup.backend;
       throw new Error(`Unknown backend: ${String(x)}`);
@@ -58,7 +62,7 @@ export function resetLookupAdapterForTests(): void {
 export function reloadLookupAdapter(): UserLookupAdapter {
   resetLookupAdapterForTests();
   resetDispatchConfigForTests();
-  loadDispatchConfigFromDisk();
+  loadDispatchConfig();
   return getLookupAdapter();
 }
 

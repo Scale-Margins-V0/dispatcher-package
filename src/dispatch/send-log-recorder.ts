@@ -21,6 +21,7 @@ import { insertSendLogs } from "../db/repos/send-logs.js";
 import { isDbInitialized } from "../db/state.js";
 import { componentLogger } from "../logging/logger.js";
 import type { SendLogRow, SendLogStatus } from "../db/schema/index.js";
+import { scrubPii } from "../events/scrubber.js";
 
 const log = componentLogger("dispatch.send-logs");
 
@@ -81,7 +82,12 @@ export class SendLogRecorder {
         : null,
       latency_ms: entry.latency_ms ?? null,
       error_category: entry.error_category ? clamp(entry.error_category, ID_MAX) : null,
-      error_message: entry.error_message ? clamp(entry.error_message, ERROR_MAX) : null,
+      // Scrubbed here too, not just at the call sites: this row is the one that
+      // persists, and a future caller must not be able to leak a recipient
+      // address into it by forgetting.
+      error_message: entry.error_message
+        ? clamp(scrubPii(entry.error_message), ERROR_MAX)
+        : null,
       fallbacks_used: entry.fallbacks_used ?? null,
       occurred_at: new Date(),
     });

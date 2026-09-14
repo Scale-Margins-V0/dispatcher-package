@@ -13,6 +13,7 @@ import { getDb } from "../db/state.js";
 import { componentLogger } from "../logging/logger.js";
 import { sendInvitationEmail } from "./invitations.js";
 import { resolveAuthSecret } from "./secret.js";
+import { dispatcherPort, dispatcherPublicUrl } from "../dispatcher-settings.js";
 
 const log = componentLogger("auth");
 
@@ -48,8 +49,8 @@ let warnedUnsubscribePath = false;
  * origin only, and say so once at boot.
  */
 export function authBaseURL(): string {
-  const explicit = process.env.DISPATCHER_PUBLIC_URL?.trim();
-  if (explicit) return explicit.replace(/\/+$/, "");
+  const explicit = dispatcherPublicUrl();
+  if (explicit) return explicit;
 
   const fallback = process.env.UNSUBSCRIBE_URL_BASE?.trim();
   if (fallback) {
@@ -76,8 +77,7 @@ export function authBaseURL(): string {
     }
   }
 
-  const port = process.env.PORT || "3100";
-  return `http://localhost:${port}`;
+  return `http://localhost:${dispatcherPort()}`;
 }
 
 function useSecureCookies(): boolean {

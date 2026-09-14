@@ -9,6 +9,8 @@ import type {
   SenderConfig,
   SenderRoutingConfig,
 } from "./providers/types.js";
+import { userLookupSchema } from "./user-lookup/schema.js";
+import { dispatcherSchema } from "./dispatcher-schema.js";
 
 const log = componentLogger(LogComponent.config);
 
@@ -118,6 +120,12 @@ export const envYamlSchema = z.object({
   version: z.literal(1).optional(),
   routing: routingSchema.optional(),
   senders: z.array(senderSchema).default([]),
+  // Absent → the dispatcher falls back to config/dispatch.yaml, then to mock.
+  // See src/user-lookup/config.ts for the precedence.
+  user_lookup: userLookupSchema.optional(),
+  // Absent → port, public URL, Atlas key and CORS all come from the
+  // environment exactly as before. See src/dispatcher-settings.ts.
+  dispatcher: dispatcherSchema.optional(),
 });
 
 export type EnvYaml = z.infer<typeof envYamlSchema>;
@@ -301,9 +309,18 @@ export function loadEnvYaml(): EnvYaml {
     const parsed = yaml.load(raw);
     const validated = envYamlSchema.parse(parsed);
 
-    // If senders array is empty, fall back to back-compat
+    // No senders → fall back to the single-sender configuration in .env, but
+    // keep `user_lookup` and `dispatcher`. These concerns are independent:
+    // configuring lookup or the Atlas key here while keeping one sender in
+    // .env is a perfectly ordinary setup, and discarding the whole file for it
+    // would silently ignore those blocks. Every optional top-level key added
+    // to envYamlSchema must be carried through here for the same reason.
     if (validated.senders.length === 0) {
-      cachedEnvYaml = synthesizeBackCompatEnvYaml();
+      cachedEnvYaml = {
+        ...synthesizeBackCompatEnvYaml(),
+        user_lookup: validated.user_lookup,
+        dispatcher: validated.dispatcher,
+      };
       return cachedEnvYaml;
     }
 

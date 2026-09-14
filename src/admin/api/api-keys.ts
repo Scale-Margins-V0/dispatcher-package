@@ -19,6 +19,7 @@ import {
 } from "../../auth/api-keys.js";
 import { authBaseURL } from "../../auth/index.js";
 import { asyncHandler } from "./variables.js";
+import { dispatcherPublicUrl } from "../../dispatcher-settings.js";
 
 const nameSchema = z.object({
   name: z.string().trim().min(2).max(64).regex(/^[a-zA-Z0-9][a-zA-Z0-9 _.-]*$/, "Use letters, numbers, spaces, dots, dashes, or underscores"),
@@ -46,7 +47,7 @@ export const registerApiKeyRoutes = (app: Express): void => {
     res.json({
       base_url: base,
       api_version: API_VERSION,
-      configured_public_url: Boolean(process.env.DISPATCHER_PUBLIC_URL?.trim()),
+      configured_public_url: dispatcherPublicUrl() !== null,
       // Presence only — the key itself is never read back out of the process.
       atlas_key_env: ATLAS_KEY_ENV,
       atlas_key_configured: isAtlasApiConfigured(),

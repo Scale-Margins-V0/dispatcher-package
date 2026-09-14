@@ -45,7 +45,8 @@ part of onboarding. Two consequences to hold onto:
 | Not in the image               | Why                                                                            | Consequence                                                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | `admin-dist/` (the console UI) | Deliberate — clients manage the dispatcher through Atlas, not a second console | `GET /admin` returns `503 {"error":"Dispatcher admin UI has not been built"}`; `/admin/api/*` stays mounted          |
-| `config/dispatch.yaml`         | Client-specific — which table, which columns                                   | **Without it the dispatcher silently falls back to the MOCK user lookup** and resolves fabricated recipients. See §7 |
+| `.env.yaml`                    | Client-specific — where recipient data comes from, and which accounts send     | **Without it the dispatcher silently falls back to the MOCK user lookup** and resolves fabricated recipients. See §7 |
+| `config/dispatch.yaml`         | Deprecated predecessor of `.env.yaml`'s `user_lookup:` block                   | Still read if mounted, and warns at boot. Nothing to do for a new deployment                                        |
 | `config/events.yaml`           | Optional; built-in defaults apply                                              | Fine to omit                                                                                                         |
 | `.env`                         | Secrets belong to the deployment                                               | Container will not boot without the two required vars                                                                |
 
@@ -325,10 +326,11 @@ docker rm -f verify
 
 ## 7. The config gotcha, stated once more
 
-`config/dispatch.yaml` is **not** in the image. If the client does not mount it:
+`.env.yaml` is **not** in the image. If the client does not mount it, or mounts
+it without a `user_lookup:` block:
 
-- `loadDispatchConfigFromDisk()` logs _"No dispatch config found — falling back
-  to the built-in MOCK user lookup"_;
+- `loadDispatchConfig()` logs _"No user lookup configured — falling back to the
+  built-in MOCK user lookup"_;
 - every recipient resolves to a fabricated record;
 - sends "succeed" and the campaign looks healthy in Atlas.
 
@@ -338,9 +340,22 @@ makes it step one — but if you are debugging a deployment where the numbers lo
 right and the mail is wrong, check this first:
 
 ```bash
-docker compose exec dispatcher ls -l /app/config/dispatch.yaml
+docker compose exec dispatcher ls -l /app/.env.yaml
 docker compose logs dispatcher | grep -i "MOCK user lookup"
+
+# The direct answer — "mode": "mock" is the smoking gun:
+curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
+  localhost:3100/api/v1/data-plane/state | jq '.lookup'
 ```
+
+Two ways this happens in practice, both silent:
+
+- **Docker created a directory.** If `.env.yaml` did not exist on the host at
+  the first `up`, Docker made an empty directory at that path. `ls -l` above
+  shows it.
+- **`.env.yaml` loaded, but has no `user_lookup:`.** Then the loader falls back
+  to `config/dispatch.yaml`, and to mock if that is absent too. The boot log
+  says which file won.
 
 ---
 
@@ -486,7 +501,7 @@ locally" is a human responsibility, not an enforced one.
 | `Dispatcher state-DB migrations not found for dialect …` | `drizzle/` missing from the image                        | Restore `COPY drizzle/ ./drizzle/`                 |
 | `[FATAL] Missing required env vars`                      | `SCALEMARGIN_*_SECRET` unset                             | They are mandatory; the process exits by design    |
 | Container healthy, every send rejected                   | `FROM_EMAIL` unset → `noreply@example.com`, unverifiable | Set `FROM_EMAIL` to a verified sender              |
-| Campaign reports success, wrong recipients               | `config/dispatch.yaml` not mounted → mock lookup         | §7                                                 |
+| Campaign reports success, wrong recipients               | No `user_lookup:` reached the container → mock lookup    | §7                                                 |
 | `pnpm install --frozen-lockfile` fails in build          | `pnpm-lock.yaml` out of sync with `package.json`         | Run `pnpm install` locally and commit the lockfile |
 | `/admin` returns 503                                     | **Expected.** The console is not shipped                 | Nothing to fix. Use `/api/v1/data-plane/*`         |
 

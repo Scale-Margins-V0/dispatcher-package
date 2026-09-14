@@ -6,8 +6,8 @@ placeholders and opaque IDs; it looks up the real values in _your_ database,
 personalizes each message, and sends through _your_ email provider. No customer
 data ever reaches ScaleMargin.
 
-**What it takes.** A `.env` file, a `config/dispatch.yaml` file, and
-`docker compose up -d`. Roughly twenty minutes end to end.
+**What it takes.** A `.env` file, a `.env.yaml` file, and `docker compose up -d`.
+Roughly twenty minutes end to end.
 
 ---
 
@@ -17,7 +17,7 @@ data ever reaches ScaleMargin.
 | ------------------------------------------ | ------------------------------------------------------------- |
 | Docker Engine 24+ with Compose v2          | `docker --version`, `docker compose version`                  |
 | 2 vCPU / 2 GB RAM / 10 GB disk             | Comfortable for millions of sends a month                     |
-| Read-only access to your customer database | A dedicated user. See §6                                      |
+| Recipient data the dispatcher can reach     | Read-only database access, **or** a lookup API you host. See §6 |
 | An email provider account                  | AWS SES or SendGrid, with a **verified sender address**       |
 | Two secrets from ScaleMargin               | `SCALEMARGIN_DISPATCH_SECRET`, `SCALEMARGIN_ANALYTICS_SECRET` |
 | Outbound access to `ghcr.io`               | To pull the image. No account or credentials needed — see §3  |
@@ -36,11 +36,12 @@ tracking) or want to manage it from the ScaleMargin platform — see §9.
 | Contains          | Your customers — names, emails, balances | Variables, campaign history, logs, event queue |
 | Who owns it       | You, already                             | Created by this compose file                   |
 | Dispatcher access | **Read only**                            | Read and write                                 |
-| Configured by     | `DB_*` variables in `.env`               | `DISPATCHER_DB_*` — already set for you        |
+| Configured by     | `user_lookup` in `.env.yaml`             | `DISPATCHER_DB_*` — already set for you        |
 | Runs where        | Wherever it already runs                 | The `postgres` service in this stack           |
 
 The dispatcher never writes to your customer database. It reads the columns you
-map in `config/dispatch.yaml` and nothing else.
+map in `.env.yaml` and nothing else — or, if you prefer, it never touches your
+database at all and asks an API you host instead (§6).
 
 ---
 
@@ -52,11 +53,10 @@ Create a directory and put these files in it:
 dispatcher/
   docker-compose.yml     from §4 below
   .env                   from §5 below — you fill this in
-  .env.yaml              from §7 below — only if you send from
-                         more than one account
-  config/
-    dispatch.yaml        from §6 below — you fill this in
+  .env.yaml              from §6 below — you fill this in
 ```
+
+Two files, both of which hold credentials. `chmod 600` both.
 
 **There is no registry login step.** Our image is published publicly on GitHub
 Container Registry, so you pull it the same way you would pull `postgres`:
@@ -100,11 +100,10 @@ services:
       DISPATCHER_DB_DIALECT: postgres
       DISPATCHER_DB_URL: postgres://dispatcher:${DISPATCHER_DB_PASSWORD}@postgres:5432/dispatcher_state
     volumes:
-      # Which table and columns to read from your customer database.
-      # Without this the dispatcher runs in MOCK mode and mails nobody real.
-      - ./config/dispatch.yaml:/app/config/dispatch.yaml:ro
-      # Multiple sending accounts (§7). DELETE this line if you use one account —
-      # Docker creates an empty directory here if the file does not exist.
+      # Where recipient data comes from (§6) and which accounts send (§7).
+      # Create this file BEFORE the first `up` — Docker silently creates an
+      # empty directory in its place otherwise, and the dispatcher then runs
+      # in MOCK mode and mails nobody real.
       - ./.env.yaml:/app/.env.yaml:ro
       # Local runtime state. Small, but keep it across restarts.
       - dispatcher-data:/app/data
@@ -201,16 +200,11 @@ SES_EVENT_CONFIG_SET=
 # SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY=
 
 # ─────────────────────────────────────────────────────────────
-# 4. YOUR customer database — read-only user           REQUIRED
-#    This is NOT the dispatcher's database above.
+# 4. Where recipient data comes from
+#    Configured in .env.yaml — see section 6. Nothing to set
+#    here. (The old DB_HOST / DB_USER / DB_PASSWORD / DB_NAME
+#    variables still work but are deprecated; §6.4.)
 # ─────────────────────────────────────────────────────────────
-USER_LOOKUP_BACKEND=postgres      # postgres | mysql | sqlite | http
-DB_HOST=                          # see section 6.3 for host values
-DB_PORT=5432
-DB_USER=dispatcher_ro
-DB_PASSWORD=
-DB_NAME=
-DB_SSL=true
 
 # ─────────────────────────────────────────────────────────────
 # 5. ScaleMargin management access                    REQUIRED
@@ -220,6 +214,9 @@ DB_SSL=true
 #    Leave it unset and that API stays completely off.
 #    Generate:  openssl rand -base64 32
 #    Then give the SAME value to your ScaleMargin contact.
+#
+#    These four may live in `.env.yaml` under `dispatcher:`
+#    instead — see §7.6. Setting them here still works.
 # ─────────────────────────────────────────────────────────────
 DISPATCHER_ATLAS_KEY=
 
@@ -245,8 +242,8 @@ DISPATCHER_PUBLIC_URL=http://localhost:3100
 # UNSUBSCRIBE_URL_BASE=https://dispatcher.yourdomain.com
 ```
 
-Lock the file down — it holds two sets of database credentials and your provider
-keys:
+Lock the file down — it holds your provider keys and the dispatcher's own
+database password:
 
 ```bash
 chmod 600 .env
@@ -254,17 +251,43 @@ chmod 600 .env
 
 ---
 
-## 6. `config/dispatch.yaml` — which data to read
+## 6. `.env.yaml` — where recipient data comes from
 
-This file maps the dispatcher to _your_ schema. It is required; without it the
-dispatcher starts in **mock mode** and personalizes with fabricated data while
-appearing perfectly healthy.
+ScaleMargin sends the dispatcher opaque IDs. This section tells it how to turn
+those into an email address and a name.
 
-### 6.1 The file
+**Pick one mode.** Without a `user_lookup` block the dispatcher starts in **mock
+mode** — it personalizes with fabricated data while appearing perfectly healthy.
+
+<!-- prettier-ignore -->
+| Mode | The dispatcher | Choose it when |
+| --- | --- | --- |
+| `database` | Connects read-only to your database and `SELECT`s the columns you map | You are comfortable granting a read-only user |
+| `network` | Calls an HTTPS endpoint you host, with a bearer token | Your data is behind a service, or policy forbids direct DB access |
+| `mock` | Fabricates recipients | Local trials only |
+
+> ⚠️ **`.env.yaml` holds credentials** — a database password or a bearer token.
+> `chmod 600 .env.yaml`, keep it out of version control, and treat it exactly
+> like `.env`. In Kubernetes it is a Secret mounted at `defaultMode: 0400`,
+> never a ConfigMap.
+
+### 6.1 `mode: database`
 
 ```yaml
+version: 1
+
 user_lookup:
-  backend: postgres # must match USER_LOOKUP_BACKEND in .env
+  mode: database
+  backend: postgres # postgres | mysql | sqlite
+
+  # Read-only credentials for YOUR customer database.
+  connection:
+    host: db.internal # see §6.3 for what to put here
+    port: 5432
+    user: dispatcher_ro
+    password: "a-long-random-password" # or: password_env: DB_PASSWORD
+    database: your_db
+    ssl: true
 
   source:
     kind: table # table | view
@@ -273,28 +296,18 @@ user_lookup:
     id_type: string # string | int | bigint | uuid
 
   # Logical name  →  your column name.
-  # Only these columns are ever read. `email` is mandatory.
+  # Only these columns are ever read. `email` is mandatory;
+  # `phone` is needed to send WhatsApp.
   fields:
     email: email_address
+    phone: mobile_number
     first_name: given_name
     last_name: family_name
-    phone: mobile_number
     company_name: account_name
 
   batch:
     max_ids_per_query: 1000
     dedupe: true
-
-placeholders:
-  first_name: { source: field, field: first_name, fallback: "there" }
-  last_name: { source: field, field: last_name, fallback: "" }
-  company_name: { source: field, field: company_name, fallback: "" }
-  full_name:
-    {
-      source: computed,
-      expr: "first_name + ' ' + last_name",
-      fallback: "there",
-    }
 ```
 
 **A view is often the better answer.** Rather than granting access to a customer
@@ -310,7 +323,8 @@ CREATE VIEW dispatcher_recipients AS
 Then set `kind: view` and `name: dispatcher_recipients`. Consent filtering
 happens in your database, where it belongs.
 
-### 6.2 The database user
+**The database user** — grant `SELECT` only. The dispatcher never writes to your
+database, so a read-only user is not a restriction, it is a guarantee.
 
 ```sql
 -- PostgreSQL
@@ -327,42 +341,122 @@ GRANT SELECT ON your_db.dispatcher_recipients TO 'dispatcher_ro'@'%';
 FLUSH PRIVILEGES;
 ```
 
-Grant `SELECT` only. The dispatcher never writes to your database, so a
-read-only user is not a restriction — it is a guarantee.
+For `backend: sqlite`, replace the connection block with a path:
+`connection: { file: /app/data/customers.sqlite }`.
 
-### 6.3 What to put in `DB_HOST`
+### 6.2 `mode: network`
+
+The dispatcher never touches your database. It POSTs a batch of IDs to an
+endpoint you host and you return the contact details.
+
+```yaml
+version: 1
+
+user_lookup:
+  mode: network
+  network:
+    url: https://api.your-company.com/scalemargin/lookup
+    token: "the-bearer-token" # or: token_env: LOOKUP_API_TOKEN
+    timeout_ms: 3000
+    retries: 2 # 5xx and timeouts only; 4xx is never retried
+
+  # The logical names we will ask for, in `fields` on every request.
+  fields:
+    email: email
+    phone: phone
+    first_name: first_name
+
+  batch:
+    max_ids_per_query: 500
+    dedupe: true
+```
+
+We send:
+
+```json
+{ "user_ids": ["usr_1", "usr_2"], "fields": ["email", "phone", "first_name"] }
+```
+
+You return:
+
+```json
+{
+  "users": [
+    { "user_id": "usr_1", "email": "ada@example.com", "first_name": "Ada" }
+  ]
+}
+```
+
+Omit anyone you cannot resolve — a missing ID skips that recipient and the rest
+of the campaign still sends. **The full contract, with error handling, batching
+and a worked implementation, is in
+[`docs/user-lookup-network-contract.md`](docs/user-lookup-network-contract.md)** — that
+is the page to hand to whoever builds the endpoint.
+
+There is no `source:` block, because there is no table to point at, and no
+`connection:`, because there is no database to connect to.
+
+> **One capability is lost in network mode.** Variables with `source: query` run
+> SQL against your database. With no connection they can never produce a value,
+> so the dispatcher refuses to create them and the ScaleMargin platform hides
+> the option. Any that already exist are kept but sit inactive, using their
+> fallback, until you switch back to `database` mode. Every other variable type
+> — `field`, `computed`, `constant`, `api` — works identically in both modes.
+
+### 6.3 What to put in `connection.host`
 
 This trips people up, because the dispatcher is inside a container.
 
-| Your database runs                      | `DB_HOST`              | Extra step                                                                                       |
+| Your database runs                      | `host`                 | Extra step                                                                                       |
 | --------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------ |
 | Managed service (RDS, Cloud SQL, Neon…) | The service hostname   | Allow the host's IP in the firewall                                                              |
 | Another server                          | Its hostname or IP     | —                                                                                                |
 | **On the Docker host itself**           | `host.docker.internal` | On Linux, add to the dispatcher service:<br>`extra_hosts: ["host.docker.internal:host-gateway"]` |
 | In another compose stack                | The service name       | Attach both to the same external network                                                         |
 
-`localhost` in `DB_HOST` means _inside the dispatcher container_, which is
-almost never what you want.
+`localhost` here means _inside the dispatcher container_, which is almost never
+what you want.
+
+### 6.4 Upgrading from an older dispatcher
+
+Two things moved into `.env.yaml`, and both old forms still work for now:
+
+<!-- prettier-ignore -->
+| Was | Now | Status |
+| --- | --- | --- |
+| `config/dispatch.yaml` | `user_lookup:` in `.env.yaml` | Still read if `.env.yaml` has no `user_lookup` block. Logs a deprecation warning at boot; will be removed in a future release |
+| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_SSL` in `.env` | `user_lookup.connection:` | Still read if there is no `connection:` block. Logs a warning |
+
+`.env.yaml` always wins. Precedence is **per file, not per key** — an inline
+`connection:` block ignores every `DB_*` variable, rather than merging with
+them, so there is never a configuration that is half from one place and half
+from the other.
+
+To migrate: copy the `user_lookup:` block out of `config/dispatch.yaml` into
+`.env.yaml`, add `mode: database` at the top of it, move the `DB_*` values into
+`connection:`, then delete `config/dispatch.yaml` and its volume mount. Your
+`placeholders:` block does **not** move — variables live in the dispatcher's own
+database and are edited from the ScaleMargin platform. Anything still in
+`config/dispatch.yaml` was seeded on first boot and is already there.
 
 ---
 
-## 7. Sending from more than one account (optional)
+## 7. `.env.yaml` — senders and deployment settings (optional)
 
-Skip this section entirely if you send from a single address. Everything above
-already works — one provider, one `FROM_EMAIL`, done.
+Same file as §6, second half. Skip §7.1–7.4 if you send from a single address —
+everything above already works with one provider and one `FROM_EMAIL`. §7.5 is
+independent of senders and useful on its own.
 
-Add `.env.yaml` when you want any of:
+Add a `senders:` block when you want any of:
 
 - **Several sending accounts**, with traffic split between them
 - **Automatic failover** — if one account starts rejecting messages, the next takes over
 - **Different accounts per organization**, when you run more than one brand
 - **WhatsApp as well as email**
 
-The file sits next to `.env` and is mounted read-only by the compose file in §4.
+### 7.1 Keep the sending secrets out of this file
 
-### 7.1 Keep the secrets out of this file
-
-Every credential can be written two ways:
+Every provider credential can be written two ways:
 
 <!-- prettier-ignore -->
 | In `.env.yaml` | Meaning |
@@ -370,9 +464,8 @@ Every credential can be written two ways:
 | `api_key_env: SENDGRID_API_KEY` | **Recommended.** Read the value from `SENDGRID_API_KEY` in your `.env` |
 | `api_key: SG.xxxxx` | The literal key, written here |
 
-Prefer the `_env` form. It keeps every secret in one file — `.env`, already
-locked down with `chmod 600` — and leaves `.env.yaml` safe to read, diff and
-hand to a colleague.
+Prefer the `_env` form. It keeps your provider keys in `.env` with the rest of
+them, so there is one file to rotate rather than two.
 
 > ⚠️ **The `_env` suffix is the whole difference.** `api_key: SENDGRID_API_KEY`
 > does **not** read an environment variable. It sets your API key to the literal
@@ -380,9 +473,13 @@ hand to a colleague.
 > error. The dispatcher cannot warn you, because any string is a plausible key
 > as far as it knows.
 
+This does **not** make `.env.yaml` safe to circulate: the `user_lookup`
+credentials in §6 are written inline. Treat the file as a secret regardless.
+
 ### 7.2 A working example
 
-Two email accounts and one WhatsApp account:
+Two email accounts and one WhatsApp account. These keys sit alongside the
+`user_lookup:` block from §6 in the same `.env.yaml` — `version: 1` appears once.
 
 ```yaml
 version: 1
@@ -524,7 +621,45 @@ parked after repeated failures, and `half_open` while it is being tried again.
 No credentials appear in this response, so it is safe to paste into a support
 thread.
 
-### 7.5 Changing it later
+### 7.5 Deployment settings in `.env.yaml` (optional)
+
+Four settings can live in this file instead of `.env`. Useful when your
+deployment templates `.env.yaml` as a single secret and you would rather not
+maintain two files.
+
+```yaml
+dispatcher:
+  port: 3100
+  public_url: https://dispatcher.your-company.com
+  atlas_key: "the-key-you-shared-with-us" # or: atlas_key_env: DISPATCHER_ATLAS_KEY
+  atlas_cors_origins:
+    - https://atlas.scalemargin.com
+```
+
+<!-- prettier-ignore -->
+| Key | Replaces | If set in neither place |
+| --- | --- | --- |
+| `port` | `PORT` | `3100` |
+| `public_url` | `DISPATCHER_PUBLIC_URL` | Falls back to `UNSUBSCRIBE_URL_BASE`, then `localhost` |
+| `atlas_key` | `DISPATCHER_ATLAS_KEY` | **The management API is off** — every route returns 503 |
+| `atlas_cors_origins` | `DISPATCHER_ATLAS_CORS_ORIGINS` | No CORS headers; server-to-server calls only |
+
+**Nothing changes if you skip this.** The environment variables are not
+deprecated and every existing deployment keeps working untouched.
+
+Two details worth knowing:
+
+- **Precedence is per key here**, unlike the `connection:` block in §6, which is
+  per file. `port` from the environment and `atlas_key` from this file is an
+  ordinary setup, not a half-migration.
+- **A typo is rejected at boot**, not ignored. `atlas_keys:` fails to start
+  rather than silently leaving the management API disabled — which is the
+  failure you would otherwise discover when ScaleMargin cannot reach you.
+
+`atlas_cors_origins` also accepts a comma-separated string, so you can paste the
+old environment variable value straight in.
+
+### 7.6 Changing it later
 
 `.env.yaml` is read once at startup:
 
@@ -565,7 +700,7 @@ curl -s localhost:3100/health
 curl -s localhost:3100/api/v1/internal/ready | jq
 # every check "ok": true
 
-# 3. Your customer database is connected and mapped
+# 3. Recipient lookup is wired up
 docker compose logs dispatcher | grep -i "UserLookup"
 
 # 4. NOT in mock mode  — this must print nothing
@@ -580,7 +715,29 @@ docker compose logs dispatcher | grep -i "FROM_EMAIL is not set"
 curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
   localhost:3100/api/v1/data-plane/build | jq '.service'
 # => version, git_sha, build_time
+
+# 7. The lookup mode is the one you configured
+curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
+  localhost:3100/api/v1/data-plane/state | jq '.lookup'
 ```
+
+```json
+{
+  "mode": "database",
+  "backend": "postgres",
+  "supported_variable_sources": [
+    "field",
+    "computed",
+    "constant",
+    "query",
+    "api"
+  ]
+}
+```
+
+`"mode": "mock"` here means the dispatcher did not find your `user_lookup`
+block — it will run, and mail nobody real. In `network` mode `backend` is `null`
+and `query` is absent from the list (§6.2).
 
 Tell your ScaleMargin contact you are up, and give them the `DISPATCHER_ATLAS_KEY`
 value plus your dispatcher's URL. They will send one test campaign to an address
@@ -718,10 +875,12 @@ docker compose down -v         # stop and DELETE all campaign history. Careful.
 | `manifest unknown`                                                 | That version tag does not exist                                                         | Use the exact tag from our release note; do not invent version numbers                                                 |
 | `exec format error`                                                | Image architecture mismatch                                                             | Tell us your platform — we will publish a matching build                                                               |
 | Sends fail with `403 Forbidden` or `Email address is not verified` | `FROM_EMAIL` not verified in your provider                                              | Verify that exact address, or use one that is                                                                          |
-| Campaigns report success but reach nobody real                     | `config/dispatch.yaml` not mounted → mock mode                                          | Check the volume mount and step 4 in §8                                                                                |
-| `getaddrinfo ENOTFOUND` for your database                          | `DB_HOST` unreachable from the container                                                | §6.3 — usually `host.docker.internal`                                                                                  |
-| `Resolved 0/N users` on every send                                 | `id_column` or `id_type` mismatch                                                       | Confirm the column holds the ID ScaleMargin sends                                                                      |
-| Personalization shows fallbacks everywhere                         | `fields` map points at wrong columns                                                    | Compare `config/dispatch.yaml` with your schema                                                                        |
+| Campaigns report success but reach nobody real                     | No `user_lookup` block reached the container → mock mode                                | Step 7 in §8. Usually the `.env.yaml` mount, or a stray directory Docker created in its place                          |
+| `getaddrinfo ENOTFOUND` for your database                          | `connection.host` unreachable from the container                                        | §6.3 — usually `host.docker.internal`                                                                                  |
+| `Resolved 0/N users` on every send                                 | `id_column` or `id_type` mismatch — or, in network mode, your API returned no `user_id` match | Confirm the column holds the ID ScaleMargin sends; in network mode compare `user_id` values against what we sent  |
+| Personalization shows fallbacks everywhere                         | `fields` map points at wrong columns or wrong field names                               | Compare the `fields:` block in `.env.yaml` with your schema (or your API's response keys)                             |
+| The platform will not let you create a `query` variable            | **Expected in network mode** — there is no database to query                            | §6.2. Use `field`, `computed`, `constant` or `api` instead                                                             |
+| Boot warns `Reading user lookup from config/dispatch.yaml`                  | Lookup config still in the old file                                                     | Migrate it into `.env.yaml` — §6.4                                                                                     |
 | `password authentication failed` at boot                           | `DISPATCHER_DB_PASSWORD` changed after the volume was created                           | Postgres keeps the original password. Either restore it, or `docker compose down -v` and start fresh (deletes history) |
 | No opens or clicks recorded                                        | Provider webhooks not configured, or dispatcher not reachable                           | §9, and confirm `SES_EVENT_CONFIG_SET` for SES                                                                         |
 | `/admin` returns 503                                               | **Expected** — no console is shipped in this image                                      | Manage through the ScaleMargin platform                                                                                |
@@ -745,13 +904,16 @@ connection strings.
 
 ## 12. Security summary
 
-- The dispatcher holds **read-only** credentials to your customer database.
+- The dispatcher holds **read-only** credentials to your customer database — or,
+  in network mode, no database credentials at all.
 - Customer data never leaves your network. ScaleMargin receives counts, opaque
   IDs and timestamps — never names, addresses, phone numbers or message content.
 - Provider error messages are scrubbed of email addresses, phone numbers and IPs
   before they are stored or shared.
 - Both databases live on machines you control.
-- `.env` is the only file holding secrets. `chmod 600` it, keep it out of version
-  control, and back it up somewhere you would keep any other credential.
+- **`.env` and `.env.yaml` both hold secrets.** `chmod 600` both, keep them out
+  of version control, and back them up as you would any other credential.
+  `.env.yaml` in particular holds the customer-database password or your lookup
+  API's bearer token, so it is not a file to circulate or paste into a ticket.
 - `DISPATCHER_ATLAS_KEY` is the only management credential, and unsetting it
   turns the management API off entirely.
