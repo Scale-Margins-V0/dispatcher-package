@@ -392,15 +392,13 @@ user_lookup:
     id_column: external_id # the column holding the ID ScaleMargin sends
     id_type: string # string | int | bigint | uuid
 
-  # Logical name  →  your column name.
-  # Only these columns are ever read. `email` is mandatory;
-  # `phone` is needed to send WhatsApp.
+  # Your column for each contact field. The lookup returns these and nothing
+  # else: `email` to send email, `phone` to send WhatsApp.
+  # Personalization (names, company, …) is variables: a `field` variable reads
+  # any other column of `source`, and only the columns in use are ever read.
   fields:
     email: email_address
     phone: mobile_number
-    first_name: given_name
-    last_name: family_name
-    company_name: account_name
 
   batch:
     max_ids_per_query: 1000
@@ -418,7 +416,8 @@ CREATE VIEW dispatcher_recipients AS
 ```
 
 Then set `kind: view` and `name: dispatcher_recipients`. Consent filtering
-happens in your database, where it belongs.
+happens in your database, where it belongs. **The view is also your allow-list:**
+a `field` variable can read any column the view has, and no column it lacks.
 
 **The database user** — grant `SELECT` only. The dispatcher never writes to your
 database, so a read-only user is not a restriction, it is a guarantee.
@@ -457,31 +456,30 @@ user_lookup:
     timeout_ms: 3000
     retries: 2 # 5xx and timeouts only; 4xx is never retried
 
-  # The logical names we will ask for, in `fields` on every request.
+  # Contact details only — email and phone. Any other key is ignored, with a
+  # warning at boot. The right-hand side is YOUR name for it; we ask for and
+  # read back that name. An email send asks only for email, a WhatsApp send
+  # only for phone.
   fields:
     email: email
     phone: phone
-    first_name: first_name
 
   batch:
     max_ids_per_query: 500
     dedupe: true
 ```
 
-We send:
+We send (for an email campaign; a WhatsApp one sends `"channel": "whatsapp"`
+and `phone` instead of `email`):
 
 ```json
-{ "user_ids": ["usr_1", "usr_2"], "fields": ["email", "phone", "first_name"] }
+{ "user_ids": ["usr_1", "usr_2"], "channel": "email", "fields": ["email"] }
 ```
 
 You return:
 
 ```json
-{
-  "users": [
-    { "user_id": "usr_1", "email": "ada@example.com", "first_name": "Ada" }
-  ]
-}
+{ "users": [{ "user_id": "usr_1", "email": "ada@example.com" }] }
 ```
 
 Omit anyone you cannot resolve — a missing ID skips that recipient and the rest
@@ -493,12 +491,13 @@ is the page to hand to whoever builds the endpoint.
 There is no `source:` block, because there is no table to point at, and no
 `connection:`, because there is no database to connect to.
 
-> **One capability is lost in network mode.** Variables with `source: query` run
-> SQL against your database. With no connection they can never produce a value,
-> so the dispatcher refuses to create them and the ScaleMargin platform hides
-> the option. Any that already exist are kept but sit inactive, using their
-> fallback, until you switch back to `database` mode. Every other variable type
-> — `field`, `computed`, `constant`, `api` — works identically in both modes.
+> **Two variable types are unavailable in network mode.** `field` reads a column
+> of your database and `query` runs SQL against it; with no connection neither
+> can produce a value, so the dispatcher refuses to create them and the
+> ScaleMargin platform hides both options. Any that already exist are kept but
+> sit inactive, rendering their fallback, until you switch back to `database`
+> mode. Personalize with `api`, `computed` and `constant` variables instead —
+> `GET /api/v1/data-plane/lookup/fields` tells a client what is available.
 
 ### 6.3 What to put in `connection.host`
 
@@ -1113,8 +1112,6 @@ user_lookup:
   fields:
     email: email_address
     phone: mobile_number
-    first_name: given_name
-    last_name: family_name
   batch:
     max_ids_per_query: 1000
     dedupe: true
@@ -1267,7 +1264,6 @@ user_lookup:
     { kind: view, name: dispatcher_recipients, id_column: external_id }
   fields:
     email: email_address
-    first_name: given_name
 
 email:
   provider: sendgrid
@@ -1417,7 +1413,6 @@ user_lookup:
   fields:
     email: email
     phone: phone
-    first_name: first_name
   batch:
     max_ids_per_query: 500
     dedupe: true

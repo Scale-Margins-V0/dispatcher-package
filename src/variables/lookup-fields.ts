@@ -15,6 +15,11 @@ import { isSourceSupported, lookupMode } from "./guard.js";
 export type LookupFields = {
   mode: "database" | "network" | "mock";
   field_source_supported: boolean;
+  /**
+   * Where `fields` come from — the table or view in `user_lookup.source`.
+   * Shown read-only in the builder; null outside database mode.
+   */
+  source: { kind: "table" | "view"; name: string } | null;
   /** Always resolved by the lookup; exposed as system variables. */
   contact_fields: string[];
   /** Columns a `field` variable may read. Empty outside database mode. */
@@ -24,11 +29,16 @@ export type LookupFields = {
 export async function lookupFields(): Promise<LookupFields> {
   const mode = lookupMode();
   const supported = isSourceSupported("field");
-  const base = { mode, field_source_supported: supported, contact_fields: ["email", "phone"] };
+  const ul = getDispatchConfig().user_lookup;
+  const base = {
+    mode,
+    field_source_supported: supported,
+    source: supported && ul.source ? { kind: ul.source.kind, name: ul.source.name } : null,
+    contact_fields: ["email", "phone"],
+  };
   const adapter = getLookupAdapter();
   if (!supported || !adapter.listSourceColumns) return { ...base, fields: [] };
 
-  const ul = getDispatchConfig().user_lookup;
   const hidden = new Set<string>(ul.source ? [ul.source.id_column] : []);
   for (const [logical, column] of Object.entries(ul.fields)) {
     if (CONTACT_FIELD_NAMES.has(logical)) hidden.add(column);

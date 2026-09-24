@@ -527,6 +527,7 @@ describe("GET /lookup/fields — what a field variable can point at", () => {
     expect(res.body).toMatchObject({
       mode: "database",
       field_source_supported: true,
+      source: { kind: "table", name: "people" },
       contact_fields: ["email", "phone"],
       fields: ["first_name", "city"],
     });
@@ -547,6 +548,7 @@ describe("GET /lookup/fields — what a field variable can point at", () => {
     expect(res.body).toMatchObject({
       mode: "network",
       field_source_supported: false,
+      source: null,
       contact_fields: ["email", "phone"],
       fields: [],
     });
