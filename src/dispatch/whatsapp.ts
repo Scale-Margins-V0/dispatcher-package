@@ -69,7 +69,7 @@ export async function processWhatsAppDispatch(
     organization_id: metadata.organization_id,
   };
 
-  const users = await lookupUsers(user_ids);
+  const users = await lookupUsers(user_ids, "whatsapp");
   const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx);
   const devRecipient = resolveDevTestRecipient() || resolveFreshchatDevTestRecipient();
 

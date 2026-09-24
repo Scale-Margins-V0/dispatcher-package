@@ -14,7 +14,7 @@ function config(over: Partial<DispatchConfig["user_lookup"]> = {}): DispatchConf
   return {
     user_lookup: {
       backend: "http",
-      fields: { email: "email", first_name: "first_name" },
+      fields: { email: "email" },
       network: { url: URL, token: "secret-token", timeout_ms: 50, retries: 2 },
       ...over,
     },
@@ -51,8 +51,20 @@ describe("the request", () => {
     expect(init.headers.authorization).toBe("Bearer secret-token");
     expect(JSON.parse(init.body)).toEqual({
       user_ids: ["u1", "u2"],
-      fields: ["email", "first_name"],
+      channel: "email",
+      fields: ["email"],
     });
+  });
+
+  // The response is read by the client's names, so the request must use them
+  // too. Asking with the logical key resolved nothing for `phone: phone_no`.
+  it("asks for the client's field names, and reads them back", async () => {
+    const fetchMock = stubFetch(ok({ users: [{ user_id: "u1", email_address: "a@x.com" }] }));
+    const out = await new NetworkAdapter(
+      config({ fields: { email: "email_address" } })
+    ).lookupUsers(["u1"]);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).fields).toEqual(["email_address"]);
+    expect(out.get("u1")!.fields).toEqual({ email: "a@x.com" });
   });
 
   it("reads the token from token_env when there is no inline token", async () => {
@@ -89,12 +101,12 @@ describe("the request", () => {
 
 describe("the response", () => {
   it("maps records through the fields map", async () => {
-    stubFetch(ok({ users: [{ user_id: "u1", email: "a@x.com", first_name: "Ada" }] }));
+    stubFetch(ok({ users: [{ user_id: "u1", email: "a@x.com" }] }));
     const out = await new NetworkAdapter(config()).lookupUsers(["u1"]);
     expect(out.get("u1")).toEqual({
       user_id: "u1",
       email: "a@x.com",
-      fields: { email: "a@x.com", first_name: "Ada" },
+      fields: { email: "a@x.com" },
     });
   });
 
@@ -104,11 +116,6 @@ describe("the response", () => {
     expect([...out.keys()]).toEqual(["u2"]);
   });
 
-  it("leaves a missing field undefined rather than failing the record", async () => {
-    stubFetch(ok({ users: [{ user_id: "u1", email: "a@x.com" }] }));
-    const out = await new NetworkAdapter(config()).lookupUsers(["u1"]);
-    expect(out.get("u1")!.fields.first_name).toBeUndefined();
-  });
 
   // Compared as strings: a JSON number is a serializer quirk, not a different
   // user. This is a widening and cannot drop anyone — unlike the int/uuid
@@ -129,7 +136,7 @@ describe("the response", () => {
     expect(await new NetworkAdapter(config()).lookupUsers(["u1"])).toEqual(new Map());
   });
 
-  it("drops a record with no email, as every other backend does", async () => {
+  it("an email lookup drops a record with no email, as every backend does", async () => {
     stubFetch(ok({ users: [{ user_id: "u1", first_name: "Ada" }] }));
     expect(await new NetworkAdapter(config()).lookupUsers(["u1"])).toEqual(new Map());
   });
@@ -193,5 +200,43 @@ describe("failure handling", () => {
       config({ batch: { max_ids_per_query: 1, dedupe: true } })
     ).lookupUsers(["a", "b"]);
     expect([...out.keys()]).toEqual(["b"]);
+  });
+});
+
+describe("the channel", () => {
+  const both = { fields: { email: "email", phone: "phone_no" } };
+
+  it("an email lookup asks for the address, never the phone", async () => {
+    const fetchMock = stubFetch(ok({ users: [] }));
+    await new NetworkAdapter(config(both)).lookupUsers(["u1"], "email");
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+    expect(body.channel).toBe("email");
+    expect(body.fields).toEqual(["email"]);
+  });
+
+  it("a WhatsApp lookup asks for the phone, never the address", async () => {
+    const fetchMock = stubFetch(ok({ users: [] }));
+    await new NetworkAdapter(config(both)).lookupUsers(["u1"], "whatsapp");
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+    expect(body.channel).toBe("whatsapp");
+    expect(body.fields).toEqual(["phone_no"]);
+  });
+
+  // Requiring an email here dropped everyone who only has a phone.
+  it("keeps a WhatsApp recipient who has no email", async () => {
+    stubFetch(ok({ users: [{ user_id: "u1", phone_no: "+447700900000" }] }));
+    const out = await new NetworkAdapter(config(both)).lookupUsers(["u1"], "whatsapp");
+    expect(out.get("u1")).toEqual({
+      user_id: "u1",
+      email: "",
+      fields: { phone: "+447700900000" },
+    });
+  });
+
+  it("drops a WhatsApp recipient with no phone", async () => {
+    stubFetch(ok({ users: [{ user_id: "u1", first_name: "Ada" }] }));
+    expect(await new NetworkAdapter(config(both)).lookupUsers(["u1"], "whatsapp")).toEqual(
+      new Map()
+    );
   });
 });

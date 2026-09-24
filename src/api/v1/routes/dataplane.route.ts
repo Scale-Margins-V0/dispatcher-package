@@ -149,6 +149,9 @@ router.route("/logs/:id").get(asyncApi(DataPlaneController.getLogHandler));
  * resolved customer value has no route through here.
  */
 
+// Not under /variables/: "fields" is a legal variable name.
+router.route("/lookup/fields").get(asyncApi(DataPlaneController.getLookupFieldsHandler));
+
 router
   .route("/variables")
   .get(asyncApi(DataPlaneController.listVariablesHandler))

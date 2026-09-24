@@ -73,7 +73,7 @@ export async function processDispatch(
     organization_id: metadata.organization_id,
   };
 
-  const users = await lookupUsers(user_ids);
+  const users = await lookupUsers(user_ids, "email");
 
   // Resolve async (query/api) variables once for the whole recipient set, before
   // the sync personalize pass. Sync sources (field/computed/constant) skip this.

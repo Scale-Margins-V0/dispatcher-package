@@ -52,10 +52,15 @@ export type PlaceholderEntry = z.infer<typeof placeholderEntrySchema>;
 export const VARIABLE_SOURCES = ["field", "computed", "constant", "query", "api"] as const;
 
 /**
- * Sources that need a SQL connection to the customer database. In network mode
- * there is none, so these are refused at write time — see variables/guard.ts.
+ * Sources that need a SQL connection to the customer database. In network and
+ * mock mode there is none, so these are refused at write time — see
+ * variables/guard.ts.
+ *
+ * `field` is here because the user lookup only ever returns contact details
+ * (email, phone). A `field` variable reads an extra column of the source view,
+ * which only a database lookup can do; a network lookup has no columns to pick.
  */
-export const SQL_ONLY_VARIABLE_SOURCES: readonly PlaceholderEntry["source"][] = ["query"];
+export const SQL_ONLY_VARIABLE_SOURCES: readonly PlaceholderEntry["source"][] = ["field", "query"];
 
 export const DEFAULT_PLACEHOLDERS: Record<string, PlaceholderEntry> = {
   first_name: { source: "field", field: "first_name", fallback: "there" },

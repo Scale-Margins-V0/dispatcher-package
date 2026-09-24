@@ -10,6 +10,7 @@ import { z } from "zod";
 import { componentLogger } from "../logging/logger.js";
 import { LogComponent } from "../logging/conventions.js";
 import { getPlaceholderSnapshot } from "../variables/service.js";
+import { SYSTEM_PLACEHOLDERS } from "../variables/system.js";
 import type { IdType } from "./mapper.js";
 import { DEFAULT_PLACEHOLDERS, placeholderEntrySchema } from "./placeholders.js";
 import type { PlaceholderEntry } from "./placeholders.js";
@@ -326,11 +327,21 @@ function requireNetworkToken(cfg: DispatchConfig): void {
   if (network.token_env) requireEnv(network.token_env);
 }
 
+let registryBase: Record<string, PlaceholderEntry> | null = null;
+let registryMerged: Record<string, PlaceholderEntry> = {};
+
 export function getPlaceholderRegistry(): Record<string, PlaceholderEntry> {
   // Once the state DB is bootstrapped, its variables table is the source of
   // truth (editable at runtime via the admin API). YAML/defaults remain the
   // fallback for processes that never init the DB (unit tests, tooling).
-  return getPlaceholderSnapshot() ?? getDispatchConfig().placeholders;
+  const base = getPlaceholderSnapshot() ?? getDispatchConfig().placeholders;
+  // System variables win over any same-named row: they cannot be redefined.
+  // Memoized on the base object — this runs once per recipient.
+  if (base !== registryBase) {
+    registryBase = base;
+    registryMerged = { ...base, ...SYSTEM_PLACEHOLDERS };
+  }
+  return registryMerged;
 }
 
 export function getSqliteFile(config: DispatchConfig): string {

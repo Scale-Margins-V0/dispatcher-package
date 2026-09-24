@@ -266,7 +266,10 @@ placeholders:
     const grace = byTo.get("grace@example.com")!;
     expect(grace.subject).toBe("US Navy — hello Grace");
     expect(grace.html).toContain("Grace Hopper");
-    expect(grace.html).toContain("+1-555-0102");
+    // An email lookup never fetches the phone number (user-lookup/channel.ts),
+    // so {{phone}} falls back to "" even though the row has one.
+    expect(grace.html).toContain("<small></small>");
+    expect(grace.html).not.toContain("+1-555-0102");
 
     const alan = byTo.get("alan@example.com")!;
     expect(alan.subject).toBe("Bletchley — hello Alan");

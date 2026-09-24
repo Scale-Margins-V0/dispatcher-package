@@ -71,9 +71,16 @@ describe("supported sources", () => {
     expect(isSourceSupported("query")).toBe(false);
   });
 
-  it("keeps every other source in network mode", () => {
+  // The lookup returns contact details only; a `field` variable reads an extra
+  // column of the source view, and a network lookup has no columns.
+  it("drops field in network mode — there are no columns to pick", () => {
     asNetwork();
-    for (const source of ["field", "computed", "constant", "api"] as const) {
+    expect(isSourceSupported("field")).toBe(false);
+  });
+
+  it("keeps computed, constant and api in network mode", () => {
+    asNetwork();
+    for (const source of ["computed", "constant", "api"] as const) {
       expect(isSourceSupported(source)).toBe(true);
     }
   });
@@ -90,9 +97,9 @@ describe("inactiveSources", () => {
     expect(inactiveSources()).toEqual([]);
   });
 
-  it("names query without one, so the snapshot can skip those rows", () => {
+  it("names field and query without one, so the snapshot can park those rows", () => {
     asNetwork();
-    expect(inactiveSources()).toEqual(["query"]);
+    expect(inactiveSources()).toEqual(["field", "query"]);
   });
 });
 

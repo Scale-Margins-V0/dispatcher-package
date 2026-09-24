@@ -87,6 +87,19 @@ function resolveEnvVar(name: string): string {
 /**
  * Safe placeholder expression: string concat, `user_id`, `email`, `env.NAME`, field names, 'literals'.
  */
+/** Names an expression reads from the lookup record — not the context tokens, env or literals. */
+const EXPR_CONTEXT_TOKENS = new Set(["user_id", "campaign_id", "organization_id", "email"]);
+
+/**
+ * The record fields a computed expression reads, by the same split the
+ * evaluator uses — so the lookup can fetch exactly those columns.
+ */
+export function computedFieldRefs(expr: string): string[] {
+  return splitTopLevelPlus(expr)
+    .map((part) => part.trim())
+    .filter((p) => IDENT.test(p) && !EXPR_CONTEXT_TOKENS.has(p));
+}
+
 export function evaluateComputedExpression(
   expr: string,
   user: UserRecord,

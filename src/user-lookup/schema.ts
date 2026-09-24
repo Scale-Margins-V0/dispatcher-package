@@ -83,11 +83,21 @@ const databaseLookupSchema = z
   })
   .strict();
 
+/**
+ * Network mode returns contact details only — email and phone. Any other key is
+ * accepted but ignored, with a boot warning (from-env-yaml.ts): personalization
+ * comes from variables (`api`, `computed`, `constant`), never the lookup.
+ */
+const networkFieldsSchema = fieldsSchema.refine(
+  (f) => Boolean(f.email || f.phone),
+  "map at least one of email or phone"
+);
+
 const networkLookupSchema = z
   .object({
     mode: z.literal("network"),
     network: networkSchema,
-    fields: fieldsSchema,
+    fields: networkFieldsSchema,
     batch: batchSchema.optional(),
   })
   .strict();

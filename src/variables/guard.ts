@@ -46,10 +46,11 @@ export function isSourceSupported(source: VariableSource): boolean {
 
 /** Why a source was refused, phrased for whoever is looking at the response. */
 export function unsupportedSourceMessage(source: VariableSource): string {
-  return (
-    `source=${source} needs a SQL connection to your customer database; ` +
-    `this dispatcher is in ${lookupMode()} lookup mode`
-  );
+  const why =
+    source === "field"
+      ? "reads a column of your customer database"
+      : "needs a SQL connection to your customer database";
+  return `source=${source} ${why}; this dispatcher is in ${lookupMode()} lookup mode`;
 }
 
 /**

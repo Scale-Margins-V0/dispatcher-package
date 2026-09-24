@@ -12,9 +12,11 @@ import { HttpAdapter } from "./adapters/http.js";
 import { NetworkAdapter } from "./adapters/network.js";
 import { MockAdapter } from "./adapters/mock.js";
 import { SqlAdapter } from "./adapters/sql.js";
+import type { LookupChannel } from "./channel.js";
 import type { UserLookupAdapter, UserRecord } from "./types.js";
 
 export type { UserRecord, UserLookupAdapter } from "./types.js";
+export type { LookupChannel } from "./channel.js";
 export {
   resetDispatchConfigForTests,
   reloadDispatchConfigForTests,
@@ -67,7 +69,8 @@ export function reloadLookupAdapter(): UserLookupAdapter {
 }
 
 export async function lookupUsers(
-  userIds: string[]
+  userIds: string[],
+  channel: LookupChannel = "email"
 ): Promise<Map<string, UserRecord>> {
-  return getLookupAdapter().lookupUsers(userIds);
+  return getLookupAdapter().lookupUsers(userIds, channel);
 }

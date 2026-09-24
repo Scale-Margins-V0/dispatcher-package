@@ -226,6 +226,11 @@ export const ZListVariablesQuerySchema = z.object({
     .enum(["true", "false"])
     .transform((value) => value === "true")
     .optional(),
+  /** `?system=true` for system variables only, `false` for user ones; omitted returns both. */
+  system: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .optional(),
   /** Case-insensitive substring match on the placeholder name. */
   q: z.string().trim().max(191).optional(),
   /** 1-based. Filters are applied before the page is cut. */

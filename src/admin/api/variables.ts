@@ -32,6 +32,8 @@ import { HEADER_MASK, redactConfig } from "../../variables/redaction.js";
 import { testVariableDefinition } from "../../variables/resolver.js";
 import { refreshPlaceholders } from "../../variables/service.js";
 import { isSourceSupported, unsupportedSourceMessage } from "../../variables/guard.js";
+import { isSystemVariable, SYSTEM_VARIABLES } from "../../variables/system.js";
+import { lookupFields } from "../../variables/lookup-fields.js";
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -146,7 +148,43 @@ function serialize(row: VariableRow) {
     updated_at: row.updated_at.toISOString(),
     updated_by: row.updated_by,
     preview: renderPlaceholderPreview(rowToPlaceholderEntry(row)),
+    system: false,
+    description: null as string | null,
   };
+}
+
+/** Same shape as a stored variable, flagged; never stored, so no timestamps. */
+function serializeSystem(name: string) {
+  const { entry, description } = SYSTEM_VARIABLES[name]!;
+  const { field, expr, config } = entryToRowFields(entry);
+  return {
+    name,
+    source: entry.source,
+    field,
+    expr,
+    fallback: entry.fallback ?? null,
+    config,
+    enabled: true,
+    created_at: null,
+    updated_at: null,
+    updated_by: "system",
+    preview: renderPlaceholderPreview(entry),
+    system: true,
+    description,
+  };
+}
+
+/** System variables cannot be changed, renamed, disabled or deleted. */
+function rejectSystem(res: Response, name: string, action: string): boolean {
+  if (!isSystemVariable(name)) return false;
+  res.status(403).json({ error: `"${name}" is a system variable and cannot be ${action}` });
+  return true;
+}
+
+function rejectSystemName(res: Response, name: string): boolean {
+  if (!isSystemVariable(name)) return false;
+  res.status(409).json({ error: `"${name}" is a system variable — choose another name` });
+  return true;
 }
 
 function authedUser(req: Request): string | null {
@@ -204,11 +242,29 @@ export const asyncHandler =
 export const registerVariableRoutes = (app: Express): void => {
   const json = express.json({ limit: "64kb" });
 
+  // What a `field` variable can point at; empty outside database mode.
+  app.get(
+    "/admin/api/lookup/fields",
+    asyncHandler(async (_req: Request, res: Response) => {
+      try {
+        res.json({ generated_at: new Date().toISOString(), ...(await lookupFields()) });
+      } catch {
+        res.status(503).json({ error: "Could not read the columns of your customer database" });
+      }
+    })
+  );
+
   app.get(
     "/admin/api/variables",
     asyncHandler(async (_req: Request, res: Response) => {
       const rows = await listVariables();
-      res.json({ generated_at: new Date().toISOString(), variables: rows.map(serialize) });
+      res.json({
+        generated_at: new Date().toISOString(),
+        variables: [
+          ...Object.keys(SYSTEM_VARIABLES).map(serializeSystem),
+          ...rows.filter((row) => !isSystemVariable(row.name)).map(serialize),
+        ],
+      });
     })
   );
 
@@ -219,6 +275,7 @@ export const registerVariableRoutes = (app: Express): void => {
       const parsed = variablePayloadSchema.safeParse(req.body);
       if (!parsed.success) return badRequest(res, parsed.error);
       if (rejectUnsupportedSource(res, parsed.data.source)) return;
+      if (rejectSystemName(res, parsed.data.name)) return;
       if (await getVariable(parsed.data.name)) {
         res.status(409).json({ error: `Variable "${parsed.data.name}" already exists` });
         return;
@@ -236,6 +293,8 @@ export const registerVariableRoutes = (app: Express): void => {
       const parsed = variablePayloadSchema.safeParse(req.body);
       if (!parsed.success) return badRequest(res, parsed.error);
       const currentName = String(req.params.name);
+      if (rejectSystem(res, currentName, "changed")) return;
+      if (parsed.data.name !== currentName && rejectSystemName(res, parsed.data.name)) return;
       const existing = await getVariable(currentName);
       if (!existing) {
         res.status(404).json({ error: `Variable "${currentName}" not found` });
@@ -256,6 +315,7 @@ export const registerVariableRoutes = (app: Express): void => {
   app.delete(
     "/admin/api/variables/:name",
     asyncHandler(async (req: Request, res: Response) => {
+      if (rejectSystem(res, String(req.params.name), "deleted")) return;
       const deleted = await deleteVariable(String(req.params.name));
       if (!deleted) {
         res.status(404).json({ error: `Variable "${req.params.name}" not found` });

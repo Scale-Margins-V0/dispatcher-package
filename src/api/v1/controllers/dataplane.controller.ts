@@ -60,6 +60,8 @@ import { renderPlaceholderPreview } from "../../../personalize.js";
 import { rowToPlaceholderEntry } from "../../../variables/mapping.js";
 import { redactConfig, unmaskHeaders } from "../../../variables/redaction.js";
 import { refreshPlaceholders } from "../../../variables/service.js";
+import { isSystemVariable, SYSTEM_VARIABLES } from "../../../variables/system.js";
+import { lookupFields } from "../../../variables/lookup-fields.js";
 import { componentLogger } from "../../../logging/logger.js";
 import { LogComponent, errorFields } from "../../../logging/conventions.js";
 import { apiError, invalidRequest } from "../errors.js";
@@ -345,10 +347,63 @@ function serializeVariable(row: VariableRow) {
     fallback: row.fallback,
     sample: row.sample,
     enabled: row.enabled,
-    created_at: row.created_at.toISOString(),
-    updated_at: row.updated_at.toISOString(),
+    system: false,
+    description: null as string | null,
+    created_at: row.created_at.toISOString() as string | null,
+    updated_at: row.updated_at.toISOString() as string | null,
     updated_by: row.updated_by,
   };
+}
+
+/**
+ * A system variable in the same wire shape as a stored one, so the catalog is
+ * one list. Never stored, so it has no timestamps; always enabled.
+ */
+function serializeSystemVariable(name: string): ReturnType<typeof serializeVariable> {
+  const { entry, description } = SYSTEM_VARIABLES[name]!;
+  const definition =
+    entry.source === "field"
+      ? { source: "field", field: entry.field }
+      : entry.source === "computed"
+        ? { source: "computed", expr: entry.expr }
+        : { source: entry.source };
+  return {
+    name,
+    source: entry.source,
+    definition,
+    fallback: entry.fallback ?? null,
+    sample: renderPlaceholderPreview(entry),
+    enabled: true,
+    system: true,
+    description,
+    created_at: null,
+    updated_at: null,
+    updated_by: "system",
+  };
+}
+
+/** The whole catalog: system variables first, then the stored ones they don't shadow. */
+async function catalog(): Promise<ReturnType<typeof serializeVariable>[]> {
+  const rows = await listVariables();
+  return [
+    ...Object.keys(SYSTEM_VARIABLES).map(serializeSystemVariable),
+    ...rows.filter((row) => !isSystemVariable(row.name)).map(serializeVariable),
+  ];
+}
+
+/**
+ * System variables cannot be changed, renamed, disabled or deleted. Returns
+ * true when it has already answered, so the caller just bails.
+ */
+function rejectSystemVariable(res: Response, name: string, action: string): boolean {
+  if (!isSystemVariable(name)) return false;
+  log.warn({ variable: name, action }, "Variable write rejected — system variable");
+  apiError(
+    res,
+    "forbidden",
+    `"${name}" is a system variable and cannot be ${action}`
+  );
+  return true;
 }
 
 /**
@@ -433,23 +488,37 @@ export async function listVariablesHandler(
     return invalidRequest(res, query.error);
   }
 
-  const { source, enabled, q, page, limit } = query.data;
+  const { source, enabled, system, q, page, limit } = query.data;
   const needle = q?.toLowerCase();
   // ponytail: filter and slice in memory. Variable counts are tens per
   // dispatcher; push page/limit into SQL if a client ever passes four figures.
-  const rows = (await listVariables()).filter(
-    (row) =>
-      (source === undefined || row.source === source) &&
-      (enabled === undefined || row.enabled === enabled) &&
-      (needle === undefined || row.name.toLowerCase().includes(needle)),
+  const rows = (await catalog()).filter(
+    (v) =>
+      (source === undefined || v.source === source) &&
+      (enabled === undefined || v.enabled === enabled) &&
+      (system === undefined || v.system === system) &&
+      (needle === undefined || v.name.toLowerCase().includes(needle)),
   );
 
   const offset = (page - 1) * limit;
   res.json({
     generated_at: new Date().toISOString(),
     meta: pageMeta(rows.length, page, limit),
-    variables: rows.slice(offset, offset + limit).map(serializeVariable),
+    variables: rows.slice(offset, offset + limit),
   });
+}
+
+/**
+ * GET /lookup/fields — what a `field` variable can point at. Column names only,
+ * never a value. Empty `fields` outside database mode.
+ */
+export async function getLookupFieldsHandler(_req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ generated_at: new Date().toISOString(), ...(await lookupFields()) });
+  } catch (err) {
+    log.warn({ err }, "Could not read the columns of the lookup source");
+    apiError(res, "unavailable", "Could not read the columns of your customer database");
+  }
 }
 
 /** GET /variables/:name */
@@ -465,6 +534,10 @@ export async function getVariableHandler(
     return invalidRequest(res, params.error);
   }
 
+  if (isSystemVariable(params.data.name)) {
+    res.json({ variable: serializeSystemVariable(params.data.name) });
+    return;
+  }
   const row = await getVariable(params.data.name);
   if (!row) {
     log.warn({ variable: params.data.name }, "Variable not found");
@@ -507,6 +580,11 @@ export async function createVariableHandler(
   const { name, definition, fallback = null, sample, enabled } = parsed.data;
   if (rejectUnsupportedSource(res, definition.source)) return;
 
+  if (isSystemVariable(name)) {
+    log.warn({ variable: name }, "Variable create rejected — name is a system variable");
+    apiError(res, "conflict", `"${name}" is a system variable — choose another name`);
+    return;
+  }
   if (await getVariable(name)) {
     log.warn({ variable: name }, "Variable create rejected — name already exists");
     apiError(res, "conflict", `Variable "${name}" already exists`);
@@ -573,6 +651,7 @@ export async function updateVariableHandler(
   }
 
   const current = params.data.name;
+  if (rejectSystemVariable(res, current, "changed")) return;
   const existing = await getVariable(current);
   if (!existing) {
     log.warn({ variable: current }, "Variable update rejected — does not exist");
@@ -583,6 +662,10 @@ export async function updateVariableHandler(
   const { name, definition, fallback, sample, enabled } = parsed.data;
   // Also catches a change *into* an unsupported source, not just a create.
   if (definition !== undefined && rejectUnsupportedSource(res, definition.source)) return;
+  if (name !== undefined && name !== current && isSystemVariable(name)) {
+    apiError(res, "conflict", `"${name}" is a system variable — choose another name`);
+    return;
+  }
   if (name !== undefined && name !== current && (await getVariable(name))) {
     log.warn(
       { variable: current, rename_to: name },
@@ -924,6 +1007,7 @@ export async function deleteVariableHandler(
     return invalidRequest(res, params.error);
   }
 
+  if (rejectSystemVariable(res, params.data.name, "deleted")) return;
   const deleted = await deleteVariable(params.data.name);
   if (!deleted) {
     log.warn({ variable: params.data.name }, "Variable delete rejected — does not exist");

@@ -8,7 +8,7 @@
  */
 
 import express, { type Express } from "express";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import request from "supertest";
 import type { DispatcherDb } from "../../../db/client.js";
 import { listVariables } from "../../../db/repos/variables.js";
@@ -16,6 +16,16 @@ import { createTestDb, destroyTestDb } from "../../../db/test-utils.js";
 import { ATLAS_KEY_ENV } from "../atlas-key.js";
 import { registerApiV1Routes, resetApiRateLimitForTests } from "../router.js";
 import { HEADER_MASK } from "../validators/dataplane.validator.js";
+import Database from "better-sqlite3";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  parseDispatchConfig,
+  resetDispatchConfigForTests,
+  setDispatchConfigForTests,
+} from "../../../user-lookup/config.js";
+import { resetLookupAdapterForTests } from "../../../user-lookup/index.js";
 
 const KEY = "test-atlas-key-0123456789abcdefghijklmnop";
 const BASE = "/api/v1/data-plane/variables";
@@ -247,7 +257,7 @@ describe("pagination", () => {
   });
 
   it("cuts the requested page and reports where it sits", async () => {
-    const res = await api().get(`${BASE}?page=2&limit=3`).set(auth);
+    const res = await api().get(`${BASE}?system=false&page=2&limit=3`).set(auth);
 
     expect(res.status).toBe(200);
     expect(res.body.variables.map((v: { name: string }) => v.name)).toEqual(["v_04", "v_05", "v_06"]);
@@ -264,13 +274,13 @@ describe("pagination", () => {
   });
 
   it("reports the last page as having no next", async () => {
-    const res = await api().get(`${BASE}?page=3&limit=3`).set(auth);
+    const res = await api().get(`${BASE}?system=false&page=3&limit=3`).set(auth);
     expect(res.body.variables).toHaveLength(1);
     expect(res.body.meta).toMatchObject({ from: 7, to: 7, has_next_page: false, has_previous_page: true });
   });
 
   it("returns an empty page past the end rather than a 404", async () => {
-    const res = await api().get(`${BASE}?page=9&limit=3`).set(auth);
+    const res = await api().get(`${BASE}?system=false&page=9&limit=3`).set(auth);
     expect(res.status).toBe(200);
     expect(res.body.variables).toEqual([]);
     expect(res.body.meta).toMatchObject({
@@ -289,7 +299,7 @@ describe("pagination", () => {
       .set(auth)
       .send({ name: "keep_me", definition: { source: "field", field: "first_name" } });
 
-    const res = await api().get(`${BASE}?source=field&limit=2`).set(auth);
+    const res = await api().get(`${BASE}?system=false&source=field&limit=2`).set(auth);
     expect(res.body.meta).toMatchObject({ total: 1, total_pages: 1 });
     expect(res.body.variables).toHaveLength(1);
   });
@@ -338,17 +348,24 @@ describe("read, update, delete", () => {
       .send({ name: "season_label", definition: { source: "constant", value: "Winter Sale 2026" }, enabled: false });
   });
 
-  it("lists every variable on one default page", async () => {
+  it("lists every variable on one default page — the 4 system ones first", async () => {
     const res = await api().get(BASE).set(auth);
     expect(res.status).toBe(200);
-    expect(res.body.variables).toHaveLength(2);
+    expect(res.body.variables.map((v: { name: string }) => v.name)).toEqual([
+      "email",
+      "phone",
+      "unsubscribe_url",
+      "preferences_url",
+      "company_name",
+      "season_label",
+    ]);
     expect(res.body.meta).toEqual({
       page: 1,
       limit: 25,
-      total: 2,
+      total: 6,
       total_pages: 1,
       from: 1,
-      to: 2,
+      to: 6,
       has_previous_page: false,
       has_next_page: false,
     });
@@ -356,6 +373,8 @@ describe("read, update, delete", () => {
 
   it("filters by source, status and name", async () => {
     expect((await api().get(`${BASE}?source=constant`).set(auth)).body.meta.total).toBe(1);
+    expect((await api().get(`${BASE}?system=false`).set(auth)).body.meta.total).toBe(2);
+    expect((await api().get(`${BASE}?system=true`).set(auth)).body.meta.total).toBe(4);
     expect((await api().get(`${BASE}?enabled=false`).set(auth)).body.meta.total).toBe(1);
     expect((await api().get(`${BASE}?q=COMPANY`).set(auth)).body.meta.total).toBe(1);
   });
@@ -411,3 +430,133 @@ describe("read, update, delete", () => {
     expect((await api().delete(`${BASE}/season_label`).set(auth)).status).toBe(404);
   });
 });
+
+describe("system variables", () => {
+  it("are listed flagged, read-only in shape, and never stored", async () => {
+    const res = await api().get(`${BASE}?system=true`).set(auth);
+    const email = res.body.variables.find((v: { name: string }) => v.name === "email");
+    expect(email).toMatchObject({
+      name: "email",
+      source: "field",
+      definition: { source: "field", field: "email" },
+      enabled: true,
+      system: true,
+      created_at: null,
+      updated_at: null,
+      updated_by: "system",
+    });
+    expect(email.description).toEqual(expect.any(String));
+    expect(await listVariables()).toEqual([]);
+  });
+
+  it("flags user variables as not system", async () => {
+    await api().post(BASE).set(auth).send({ name: "promo", definition: { source: "constant", value: "x" } });
+    const res = await api().get(`${BASE}/promo`).set(auth);
+    expect(res.body.variable).toMatchObject({ system: false, description: null });
+  });
+
+  it("can be read one at a time", async () => {
+    const res = await api().get(`${BASE}/unsubscribe_url`).set(auth);
+    expect(res.status).toBe(200);
+    expect(res.body.variable).toMatchObject({ system: true, source: "computed" });
+  });
+
+  it.each([
+    ["changed", (n: string) => api().patch(`${BASE}/${n}`).set(auth).send({ fallback: "x" })],
+    ["disabled", (n: string) => api().patch(`${BASE}/${n}`).set(auth).send({ enabled: false })],
+    ["renamed", (n: string) => api().patch(`${BASE}/${n}`).set(auth).send({ name: "mail" })],
+    ["deleted", (n: string) => api().delete(`${BASE}/${n}`).set(auth)],
+  ])("cannot be %s — 403", async (_label, call) => {
+    const res = await call("email");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("forbidden");
+  });
+
+  it("reserve their names — create and rename-onto are 409", async () => {
+    const create = await api()
+      .post(BASE)
+      .set(auth)
+      .send({ name: "phone", definition: { source: "constant", value: "x" } });
+    expect(create.status).toBe(409);
+
+    await api().post(BASE).set(auth).send({ name: "promo", definition: { source: "constant", value: "x" } });
+    const rename = await api().patch(`${BASE}/promo`).set(auth).send({ name: "phone" });
+    expect(rename.status).toBe(409);
+  });
+});
+
+describe("GET /lookup/fields — what a field variable can point at", () => {
+  const FIELDS = "/api/v1/data-plane/lookup/fields";
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "lookup-fields-"));
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  function use(cfg: Parameters<typeof setDispatchConfigForTests>[0]): void {
+    setDispatchConfigForTests(cfg);
+    resetLookupAdapterForTests();
+  }
+  afterEach(() => {
+    resetDispatchConfigForTests();
+    resetLookupAdapterForTests();
+  });
+
+  it("database mode: the view's columns, minus the id and contact columns", async () => {
+    const file = join(dir, "customers.sqlite");
+    const db = new Database(file);
+    db.exec(
+      "CREATE TABLE people (external_id TEXT, email_address TEXT, mobile TEXT, first_name TEXT, city TEXT)"
+    );
+    db.close();
+    use(
+      parseDispatchConfig({
+        user_lookup: {
+          backend: "sqlite",
+          sqlite: { file },
+          source: { kind: "table", name: "people", id_column: "external_id", id_type: "string" },
+          fields: { email: "email_address", phone: "mobile" },
+        },
+        placeholders: {},
+      })
+    );
+
+    const res = await api().get(FIELDS).set(auth);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      mode: "database",
+      field_source_supported: true,
+      contact_fields: ["email", "phone"],
+      fields: ["first_name", "city"],
+    });
+  });
+
+  it("network mode: nothing to pick, and the field source is off", async () => {
+    use({
+      user_lookup: {
+        backend: "http",
+        fields: { email: "email" },
+        network: { url: "https://api.example.com/lookup", token: "t", timeout_ms: 1000, retries: 0 },
+      },
+      placeholders: {},
+    });
+
+    const res = await api().get(FIELDS).set(auth);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      mode: "network",
+      field_source_supported: false,
+      contact_fields: ["email", "phone"],
+      fields: [],
+    });
+
+    const create = await api()
+      .post(BASE)
+      .set(auth)
+      .send({ name: "city", definition: { source: "field", field: "city" } });
+    expect(create.status).toBe(400);
+    expect(create.body.details[0]).toMatchObject({ path: "definition.source" });
+  });
+});
+

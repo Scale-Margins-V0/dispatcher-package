@@ -3,7 +3,11 @@ import type { DispatcherDb } from "../db/client.js";
 import { createVariable, deleteVariable, listVariables, updateVariable } from "../db/repos/variables.js";
 import { createTestDb, destroyTestDb } from "../db/test-utils.js";
 import { personalize, renderPlaceholderPreview, validateComputedExpression } from "../personalize.js";
-import { getPlaceholderRegistry, resetDispatchConfigForTests } from "../user-lookup/config.js";
+import {
+  getPlaceholderRegistry,
+  resetDispatchConfigForTests,
+  setDispatchConfigForTests,
+} from "../user-lookup/config.js";
 import { importYamlPlaceholdersOnce } from "./import-yaml.js";
 import {
   ensurePlaceholdersFresh,
@@ -65,7 +69,14 @@ describe("placeholder snapshot", () => {
   it("getPlaceholderRegistry prefers the snapshot; personalize resolves DB variables", async () => {
     await createVariable({ name: "nickname", source: "field", field: "nickname", fallback: "friend" });
     await refreshPlaceholders();
-    expect(Object.keys(getPlaceholderRegistry())).toEqual(["nickname"]);
+    // Plus the system variables, which are always present (system.ts).
+    expect(Object.keys(getPlaceholderRegistry())).toEqual([
+      "nickname",
+      "email",
+      "phone",
+      "unsubscribe_url",
+      "preferences_url",
+    ]);
 
     const out = personalize("Hi {{nickname}}!", {
       user_id: "u1",
@@ -73,6 +84,23 @@ describe("placeholder snapshot", () => {
       fields: { nickname: "Viv" },
     });
     expect(out).toBe("Hi Viv!");
+  });
+
+  // Network mode has no columns, so a `field` variable is inactive there. It
+  // must still render — as its fallback, never as a raw {{token}}.
+  it("renders an inactive variable as its fallback", async () => {
+    setDispatchConfigForTests({
+      user_lookup: {
+        backend: "http",
+        fields: { email: "email" },
+        network: { url: "https://api.example.com/lookup", token: "t", timeout_ms: 1000, retries: 0 },
+      },
+      placeholders: {},
+    });
+    await createVariable({ name: "nickname", source: "field", field: "nickname", fallback: "friend" });
+    await refreshPlaceholders();
+    const out = personalize("Hi {{nickname}}!", { user_id: "u1", email: "a@x.com", fields: {} });
+    expect(out).toBe("Hi friend!");
   });
 
   it("ensurePlaceholdersFresh picks up edits after invalidation", async () => {

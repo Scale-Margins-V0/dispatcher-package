@@ -67,6 +67,19 @@ describe("mode: database", () => {
 });
 
 describe("mode: network", () => {
+  // Accepted here; dropped with a warning when the config is built
+  // (from-env-yaml.spec.ts) — a leftover key must not stop a boot.
+  it("accepts a personalization field in the map", () => {
+    expect(
+      userLookupSchema.safeParse({ ...network, fields: { email: "email", first_name: "first_name" } })
+        .success
+    ).toBe(true);
+  });
+
+  it("needs at least one contact field", () => {
+    expect(reason({ ...network, fields: {} })).toMatch(/at least one of email or phone/);
+  });
+
   it("accepts a token and defaults timeout and retries", () => {
     const cfg = userLookupSchema.parse(network);
     if (cfg.mode !== "network") throw new Error("narrowing");
