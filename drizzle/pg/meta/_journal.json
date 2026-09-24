@@ -71,6 +71,13 @@
       "when": 1787241231055,
       "tag": "0009_romantic_senator_kelly",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790234683843,
+      "tag": "0010_peaceful_lockjaw",
+      "breakpoints": true
     }
   ]
 }

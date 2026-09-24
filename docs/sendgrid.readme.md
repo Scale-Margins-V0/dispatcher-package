@@ -18,7 +18,7 @@ Code touchpoints: `src/providers/sendgrid.ts`, `src/events/adapters/sendgrid.ts`
 
 ## Environment variables
 
-Set these in `.env` (see also [`.env.example`](../.env.example)).
+These are environment variable names. Set them in `.env.yaml` — most have a typed key (for example `scalemargin.dispatch_secret`, `email.from`), and anything without one goes under the `env:` map. A real environment variable (Docker `environment:`, a Kubernetes Secret) also works, and always wins over the file. See [`.env.yaml.example`](../.env.yaml.example).
 
 | Variable | When | Purpose |
 |----------|------|---------|
@@ -28,7 +28,7 @@ Set these in `.env` (see also [`.env.example`](../.env.example)).
 | `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` | Inbound events enabled | Base64 **ECDSA public key** from SendGrid Event Webhook “Signature Verification” — must match the key shown for **that** webhook. |
 | `SCALEMARGIN_DISPATCH_SECRET` | Dispatch | Verifies `POST /api/scalemargin/dispatch`. |
 | `SCALEMARGIN_ANALYTICS_SECRET` | Analytics POSTs | Signs outbound analytics (same secret verifies dev CSV capture if used). |
-| `EVENTS_CONFIG_PATH` | Optional | Path to `events.yaml`; if missing, defaults apply (see `config/events.example.yaml`). |
+| `EVENTS_CONFIG_PATH` (`events.config_path`) | Optional | Path to `events.yaml`; if missing, defaults apply (see `config/events.example.yaml`). |
 | `EVENT_SENDGRID_INBOUND_EVENTS` | Optional | `default` \| `*` \| `all` \| comma list of SendGrid **wire** `event` names. Default minimal set **excludes** `open` / `click` unless you opt in. |
 | `EVENT_PREFERENCE_SIMULATION_LOG` | Optional | Set to `0` to disable `[Events][PreferenceSimulation]` console lines for `unsubscribed` / `complained`. |
 | `UNSUBSCRIBE_URL_BASE` | Mail templates | Dispatch host base. Derives `env.UNSUBSCRIBE_URL_BASE` → `${UNSUBSCRIBE_URL_BASE}/api/unsubscribe` and `env.PREFERENCES_URL_BASE` → `${UNSUBSCRIBE_URL_BASE}/api/preferences` in dispatch YAML placeholders. |
@@ -59,7 +59,7 @@ Local smoke test extras: `EVENT_TEST_PUBLIC_BASE_URL`, `EVENT_TEST_CSV_PATH`, `E
 - **Mail Settings → Event Webhook** (or **Messaging → Event Webhook**, depending on your SendGrid UI).
 - **HTTP POST URL** (public HTTPS), e.g.  
   `https://<your-tunnel>.ngrok-free.app/api/scalemargin/sendgrid-events`
-- Enable **Signed Event Webhook** and copy the **verification public key** into `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` in `.env` (base64 string).
+- Enable **Signed Event Webhook** and copy the **verification public key** into `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` under `env:` in `.env.yaml` (base64 string).
 - Select the **event types** you care about (e.g. **Delivered**, **Processed**, **Bounce**, **Open**, **Click**, **Unsubscribed**, **Group Unsubscribed**).  
   This app applies its **own** allowlist in addition — see [`event-pipeline-contract.md`](event-pipeline-contract.md).
 
@@ -121,7 +121,7 @@ Full step-by-step: [`event-dual-secret-local-test.md`](event-dual-secret-local-t
 
 - **Mail template:** `{{unsubscribe_url}}` is built from `dispatch.yaml` placeholders — recommended pattern in [`dispatch.example.yaml`](../config/dispatch.example.yaml) includes `uid`, `campaign_id`, and `organization_id` query parameters (no raw email in the URL).
 - **Public path:** `GET /api/unsubscribe` shows a reason survey; `POST /api/unsubscribe` records the unsubscribe (client-facing path **without** `/scalemargin/`).
-- **Reasons:** configure radio options via `UNSUBSCRIBE_REASONS` (see `.env.example`). The selected reason is sent as `metadata.reason` / `metadata.reason_id`.
+- **Reasons:** configure radio options via `links.unsubscribe_reasons` in `.env.yaml` (a YAML list). The selected reason is sent as `metadata.reason` / `metadata.reason_id`.
 - **Logo:** set `LOGO_URL` to show a company logo on unsubscribe and preferences pages.
 - **Double proxy:** Same ngrok host can serve SendGrid webhooks, analytics capture, and `/api/unsubscribe`; `dev:event-test` defaults `UNSUBSCRIBE_URL_BASE` and `UNSUBSCRIBE_LINK_ANALYTICS_URL` accordingly when `EVENT_TEST_PUBLIC_BASE_URL` is set.
 

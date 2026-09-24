@@ -14,8 +14,12 @@
  * These four are independent scalars, so taking `port` from the environment
  * while `atlas_key` comes from YAML is ordinary, not a half-migration.
  *
- * The environment variables are NOT deprecated. Every existing deployment sets
- * them and keeps working untouched; this only adds a second place to say it.
+ * A REAL environment variable always wins over the file. `config/hydrate.ts`
+ * has already copied these YAML values into process.env by the time anything
+ * calls in here, so reading the environment first is what makes the two paths
+ * agree — and it is what lets a Kubernetes Secret override a stale value in a
+ * mounted file. The YAML fallbacks below still matter for callers that run
+ * without hydration, notably the test suite.
  */
 
 import { loadEnvYaml } from "./env-yaml.js";
@@ -32,11 +36,11 @@ function block(): DispatcherSettings | undefined {
 
 /** The port to listen on. */
 export function dispatcherPort(): number {
-  const yamlPort = block()?.port;
-  if (yamlPort !== undefined) return yamlPort;
-
   const raw = process.env.PORT?.trim();
-  if (!raw) return DEFAULT_PORT;
+  if (!raw) {
+    const yamlPort = block()?.port;
+    return yamlPort !== undefined ? yamlPort : DEFAULT_PORT;
+  }
   const parsed = Number.parseInt(raw, 10);
   // An unparseable PORT used to become NaN and take the process down at listen
   // time with no explanation. Fall back instead.
@@ -48,11 +52,11 @@ export function dispatcherPort(): number {
  * their own fallbacks and must keep them.
  */
 export function dispatcherPublicUrl(): string | null {
-  const fromYaml = block()?.public_url?.trim();
-  if (fromYaml) return fromYaml.replace(/\/+$/, "");
-
   const fromEnv = process.env.DISPATCHER_PUBLIC_URL?.trim();
-  return fromEnv ? fromEnv.replace(/\/+$/, "") : null;
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+
+  const fromYaml = block()?.public_url?.trim();
+  return fromYaml ? fromYaml.replace(/\/+$/, "") : null;
 }
 
 /**
@@ -62,6 +66,20 @@ export function dispatcherPublicUrl(): string | null {
  * fails closed on null, and it must never fall open because a lookup went wrong.
  */
 export function resolveAtlasKey(): { value: string; source: SettingSource } | null {
+  // Hydration has already copied `atlas_key` here, so a value in the
+  // environment that differs from the file was injected by the platform and
+  // must win.
+  const fromEnvFirst = process.env.DISPATCHER_ATLAS_KEY?.trim();
+  if (fromEnvFirst) {
+    const cfgForSource = block();
+    const cameFromFile =
+      cfgForSource?.atlas_key?.trim() === fromEnvFirst ||
+      (cfgForSource?.atlas_key_env
+        ? process.env[cfgForSource.atlas_key_env]?.trim() === fromEnvFirst
+        : false);
+    return { value: fromEnvFirst, source: cameFromFile ? "env.yaml" : "env" };
+  }
+
   const cfg = block();
 
   const inline = cfg?.atlas_key?.trim();
@@ -96,6 +114,16 @@ export function danglingAtlasKeyRef(): string | null {
  * count — normalizing first would silently drop them.
  */
 export function resolveCorsOrigins(): { entries: string[]; source: SettingSource } | null {
+  const raw = process.env.DISPATCHER_ATLAS_CORS_ORIGINS?.trim();
+  if (raw) {
+    const fromFile = block()?.atlas_cors_origins;
+    const fileJoined = Array.isArray(fromFile) ? fromFile.join(",") : fromFile;
+    return {
+      entries: raw.split(",").map((e) => e.trim()).filter(Boolean),
+      source: fileJoined === raw ? "env.yaml" : "env",
+    };
+  }
+
   const configured = block()?.atlas_cors_origins;
   if (configured !== undefined) {
     const entries = Array.isArray(configured) ? configured : configured.split(",");
@@ -104,9 +132,9 @@ export function resolveCorsOrigins(): { entries: string[]; source: SettingSource
     return { entries: entries.map((e) => e.trim()).filter(Boolean), source: "env.yaml" };
   }
 
-  const raw = process.env.DISPATCHER_ATLAS_CORS_ORIGINS?.trim();
-  if (!raw) return null;
-  return { entries: raw.split(",").map((e) => e.trim()).filter(Boolean), source: "env" };
+  // Configured nowhere → no CORS headers at all, which is the safe posture
+  // for a credential that cannot be revoked without a restart.
+  return null;
 }
 
 /** What to call the setting in a message, given where it was actually read from. */

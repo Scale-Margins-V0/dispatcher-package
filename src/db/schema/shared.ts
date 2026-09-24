@@ -87,6 +87,28 @@ export type SendLogStatus = "sent" | "failed";
  *
  * `user_id` is the client's opaque id, never an address.
  */
+/**
+ * A provider message id, saved so the company running the dispatcher can look
+ * it up in their own database and poll the provider for status themselves.
+ *
+ * Deliberately NOT a status projection: the dispatcher records that it sent a
+ * message and what the provider called it. Whether that message was later
+ * delivered or read is the provider's answer to give, not ours to cache.
+ *
+ * Pruned on `DISPATCHER_MESSAGE_ID_TTL`, which is mandatory — see
+ * src/config/duration.ts.
+ */
+export type ProviderMessageIdRow = {
+  id: string;
+  /** `freshchat` | `gupshup` — only WhatsApp sends are recorded. */
+  provider: string;
+  /** What the provider called the message. Freshchat returns `request_id`. */
+  provider_message_id: string;
+  /** The recipient — the same user id ScaleMargin sent in the dispatch. */
+  user_id: string;
+  sent_at: Date;
+};
+
 export type SendLogRow = {
   id: string;
   /** The dispatch_runs row this send belonged to. */

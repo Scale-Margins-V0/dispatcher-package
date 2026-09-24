@@ -11,6 +11,29 @@ import type {
 } from "./providers/types.js";
 import { userLookupSchema } from "./user-lookup/schema.js";
 import { dispatcherSchema } from "./dispatcher-schema.js";
+import {
+  emailSchema,
+  eventsSchema,
+  linksSchema,
+  rawEnvSchema,
+  scalemarginSchema,
+  storageSchema,
+} from "./config/settings-schema.js";
+
+/**
+ * A top-level key that moved under `dispatcher:`.
+ *
+ * Declared rather than left unknown on purpose. This schema is a plain
+ * `z.object`, which silently STRIPS keys it does not recognise — so a file
+ * still using the old layout would lose `admin.auth_secret` (every session
+ * invalidated on the next redeploy) or `retention.message_id_ttl` without a
+ * word. Declaring the old name as "must be absent" turns that silent drop into
+ * a boot error naming exactly where the setting went.
+ */
+const movedTo = (destination: string) =>
+  z
+    .undefined({ message: `moved — write this block under \`${destination}\` instead` })
+    .optional();
 
 const log = componentLogger(LogComponent.config);
 
@@ -126,6 +149,33 @@ export const envYamlSchema = z.object({
   // Absent → port, public URL, Atlas key and CORS all come from the
   // environment exactly as before. See src/dispatcher-settings.ts.
   dispatcher: dispatcherSchema.optional(),
+
+  // Everything below replaces what used to live in `.env`. Each block is
+  // copied into process.env at boot by src/config/hydrate.ts, so the ~100
+  // existing `process.env.X` readers keep working unchanged. A real
+  // environment variable always wins over anything set here.
+  //
+  // System settings — the dispatcher's own database, admin auth, retention,
+  // logging, telemetry — live under `dispatcher:` above. What remains here is
+  // what the dispatcher DOES: platform credentials, sending, message links,
+  // events, image storage.
+  scalemargin: scalemarginSchema.optional(),
+  email: emailSchema.optional(),
+  links: linksSchema.optional(),
+  events: eventsSchema.optional(),
+  storage: storageSchema.optional(),
+
+  // Escape hatch for anything not modelled above — including the targets of
+  // `*_env:` references elsewhere in this file, which need to exist somewhere
+  // once there is no `.env`.
+  env: rawEnvSchema.optional(),
+
+  // The old top-level layout. See movedTo() above for why these are declared.
+  state_database: movedTo("dispatcher.database"),
+  admin: movedTo("dispatcher.admin"),
+  retention: movedTo("dispatcher.retention"),
+  logging: movedTo("dispatcher.logging"),
+  telemetry: movedTo("dispatcher.telemetry"),
 });
 
 export type EnvYaml = z.infer<typeof envYamlSchema>;
@@ -316,11 +366,12 @@ export function loadEnvYaml(): EnvYaml {
     // would silently ignore those blocks. Every optional top-level key added
     // to envYamlSchema must be carried through here for the same reason.
     if (validated.senders.length === 0) {
-      cachedEnvYaml = {
-        ...synthesizeBackCompatEnvYaml(),
-        user_lookup: validated.user_lookup,
-        dispatcher: validated.dispatcher,
-      };
+      // Spread `validated` LAST so every block it carries survives. Listing
+      // keys by hand is how `user_lookup` and `dispatcher` each got silently
+      // dropped once; `senders` is then restored from the synthesized
+      // configuration, since an empty list is the reason we are in here.
+      const backCompat = synthesizeBackCompatEnvYaml();
+      cachedEnvYaml = { ...backCompat, ...validated, senders: backCompat.senders };
       return cachedEnvYaml;
     }
 

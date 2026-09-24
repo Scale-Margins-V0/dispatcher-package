@@ -405,3 +405,24 @@ export const campaignSummary = mysqlTable(
     index("campaign_summary_last_event_idx").on(t.last_event_at),
   ]
 );
+
+// ---------------------------------------------------------------------------
+// Provider message ids. One row per accepted send, so the operator can look the
+// id up in their own database and poll the provider for status themselves.
+// Pruned by DISPATCHER_MESSAGE_ID_TTL (mandatory) in the hourly sweep.
+// ---------------------------------------------------------------------------
+export const providerMessageIds = mysqlTable(
+  "provider_message_ids",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    provider_message_id: id191("provider_message_id").notNull(),
+    user_id: id191("user_id").notNull(),
+    sent_at: ts("sent_at").notNull(),
+  },
+  (t) => [
+    index("provider_message_ids_sent_at_idx").on(t.sent_at),
+    index("provider_message_ids_lookup_idx").on(t.provider, t.provider_message_id),
+    index("provider_message_ids_user_idx").on(t.user_id),
+  ]
+);

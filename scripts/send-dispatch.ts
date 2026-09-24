@@ -15,9 +15,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadRepoDotEnv } from "../src/load-repo-dotenv.js";
+import { hydrateEnvFromYaml } from "../src/config/hydrate.js";
 
-loadRepoDotEnv(join(dirname(fileURLToPath(import.meta.url)), ".."));
+hydrateEnvFromYaml();
 
 const payloadPath = resolve(
   process.argv[2] ??

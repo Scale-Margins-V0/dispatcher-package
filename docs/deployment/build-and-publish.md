@@ -8,9 +8,10 @@ per-client registry-access apparatus, which used to be the most support-heavy
 part of onboarding. Two consequences to hold onto:
 
 - **Never bake a secret into the image.** Anyone can `docker pull` it and read
-  every layer. Config arrives at runtime through `.env` and mounted files, and
-  §2.1 keeps `.env` out of the build context — that is now a public-disclosure
-  control, not just hygiene.
+  every layer. Config arrives at runtime through the mounted `.env.yaml`, and
+  §2.1 keeps it out of the build context — that is now a public-disclosure
+  control, not just hygiene. `.env.yaml` carries every credential the client
+  has, so this matters more than it did when secrets were split across files.
 - **Version history is public.** Tags, sizes and push dates are visible to
   anyone. Nothing sensitive, but worth knowing before you push a tag named after
   a client.
@@ -48,7 +49,7 @@ part of onboarding. Two consequences to hold onto:
 | `.env.yaml`                    | Client-specific — where recipient data comes from, and which accounts send     | **Without it the dispatcher silently falls back to the MOCK user lookup** and resolves fabricated recipients. See §7 |
 | `config/dispatch.yaml`         | Deprecated predecessor of `.env.yaml`'s `user_lookup:` block                   | Still read if mounted, and warns at boot. Nothing to do for a new deployment                                        |
 | `config/events.yaml`           | Optional; built-in defaults apply                                              | Fine to omit                                                                                                         |
-| `.env`                         | Secrets belong to the deployment                                               | Container will not boot without the two required vars                                                                |
+| `.env.yaml`                    | Secrets belong to the deployment — this file holds all of them                 | Container will not boot without `scalemargin:` and `dispatcher.retention.message_id_ttl`                              |
 
 ---
 
@@ -58,8 +59,8 @@ part of onboarding. Two consequences to hold onto:
 
 Already in the repo — do not delete it. Without one, `docker build` uploads the
 entire working tree as build context: `node_modules/`, `.git/`, `data/*.db`, and
-**`.env`**. That is slow, and it puts real credentials into the build context
-and the layer cache.
+**`.env.yaml`** — plus any leftover `.env` from before the migration. That is
+slow, and it puts real credentials into the build context and the layer cache.
 
 It also excludes `admin/` and `admin-dist/`, since the image builds the server
 only. If you ever build a console-bearing image, you must remove `admin`

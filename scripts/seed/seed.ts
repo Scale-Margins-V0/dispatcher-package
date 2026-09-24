@@ -11,10 +11,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPool } from "mysql2/promise";
 import { Pool } from "pg";
-import { loadRepoDotEnv } from "../../src/load-repo-dotenv.js";
+import { hydrateEnvFromYaml } from "../../src/config/hydrate.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-loadRepoDotEnv(join(__dirname, "..", ".."));
+hydrateEnvFromYaml();
 
 type FixtureRow = {
   user_id: string;

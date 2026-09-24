@@ -50,36 +50,71 @@ pnpm run start
 
 ---
 
-## Environment variables
+## Configuration — `.env.yaml`
 
-1. **Copy the template** (never commit real secrets):
+There is no `.env` file. Every setting lives in **`.env.yaml`**, which the
+dispatcher reads at boot and copies into `process.env` (`src/config/hydrate.ts`),
+so every existing `process.env.X` reader keeps working.
+
+1. **Copy the template** (never commit real secrets — it is gitignored):
 
    ```bash
-   cp .env.example .env
+   cp .env.yaml.example .env.yaml
+   chmod 600 .env.yaml
    ```
 
-2. **Edit `.env`** with your values. The authoritative list of variables, grouped by feature, lives in [`.env.example`](../.env.example). Highlights:
+2. **Fill in the two blocks you cannot boot without:**
 
-| Area | Required (typical prod) | Notes |
-|------|---------------------------|--------|
-| Core | `SCALEMARGIN_DISPATCH_SECRET`, `SCALEMARGIN_ANALYTICS_SECRET` | HMAC for inbound dispatch vs outbound analytics. |
-| Server | `PORT`, `FROM_EMAIL`, `EMAIL_PROVIDER` | `EMAIL_PROVIDER` is `ses` or `sendgrid`. |
-| SendGrid mail | `SENDGRID_API_KEY` | When `EMAIL_PROVIDER=sendgrid`. |
-| SES mail | `AWS_REGION`, credentials or IAM role | When `EMAIL_PROVIDER=ses`. |
-| Event pipeline | See **Events** in `.env.example` | SendGrid inbound needs `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` when enabled in `config/events.yaml`. |
+   ```yaml
+   scalemargin:
+     dispatch_secret: "…"
+     analytics_secret: "…"
 
-3. **Local-only placeholders** — For quick local runs without Atlas secrets:
+   dispatcher:
+     retention:
+       message_id_ttl: "5d 2h"   # mandatory, no default — minimum 1h
+   ```
+
+   [`.env.yaml.example`](../.env.yaml.example) is the authoritative, commented
+   list of every block. Highlights:
+
+| Where in `.env.yaml` | What | Notes |
+|------|------|--------|
+| `scalemargin:` | `dispatch_secret`, `analytics_secret` | **Required.** HMAC for inbound dispatch vs outbound analytics |
+| `dispatcher:` | `port`, `public_url`, `atlas_key`, … | This service itself — see below |
+| `dispatcher.retention.message_id_ttl` | e.g. `"5d 2h"` | **Required**, no default |
+| `email:` | `provider`, `from` | Single-sender shorthand. `provider` is `ses` or `sendgrid` |
+| `senders:` | Several accounts | Weights and failover |
+| `env:` | Provider keys — `SENDGRID_API_KEY`, `AWS_ACCESS_KEY_ID`, … | Anything not modelled as a typed block |
+
+   Everything about how the dispatcher itself runs is nested under
+   `dispatcher:` — its database, admin auth, retention, logging, telemetry.
+   What it *does* (lookup, sending, links, events, storage) is top-level.
+
+3. **Local-only placeholders** — for quick runs without Atlas secrets:
 
    ```bash
    pnpm run dev:local
    ```
 
-   With `LOCAL_DEV=1`, missing `SCALEMARGIN_*` values get insecure defaults (see comments in `.env.example`). **Do not use in production.**
+   With `LOCAL_DEV=1`, missing `SCALEMARGIN_*` values get insecure defaults.
+   **Do not use in production.** `LOCAL_DEV` itself must be an environment
+   variable — it is deliberately not settable from `.env.yaml`.
 
-4. **Path overrides** (optional):
+4. **Overriding a single setting.** A real environment variable always wins
+   over the file, so this works without editing anything:
 
-   - `USER_LOOKUP_CONFIG_PATH` — defaults to `./config/dispatch.yaml` if that file exists (deprecated path; prefer `user_lookup:` in `.env.yaml`).
-   - `EVENTS_CONFIG_PATH` — defaults to `./config/events.yaml` if that file exists.
+   ```bash
+   DISPATCHER_LOG_LEVEL=debug pnpm dev
+   ```
+
+5. **Path overrides** (optional):
+
+   - `ENV_YAML_PATH` — where to find `.env.yaml`. Environment only; it cannot
+     point at itself.
+   - `events.config_path` — defaults to `./config/events.yaml`.
+   - `USER_LOOKUP_CONFIG_PATH` — defaults to `./config/dispatch.yaml`
+     (deprecated path; prefer `user_lookup:` in `.env.yaml`).
 
 ---
 
@@ -176,14 +211,16 @@ docker compose up --build          # dispatcher + MySQL 8
 docker compose --profile postgres up --build   # dispatcher + Postgres 16
 ```
 
-Set `DISPATCHER_ADMIN_USER` / `DISPATCHER_ADMIN_PASSWORD` in `.env` to enable the
-admin GUI at `http://localhost:3100/admin`.
+Set `dispatcher.admin.email` / `dispatcher.admin.password` in `.env.yaml` to
+control the first-boot admin account for the GUI at `http://localhost:3100/admin`.
+Unset, a random password is generated and written once to the logs and
+`data/initial-admin-credentials.txt`.
 
 ---
 
 ## Run the server (development)
 
-**Watch mode** (TypeScript directly via `tsx`). Loads repo-root **`.env`** into the process (same rules as the event-test scripts: last duplicate key in the file wins; non-empty shell exports are not overwritten).
+**Watch mode** (TypeScript directly via `tsx`). Loads **`.env.yaml`** into the process at boot (`src/config/hydrate.ts`) — the same loader the event-test scripts use. A non-empty shell export is never overwritten, so `DISPATCHER_LOG_LEVEL=debug pnpm dev` works without editing the file.
 
 ```bash
 pnpm run dev
@@ -415,7 +452,7 @@ SES equivalent (SNS → `/api/scalemargin/ses-notifications`, CSV capture):
 pnpm run dev:ses-event-test
 ```
 
-Gupshup WhatsApp (template send + `POST /api/scalemargin/gupshup-events`, CSV capture). Set `GUPSHUP_*` and `GUPSHUP_EVENT_TEST_*` env vars as in [`.env.example`](../.env.example):
+Gupshup WhatsApp (template send + `POST /api/scalemargin/gupshup-events`, CSV capture). Set `GUPSHUP_*` and `GUPSHUP_EVENT_TEST_*` under `env:` in `.env.yaml` (see [`.env.yaml.example`](../.env.yaml.example)):
 
 ```bash
 pnpm run dev:gupshup-event-test
@@ -452,7 +489,7 @@ See [`docs/testing.md`](../docs/testing.md) for paths and env vars.
 
 | Document | Topic |
 |----------|--------|
-| [`.env.example`](../.env.example) | All environment variables (commented). |
+| [`.env.yaml.example`](../.env.yaml.example) | Every setting, commented — the only configuration file. |
 | [`docs/swagger/atlas-api.yaml`](../docs/swagger/atlas-api.yaml) | **API reference for the Atlas integration** (OpenAPI) — endpoints, auth, response fields, error handling. |
 | [`docs/architecture.md`](../docs/architecture.md) | How the service works end to end: boot, dispatch lifecycle, channels, provider config, event pipeline. |
 | [`docs/user-lookup-contract.md`](../docs/user-lookup-contract.md) | Dispatch YAML and user lookup backends. |

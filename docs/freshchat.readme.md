@@ -64,7 +64,7 @@ senders:
 
 ## Environment variables
 
-Set these in `.env` (see also [`.env.example`](../.env.example)).
+These are environment variable names. Set them in `.env.yaml` — most have a typed key (for example `scalemargin.dispatch_secret`, `email.from`), and anything without one goes under the `env:` map. A real environment variable (Docker `environment:`, a Kubernetes Secret) also works, and always wins over the file. See [`.env.yaml.example`](../.env.yaml.example).
 
 | Variable | When | Purpose |
 |----------|------|---------|

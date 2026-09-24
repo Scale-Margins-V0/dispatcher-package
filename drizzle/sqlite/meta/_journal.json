@@ -71,6 +71,13 @@
       "when": 1787241224667,
       "tag": "0009_abandoned_otto_octavius",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790234683336,
+      "tag": "0010_pretty_santa_claus",
+      "breakpoints": true
     }
   ]
 }

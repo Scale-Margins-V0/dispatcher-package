@@ -23,6 +23,15 @@ export default defineConfig({
        * and time out against vitest's 5s default on a CI runner.
        */
       AWS_EC2_METADATA_DISABLED: "true",
+
+      /**
+       * DISPATCHER_MESSAGE_ID_TTL has no default — it is mandatory, and boot
+       * exits without it. Supplying it once here keeps that contract honest
+       * (nothing is skipped under test) while sparing every integration spec
+       * from setting it. A spec that cares about the parsing rules stubs its
+       * own value; see src/config/duration.spec.ts.
+       */
+      DISPATCHER_MESSAGE_ID_TTL: "30d",
     },
     projects: [
       {

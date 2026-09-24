@@ -65,7 +65,7 @@ export PROFILE_API_TOKEN=my-local-secret
 pnpm run dev:local
 ```
 
-If you use plain `pnpm run dev`, set real secrets (or copy `.env.example` to `.env` and fill `SCALEMARGIN_*`).
+If you use plain `pnpm run dev`, set real secrets (or `cp .env.yaml.example .env.yaml` and fill `scalemargin:` and `dispatcher.retention.message_id_ttl`).
 
 Each profile row includes both top-level `email` and nested `contact.primaryEmail` (same value) so you can point `user_lookup.fields.email` at either path in YAML.
 

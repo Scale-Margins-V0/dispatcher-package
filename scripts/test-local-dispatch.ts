@@ -16,10 +16,10 @@ import http from "node:http";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadRepoDotEnv } from "../src/load-repo-dotenv.js";
+import { hydrateEnvFromYaml } from "../src/config/hydrate.js";
 
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-loadRepoDotEnv(rootDir);
+hydrateEnvFromYaml();
 
 const DISPATCHER_PORT = process.env.PORT || "3100";
 const DISPATCHER_URL = `http://127.0.0.1:${DISPATCHER_PORT}`;

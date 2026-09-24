@@ -38,3 +38,6 @@ coverage/
 Thumbs.db
 *.swp
 *~
+
+# Local dummy servers for manual testing (e.g. network-mode lookup). Not shipped.
+dummy/

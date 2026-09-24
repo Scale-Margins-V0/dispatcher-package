@@ -26,6 +26,7 @@ import { lookupUsers } from "../user-lookup.js";
 import { resolveDynamicValues } from "../variables/resolver.js";
 import { programOf } from "../db/repos/dispatch-programs.js";
 import { SendLogRecorder } from "./send-log-recorder.js";
+import { MessageIdRecorder } from "./message-id-recorder.js";
 import { deriveTemplateRef } from "./template-ref.js";
 import type { DispatchPayload } from "./types.js";
 import { scrubPii } from "../events/scrubber.js";
@@ -73,6 +74,11 @@ export async function processWhatsAppDispatch(
   const devRecipient = resolveDevTestRecipient() || resolveFreshchatDevTestRecipient();
 
   const program = programOf(payload);
+  // Provider message ids, for the operator to query out of the state database
+  // and poll the provider with. Independent of the send log: that table is
+  // pruned on its own window, this one on DISPATCHER_MESSAGE_ID_TTL.
+  const messageIds = new MessageIdRecorder();
+
   const sendLogs = new SendLogRecorder({
     dispatch_run_id: dispatchRunId,
     campaign_id,
@@ -313,6 +319,9 @@ export async function processWhatsAppDispatch(
           }),
       fallbacks_used: result.attempts.length > 1 ? result.attempts.length - 1 : 0,
     });
+    if (result.success) {
+      messageIds.add(result.finalSender.config.provider, result.messageId, userId);
+    }
     sendResults.push({
       userId,
       success: result.success,
@@ -338,6 +347,7 @@ export async function processWhatsAppDispatch(
   }
 
   sendLogs.flush();
+  messageIds.flush();
 
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;

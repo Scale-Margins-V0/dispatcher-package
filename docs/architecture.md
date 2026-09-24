@@ -34,8 +34,12 @@ Two HMAC secrets, deliberately separate:
 
 Order matters; every step is fail-fast except the last:
 
-1. `loadRepoDotEnv()` — loads repo-root `.env` unless `VITEST=true`.
-   Last duplicate key wins; a non-empty shell export is **not** overwritten.
+1. `hydrateEnvFromYaml()` (`src/config/hydrate.ts`) — copies `.env.yaml` into
+   `process.env` unless `VITEST=true`. There is no `.env` file. A real
+   environment variable is **never** overwritten, so a Kubernetes-injected
+   secret beats a stale value in a mounted file. Precedence: real env → typed
+   block → the `env:` passthrough map. The YAML→env mapping is one table,
+   `src/config/bindings.ts`, so the ~100 `process.env.X` readers are unchanged.
 2. `LOCAL_DEV=1` → insecure placeholder `SCALEMARGIN_*` secrets (never prod).
 3. Required env check → `SCALEMARGIN_DISPATCH_SECRET`,
    `SCALEMARGIN_ANALYTICS_SECRET`. Missing → `process.exit(1)`.
@@ -308,8 +312,9 @@ export function getProvider() {
   (`src/providers/types.ts`). `sendBulk` is a sequential loop in both
   implementations and is not used by the dispatch path.
 - `SESProvider` builds a `SendEmailCommand` and warns if `AWS_ACCESS_KEY_ID`
-  doesn't look like a real key (a leftover `~/.zshrc` export shadowing `.env`
-  is the usual cause of `InvalidClientTokenId`).
+  doesn't look like a real key (a leftover `~/.zshrc` export shadowing
+  `.env.yaml` — real env always wins — is the usual cause of
+  `InvalidClientTokenId`).
 - `SendGridProvider` calls `sgMail.setApiKey()` on the **module-level shared
   `MailService` singleton** exported by `@sendgrid/mail` — see the hazard note
   in the multi-sender doc.
@@ -473,28 +478,35 @@ this service carries recipient addresses, IPs, or message content — only opaqu
 ## 10. Where each knob lives
 
 ```
-.env                      secrets, provider selection, hosts, feature flags   (client-defined)
-.env.yaml                 user lookup + email senders + deployment config      (client-defined)
+.env.yaml                 EVERYTHING the client configures — the only file   (client-defined)
+  ├ dispatcher:           this service: port, URL, keys, its DB, admin, retention, logging, telemetry
+  ├ scalemargin:          platform secrets
+  ├ user_lookup:          where recipient data comes from
+  ├ email/routing/senders how it sends
+  ├ links/events/storage  message links, event pipeline, image storage
+  └ env:                  passthrough for anything unmodelled (provider keys)
 config/dispatch.yaml      DEPRECATED — user lookup, superseded by .env.yaml's user_lookup:
 config/events.yaml        event forwarding mode, buffer, inbound provider flags
 state DB                  variables (live-editable), observability settings, API keys, accounts
 ```
 
-Rule of thumb: **client-owned config at the repo root (`.env`, `.env.yaml`),
-app-shipped shape under `config/`, operator-editable content in the state DB.**
+Rule of thumb: **client-owned config in one file at the repo root
+(`.env.yaml`), app-shipped shape under `config/`, operator-editable content in
+the state DB.** Within `.env.yaml`, how the dispatcher *runs* is nested under
+`dispatcher:`; what it *does* is top-level.
 
 `config/*.yaml` never contains a secret — it names the env var that holds it
 (`signing_key_env`, `token_env`). `.env.yaml` is the one exception: it is
-gitignored and secret-bearing like `.env`, so it accepts inline credentials as
-well as `*_env` references.
+gitignored and secret-bearing, so it accepts inline credentials as well as
+`*_env` references.
 
 Path resolution differs, and it matters when the working directory isn't the
 repo root:
 
 | File | Resolved from |
 | --- | --- |
-| `.env`, `.env.yaml` | the **module** root — `src/..` in dev, `dist/..` (`/app`) in Docker |
-| `config/dispatch.yaml`, `config/events.yaml` | `process.cwd()`, overridable via `USER_LOOKUP_CONFIG_PATH` / `EVENTS_CONFIG_PATH` |
+| `.env.yaml` | `ENV_YAML_PATH` if set, else the **module** root — `src/..` in dev, `dist/..` (`/app`) in Docker |
+| `config/dispatch.yaml`, `config/events.yaml` | `process.cwd()`, overridable via `USER_LOOKUP_CONFIG_PATH` / `events.config_path` |
 
 `.env.yaml` is the sender-configuration file introduced by
 [`multi-sender-design.md`](./multi-sender-design.md) — see §3 there for the

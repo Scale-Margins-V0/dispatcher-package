@@ -46,7 +46,7 @@ import {
 } from "./db/repos/dispatch-programs.js";
 import { refreshCampaignSummarySafe } from "./db/repos/campaign-summary.js";
 import { initializeEventPipeline } from "./events/index.js";
-import { loadRepoDotEnv } from "./load-repo-dotenv.js";
+import { hydrateEnvFromYaml } from "./config/hydrate.js";
 import { LogComponent } from "./logging/conventions.js";
 import { bindCampaignId } from "./logging/context.js";
 import { componentLogger } from "./logging/logger.js";
@@ -54,8 +54,12 @@ import { requestIdMiddleware } from "./middleware/request-id.js";
 import { registerInboundWebhookRoutes } from "./routes/inbound-webhooks.js";
 import { startServer } from "./server-start.js";
 
+// Copy `.env.yaml` settings into process.env BEFORE any module reads them.
+// There is no `.env` file any more; this is the only hydration step. Real
+// environment variables — Docker `environment:`, a Kubernetes Secret, a shell
+// export — are never overwritten. See src/config/hydrate.ts.
 if (process.env.VITEST !== "true") {
-  loadRepoDotEnv(join(dirname(fileURLToPath(import.meta.url)), ".."));
+  hydrateEnvFromYaml();
 }
 import { createEventTestCsvCaptureHandler } from "./devtools/event-test-csv-capture.js";
 import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
@@ -76,6 +80,8 @@ import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 import { ensureEnvYamlValid } from "./env-yaml.js";
 import { resolveSenderPin } from "./providers/senders.js";
 import { dispatcherPort } from "./dispatcher-settings.js";
+import { assertMessageIdTtlConfigured } from "./config/message-id-ttl.js";
+import { formatDuration } from "./config/duration.js";
 
 // ---------------------------------------------------------------------------
 // Startup validation — fail fast on missing config
@@ -115,8 +121,31 @@ if (missing.length > 0) {
   // log sink batches — a logger call would never reach the database before the
   // process is gone. Everything that does not exit uses componentLogger.
   console.error(`[FATAL] Missing required env vars: ${missing.join(", ")}`);
-  console.error("See .env.example for all required variables.");
+  console.error("See .env.yaml.example for every setting.");
   process.exit(1);
+}
+
+// Provider message-id retention. Mandatory and defaultless on purpose — see
+// src/config/message-id-ttl.ts. Validated HERE, at boot, because the retention
+// sweep swallows its errors: a bad value discovered there would mean ids were
+// silently never pruned.
+let messageIdTtl: number;
+try {
+  messageIdTtl = assertMessageIdTtlConfigured();
+} catch (error) {
+  telemetry.capture("dispatcher_startup_config_failed", {
+    component: "message_id_ttl",
+  });
+  console.error(
+    `[FATAL] ${error instanceof Error ? error.message : String(error)}`
+  );
+  process.exit(1);
+}
+if (process.env.VITEST !== "true") {
+  componentLogger(LogComponent.config).info(
+    { message_id_ttl: formatDuration(messageIdTtl) },
+    `Provider message ids are kept for ${formatDuration(messageIdTtl)}, then pruned hourly`
+  );
 }
 
 try {

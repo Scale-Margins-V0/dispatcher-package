@@ -30,7 +30,7 @@
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadRepoDotEnv } from "../src/load-repo-dotenv.js";
+import { hydrateEnvFromYaml } from "../src/config/hydrate.js";
 import {
   normalizePlainCaption,
   normalizePlainMediaUrl,
@@ -44,7 +44,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..");
-loadRepoDotEnv(repoRoot);
+hydrateEnvFromYaml();
 
 /** Parse `--key=value` / `--flag` CLI args into a map. */
 function parseArgs(argv: string[]): Record<string, string | boolean> {

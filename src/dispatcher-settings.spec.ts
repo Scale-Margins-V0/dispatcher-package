@@ -100,10 +100,22 @@ describe("atlas_key", () => {
     expect(resolveAtlasKey()).toEqual({ value: "from-env", source: "env" });
   });
 
-  it("prefers yaml over the environment", () => {
+  // A real environment variable beats the file. By the time anything calls in
+  // here, hydration has already copied the file's value into process.env — so
+  // an environment value that DIFFERS from the file was injected by the
+  // platform, and overriding a rotated Kubernetes Secret with a stale mounted
+  // file is precisely the failure this ordering prevents.
+  it("prefers the environment over yaml, and says the value came from the environment", () => {
     vi.stubEnv("DISPATCHER_ATLAS_KEY", "from-env");
     useBlock({ atlas_key: "from-yaml" });
-    expect(resolveAtlasKey()).toEqual({ value: "from-yaml", source: "env.yaml" });
+    expect(resolveAtlasKey()).toEqual({ value: "from-env", source: "env" });
+  });
+
+  // Same value in both places means hydration put it there, not an operator.
+  it("attributes the value to the file when the environment merely echoes it", () => {
+    vi.stubEnv("DISPATCHER_ATLAS_KEY", "same-value");
+    useBlock({ atlas_key: "same-value" });
+    expect(resolveAtlasKey()).toEqual({ value: "same-value", source: "env.yaml" });
   });
 
   // The whole data-plane fails closed on null. It must never fall open.
