@@ -4,21 +4,23 @@ import { flushMetrics } from "./metrics/collector.js";
 import { flushLogSink } from "./logging/db-sink.js";
 import { componentLogger } from "./logging/logger.js";
 import { LogComponent, errorFields } from "./logging/conventions.js";
+import { primarySender } from "./providers/senders.js";
 import { telemetry } from "./telemetry/posthog.js";
 
 const log = componentLogger(LogComponent.server);
 
 export function startServer(app: Express, port: number): void {
   const server = app.listen(port, () => {
+    const emailProvider = primarySender("email")?.config.provider ?? "none";
     telemetry.capture("dispatcher_started", {
       port,
-      email_provider: process.env.EMAIL_PROVIDER || "ses",
+      email_provider: emailProvider,
       telemetry_enabled: telemetry.isEnabled(),
     });
     log.info(
       {
         port,
-        provider: process.env.EMAIL_PROVIDER || "ses",
+        provider: emailProvider,
         node_env: process.env.NODE_ENV ?? "development",
         telemetry_enabled: telemetry.isEnabled(),
       },

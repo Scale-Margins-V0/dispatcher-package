@@ -71,15 +71,6 @@ export const adminSchema = z
   })
   .strict();
 
-// ── Single-sender shorthand, for deployments with no `senders:` block ────────
-export const emailSchema = z
-  .object({
-    provider: z.enum(["ses", "sendgrid"]).optional(),
-    from: z.string().min(1).optional(),
-    reply_to: z.string().min(1).optional(),
-  })
-  .strict();
-
 // ── Links embedded in messages ───────────────────────────────────────────────
 export const linksSchema = z
   .object({
@@ -185,7 +176,6 @@ export const rawEnvSchema = z.record(
 export type ScaleMarginSettings = z.infer<typeof scalemarginSchema>;
 export type StateDatabaseSettings = z.infer<typeof stateDatabaseSchema>;
 export type AdminSettings = z.infer<typeof adminSchema>;
-export type EmailSettings = z.infer<typeof emailSchema>;
 export type LinksSettings = z.infer<typeof linksSchema>;
 export type EventsSettings = z.infer<typeof eventsSchema>;
 export type StorageSettings = z.infer<typeof storageSchema>;

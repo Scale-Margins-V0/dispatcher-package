@@ -5,7 +5,7 @@ import { getTelemetryStatus } from "../telemetry/posthog.js";
 import { getDispatchConfig, getIdType, configPathFromEnv } from "../user-lookup/config.js";
 import { lookupUsers } from "../user-lookup/index.js";
 import { envYamlPath, loadEnvYaml } from "../env-yaml.js";
-import { registry } from "../providers/senders.js";
+import { primarySender, registry } from "../providers/senders.js";
 import { lookupMode } from "../variables/guard.js";
 
 type StatusValue = "ok" | "degraded" | "error";
@@ -362,7 +362,7 @@ export async function buildDiagnosticsReport(
   const dispatchConfigPath = configPathFromEnv();
   const dispatchConfig = getDispatchConfig();
   const eventsConfig = loadEventsConfig();
-  const emailProvider = process.env.EMAIL_PROVIDER || "ses";
+  const emailProvider = primarySender("email")?.config.provider ?? "none";
   const providerEnv = PROVIDER_ENV[emailProvider] ?? [];
   const shouldRunUserLookup =
     request.checks?.includes("user_lookup") ||

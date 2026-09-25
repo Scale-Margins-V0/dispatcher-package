@@ -23,24 +23,26 @@ export function inviteAcceptUrl(invitationId: string): string {
 
 export async function sendInvitationEmail(data: InvitationEmailData): Promise<void> {
   const url = inviteAcceptUrl(data.invitation.id);
-  const emailProvider = process.env.EMAIL_PROVIDER?.trim();
-  if (!emailProvider) {
+  // The deployment's primary email sender — the same account and From address
+  // campaigns use, never a separate hard-coded one.
+  // Imported lazily, as before: auth initializes before the sender registry.
+  const { primarySender } = await import("../providers/senders.js");
+  const sender = primarySender("email");
+  if (!sender) {
     // No email configured — the link is surfaced in the GUI instead.
-    log.info(`Invitation created for ${data.email} (no email provider; share the link from the console)`);
+    log.info(`Invitation created for ${data.email} (no email sender; share the link from the console)`);
     return;
   }
   try {
-    const { getProvider } = await import("../providers/index.js");
-    const from = process.env.FROM_EMAIL || "noreply@example.com";
     const orgName = data.organization?.name || "ScaleMargin Dispatcher";
     const inviter = data.inviter?.user?.name || data.inviter?.user?.email || "An administrator";
     const html =
       `<p>${escapeHtml(inviter)} invited you to the <strong>${escapeHtml(orgName)}</strong> operations console.</p>` +
       `<p><a href="${url}">Accept the invitation and set up your account</a></p>` +
       `<p>Or paste this link into your browser:<br>${escapeHtml(url)}</p>`;
-    const result = await getProvider().send({
+    const result = await sender.provider.send({
       to: data.email,
-      from,
+      from: sender.config.from ?? "",
       subject: `You're invited to ${orgName}`,
       html,
     });

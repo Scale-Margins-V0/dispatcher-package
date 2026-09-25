@@ -21,13 +21,6 @@ const { sendMock } = vi.hoisted(() => ({
   sendMock: vi.fn().mockResolvedValue({ success: true, messageId: "m1" }),
 }));
 
-vi.mock("./providers/index.js", () => ({
-  getProvider: () => ({
-    name: "mock",
-    send: sendMock,
-  }),
-}));
-
 vi.mock("./providers/senders.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./providers/senders.js")>();
   return {

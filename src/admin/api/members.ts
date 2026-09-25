@@ -9,6 +9,7 @@ import express, { type Express, type Request, type Response } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import { getAuth } from "../../auth/index.js";
 import { inviteAcceptUrl } from "../../auth/invitations.js";
+import { primarySender } from "../../providers/senders.js";
 import { asyncHandler } from "./variables.js";
 
 function headers(req: Request) {
@@ -162,7 +163,7 @@ export const registerMemberRoutes = (app: Express): void => {
       res.status(201).json({
         invitation,
         accept_url: inviteAcceptUrl(invitation.id),
-        emailed: Boolean(process.env.EMAIL_PROVIDER),
+        emailed: Boolean(primarySender("email")),
       });
     })
   );

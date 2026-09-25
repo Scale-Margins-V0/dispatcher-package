@@ -12,7 +12,6 @@ import type {
 import { userLookupSchema } from "./user-lookup/schema.js";
 import { dispatcherSchema } from "./dispatcher-schema.js";
 import {
-  emailSchema,
   eventsSchema,
   linksSchema,
   rawEnvSchema,
@@ -34,6 +33,21 @@ const movedTo = (destination: string) =>
   z
     .undefined({ message: `moved — write this block under \`${destination}\` instead` })
     .optional();
+
+/**
+ * The `email:` single-sender shorthand, removed. Declared for the same reason
+ * as movedTo(): stripped silently, a file relying on it would boot with no
+ * email sender (or the wrong From address) and say nothing. This names the
+ * replacement instead.
+ */
+const REMOVED_EMAIL_BLOCK =
+  "removed — declare the account under `senders:` instead, e.g.\n" +
+  "  senders:\n" +
+  "    - id: primary-email\n" +
+  "      channel: email\n" +
+  "      provider: sendgrid        # or ses\n" +
+  "      from: campaigns@your-company.com\n" +
+  "      sendgrid: { api_key_env: SENDGRID_API_KEY }";
 
 const log = componentLogger(LogComponent.config);
 
@@ -160,7 +174,6 @@ export const envYamlSchema = z.object({
   // what the dispatcher DOES: platform credentials, sending, message links,
   // events, image storage.
   scalemargin: scalemarginSchema.optional(),
-  email: emailSchema.optional(),
   links: linksSchema.optional(),
   events: eventsSchema.optional(),
   storage: storageSchema.optional(),
@@ -176,6 +189,7 @@ export const envYamlSchema = z.object({
   retention: movedTo("dispatcher.retention"),
   logging: movedTo("dispatcher.logging"),
   telemetry: movedTo("dispatcher.telemetry"),
+  email: z.undefined({ message: REMOVED_EMAIL_BLOCK }).optional(),
 });
 
 export type EnvYaml = z.infer<typeof envYamlSchema>;
@@ -444,6 +458,14 @@ export function ensureEnvYamlValid(): void {
     // 4. Validate credentials presence for enabled senders
     if (sender.enabled === false) {
       continue;
+    }
+
+    // An email sender is its From address — there is no global fallback, so
+    // one without it could only send as nobody.
+    if (sender.channel === "email" && !sender.from?.includes("@")) {
+      throw new Error(
+        `[env.yaml] Email sender '${sender.id}' needs a \`from:\` address, verified with ${sender.provider}`
+      );
     }
 
     if (sender.provider === "ses" && sender.ses) {

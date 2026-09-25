@@ -13,8 +13,8 @@
  *
  * ENV VARS:
  *   PORT                          - Server port (default: 3100)
- *   EMAIL_PROVIDER                - "ses" or "sendgrid"
- *   FROM_EMAIL                    - Sender email address
+ *   Sending accounts are `senders:` in .env.yaml (see .env.yaml.example). With
+ *   no `senders:`, EMAIL_PROVIDER / FROM_EMAIL build one legacy sender.
  *   SCALEMARGIN_DISPATCH_SECRET   - HMAC secret for verifying inbound dispatches
  *   SCALEMARGIN_ANALYTICS_SECRET  - HMAC secret for signing outbound analytics
  *
@@ -78,7 +78,12 @@ import { telemetry } from "./telemetry/posthog.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 import { ensureEnvYamlValid } from "./env-yaml.js";
-import { resolveSenderPin } from "./providers/senders.js";
+import {
+  dispatchProviderLabel,
+  emailSenderWarnings,
+  primarySender,
+  resolveSenderPin,
+} from "./providers/senders.js";
 import { dispatcherPort } from "./dispatcher-settings.js";
 import { assertMessageIdTtlConfigured } from "./config/message-id-ttl.js";
 import { formatDuration } from "./config/duration.js";
@@ -191,9 +196,6 @@ app.disable("x-powered-by");
 app.set("trust proxy", 1);
 app.use(requestIdMiddleware);
 const PORT = dispatcherPort();
-/** Placeholder sender. No provider can verify it — example.com is IANA-reserved. */
-const DEFAULT_FROM_EMAIL = "noreply@example.com";
-const FROM_EMAIL = process.env.FROM_EMAIL || DEFAULT_FROM_EMAIL;
 
 registerAdminRoutes(app);
 registerLogsApiRoutes(app);
@@ -206,12 +208,8 @@ registerApiV1Routes(app);
 // console.warn it only ever appeared in the terminal that started the process —
 // which is how a dispatcher can sit for weeks sending from an unverifiable
 // address while every send fails with an unexplained provider rejection.
-if (FROM_EMAIL === DEFAULT_FROM_EMAIL && process.env.VITEST !== "true") {
-  componentLogger("server").warn(
-    `FROM_EMAIL is not set — sending as ${DEFAULT_FROM_EMAIL}. ` +
-      "That address cannot be verified with any provider (example.com is reserved), " +
-      "so every send will be rejected. Set FROM_EMAIL to a verified sender.",
-  );
+if (process.env.VITEST !== "true") {
+  for (const warning of emailSenderWarnings()) componentLogger("server").warn(warning);
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +251,7 @@ app.post("/api/preferences", createPreferencesPostHandler());
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
-    provider: process.env.EMAIL_PROVIDER || "ses",
+    provider: primarySender("email")?.config.provider ?? "none",
     image_storage: process.env.IMAGE_STORAGE_PROVIDER || "none",
     event_test_csv_capture: Boolean(process.env.EVENT_TEST_CSV_PATH),
   });
@@ -414,17 +412,18 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
       : 0,
     has_images: Boolean(payload.images?.length),
   });
+  // One label for the run's three activity rows (accepted/completed/failed).
+  const providerLabel = dispatchProviderLabel(
+    String(payload.channel ?? "email"),
+    payload.metadata?.sender_id
+  );
   recordDispatchActivity({
     id: activityId,
     campaign_id: String(payload.campaign_id ?? "unknown"),
     ...programOf(payload),
     organization_id: payload.metadata?.organization_id,
     channel: String(payload.channel ?? "unknown"),
-    provider:
-      payload.metadata?.sender_id ||
-      (payload.channel === "whatsapp"
-        ? (process.env.WHATSAPP_PROVIDER || "whatsapp")
-        : (process.env.EMAIL_PROVIDER || "ses")),
+    provider: providerLabel,
     status: "accepted",
     recipient_count: Array.isArray(payload.user_ids)
       ? payload.user_ids.length
@@ -439,7 +438,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   });
 
   // Process asynchronously
-  processDispatch(payload, FROM_EMAIL, activityId)
+  processDispatch(payload, activityId)
     .then((result) => {
       recordDispatchActivity({
         id: activityId,
@@ -447,11 +446,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
         ...programOf(payload),
         organization_id: payload.metadata?.organization_id,
         channel: String(payload.channel ?? "unknown"),
-        provider:
-          payload.metadata?.sender_id ||
-          (payload.channel === "whatsapp"
-            ? (process.env.WHATSAPP_PROVIDER || "whatsapp")
-            : (process.env.EMAIL_PROVIDER || "ses")),
+        provider: providerLabel,
         status: "completed",
         recipient_count: Array.isArray(payload.user_ids)
           ? payload.user_ids.length
@@ -472,11 +467,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
         ...programOf(payload),
         organization_id: payload.metadata?.organization_id,
         channel: String(payload.channel ?? "unknown"),
-        provider:
-          payload.metadata?.sender_id ||
-          (payload.channel === "whatsapp"
-            ? (process.env.WHATSAPP_PROVIDER || "whatsapp")
-            : (process.env.EMAIL_PROVIDER || "ses")),
+        provider: providerLabel,
         status: "failed",
         recipient_count: Array.isArray(payload.user_ids)
           ? payload.user_ids.length

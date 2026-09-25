@@ -87,7 +87,7 @@ beforeEach(() => {
 describe("every line is tagged and structured", () => {
   it("tags dispatch lines with a component and machine-readable fields", async () => {
     configureLookup();
-    await processDispatch(payload(["u1", "u2"]), "sender@example.com", "run_1");
+    await processDispatch(payload(["u1", "u2"]), "run_1");
 
     const [completed] = findCapturedLogs((e) => e.msg.startsWith("Dispatch completed"));
     expect(completed).toBeDefined();
@@ -103,7 +103,7 @@ describe("every line is tagged and structured", () => {
 
   it("stamps campaign_id on dispatch lines without the call site passing it", async () => {
     configureLookup();
-    await processDispatch(payload(["u1"]), "sender@example.com", "run_2");
+    await processDispatch(payload(["u1"]), "run_2");
 
     const started = findCapturedLogs((e) => e.msg === "Dispatch started");
     expect(started.length).toBeGreaterThan(0);
@@ -113,7 +113,7 @@ describe("every line is tagged and structured", () => {
 
   it("leaves no component null on a dispatch path", async () => {
     configureLookup();
-    await processDispatch(payload(["u1"]), "sender@example.com", "run_3");
+    await processDispatch(payload(["u1"]), "run_3");
 
     const untagged = readCapturedLogs().filter((e) => e.component === null);
     expect(untagged.map((e) => e.msg)).toEqual([]);
@@ -128,7 +128,7 @@ describe("hot paths stay quiet at info", () => {
   it("does not emit an info line per recipient", async () => {
     configureLookup();
     const recipients = Array.from({ length: 25 }, (_, i) => `u${i}`);
-    await processDispatch(payload(recipients), "sender@example.com", "run_4");
+    await processDispatch(payload(recipients), "run_4");
 
     const infoLines = readCapturedLogs().filter(
       (e) => e.level === "info" && e.component?.startsWith("dispatch")
@@ -139,7 +139,7 @@ describe("hot paths stay quiet at info", () => {
 
   it("records per-recipient detail at debug instead", async () => {
     configureLookup();
-    await processDispatch(payload(["u1", "u2", "u3"]), "sender@example.com", "run_5");
+    await processDispatch(payload(["u1", "u2", "u3"]), "run_5");
 
     const perSend = findCapturedLogs((e) => e.msg === "Send event emitted");
     expect(perSend.length).toBeGreaterThan(0);
@@ -150,7 +150,7 @@ describe("hot paths stay quiet at info", () => {
 describe("no customer data reaches the log", () => {
   it("never writes a recipient address, even though the send path holds one", async () => {
     configureLookup();
-    await processDispatch(payload(["u1", "u2"]), "sender@example.com", "run_6");
+    await processDispatch(payload(["u1", "u2"]), "run_6");
 
     // The mock lookup resolves real-looking addresses; the log must not repeat them.
     const serialized = JSON.stringify(readCapturedLogs());
@@ -221,7 +221,7 @@ describe("misconfiguration is visible after the fact", () => {
     configureLookup();
     vi.stubEnv("EMAIL_PROVIDER", "ses");
     // No AWS credentials in the test env, so the provider rejects every send.
-    await processDispatch(payload(["u1", "u2", "u3"]), "sender@example.com", "run_7");
+    await processDispatch(payload(["u1", "u2", "u3"]), "run_7");
 
     const failures = findCapturedLogs((e) =>
       e.msg.startsWith("Provider rejected a message")

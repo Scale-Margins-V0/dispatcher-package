@@ -66,8 +66,8 @@ function presentInEnv(key: string): boolean {
 /**
  * Parse `.env.yaml` on its own, rather than through `loadEnvYaml()`.
  *
- * `loadEnvYaml()` synthesizes a back-compat sender from EMAIL_PROVIDER and
- * FROM_EMAIL when `senders:` is empty, and caches the result. Calling it here
+ * `loadEnvYaml()` synthesizes a back-compat sender from the EMAIL_PROVIDER and
+ * FROM_EMAIL environment variables when `senders:` is empty, and caches it. Calling it here
  * would run that synthesis against an environment this function has not
  * populated yet, and cache the wrong answer for the rest of the process.
  */

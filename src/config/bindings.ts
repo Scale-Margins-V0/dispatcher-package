@@ -103,13 +103,6 @@ export const BINDINGS: Binding[] = [
     ["DISPATCHER_ADMIN_CREDENTIALS_FILE", "credentials_file"],
   ]),
 
-  // ── Single-sender shorthand ───────────────────────────────────────────────
-  ...bind((c) => c.email, [
-    ["EMAIL_PROVIDER", "provider"],
-    ["FROM_EMAIL", "from"],
-    ["REPLY_TO_EMAIL", "reply_to"],
-  ]),
-
   // ── Links inside messages ─────────────────────────────────────────────────
   ...bind((c) => c.links, [
     ["UNSUBSCRIBE_URL_BASE", "unsubscribe_url_base"],

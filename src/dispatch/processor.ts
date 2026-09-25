@@ -40,7 +40,6 @@ export type DispatchOutcome = {
 
 export async function processDispatch(
   payload: DispatchPayload,
-  fromEmail: string,
   dispatchRunId?: string
 ): Promise<DispatchOutcome> {
   // Pick up variable edits made via the admin API since the last dispatch —
@@ -234,7 +233,9 @@ export async function processDispatch(
       chain,
       message: {
         to: recipientEmail,
-        from: fromEmail,
+        // The routed sender's own address; sendWithFailover re-stamps it per
+        // attempt, so a failover also sends as the account that sent it.
+        from: chain[0]!.config.from ?? "",
         subject,
         html,
         ...(content.text_body && {
