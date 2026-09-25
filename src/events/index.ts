@@ -382,6 +382,7 @@ export function createInboundWebhookHandler(
       adapter.verifySignature({
         rawBody,
         headers: req.headers as Record<string, string | string[] | undefined>,
+        query: req.query as Record<string, unknown>,
       })
     );
     if (!ok) {

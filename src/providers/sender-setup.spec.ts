@@ -204,3 +204,36 @@ describe("console invitation email", () => {
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe("unknown sender and routing keys are rejected, not silently dropped", () => {
+  const parse = (senders: unknown[], routing?: unknown) =>
+    envYamlSchema.safeParse({ version: 1, senders, ...(routing ? { routing } : {}) });
+  const messages = (r: ReturnType<typeof parse>) => (r.success ? [] : r.error.issues.map((i) => i.message));
+
+  it("a provider key written beside `provider:` says which block it belongs in", () => {
+    const r = parse([{ ...wa("gs"), webhook_secret: "x" }]);
+    expect(messages(r)).toEqual([
+      "'webhook_secret' is not a sender key — it belongs inside the `gupshup:` block of sender 'gs'",
+    ]);
+  });
+
+  it("a key of another provider still points at a real block", () => {
+    const r = parse([{ ...sg("mail"), api_endpoint: "https://x" }]);
+    expect(messages(r)[0]).toContain("belongs inside the `freshchat:` block");
+  });
+
+  it("a plain typo is named", () => {
+    expect(messages(parse([{ ...sg("mail"), wieght: 3 }]))).toEqual(["unknown key 'wieght' on sender 'mail'"]);
+  });
+
+  it("typos inside a provider block or routing fail too", () => {
+    expect(parse([{ ...sg("mail"), sendgrid: { api_keyy: "SG.x" } }]).success).toBe(false);
+    expect(parse([sg("mail")], { default_senders: { email: "mail" } }).success).toBe(false);
+  });
+
+  it("a valid sender still parses, with defaults applied", () => {
+    const r = parse([sg("mail")]);
+    expect(r.success).toBe(true);
+    expect(r.success && r.data.senders[0]).toMatchObject({ id: "mail", weight: 1, enabled: true });
+  });
+});

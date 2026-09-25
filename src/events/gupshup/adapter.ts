@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { AnalyticsEventType } from "../../providers/types.js";
 import { extractCorrelationFromGupshupEvent } from "../common/correlator.js";
 import { SMSIGN_PREFIX } from "../tag-sign.js";
@@ -221,6 +221,13 @@ export function extractGupshupReceipt(item: unknown): GupshupReceipt | null {
   };
 }
 
+/** Compare without leaking where (or whether, by length) the strings differ. */
+function constantTimeEqual(a: string, b: string): boolean {
+  const ha = createHash("sha256").update(a, "utf8").digest();
+  const hb = createHash("sha256").update(b, "utf8").digest();
+  return timingSafeEqual(ha, hb);
+}
+
 export function createGupshupInboundAdapter(webhookSecret: string): InboundEventAdapter {
   return {
     name: "gupshup",
@@ -228,17 +235,17 @@ export function createGupshupInboundAdapter(webhookSecret: string): InboundEvent
     verifySignature(req: SignatureRequest): boolean {
       // No secret configured → open webhook: skip signature verification.
       if (!webhookSecret) return true;
+      // Either proof is enough:
+      //  1. `X-Gupshup-Signature` — hex HMAC-SHA256 of the raw body (signed pushes).
+      //  2. `?token=<secret>` on the callback URL — for Gupshup's own delivery
+      //     callbacks, which cannot sign a body but can call any URL.
       const sig = headerOne(req.headers, "x-gupshup-signature");
-      if (!sig) return false;
-      const expected = createHmac("sha256", webhookSecret).update(req.rawBody).digest("hex");
-      try {
-        const a = Buffer.from(sig, "utf-8");
-        const b = Buffer.from(expected, "utf-8");
-        if (a.length !== b.length) return false;
-        return timingSafeEqual(a, b);
-      } catch {
-        return false;
+      if (sig) {
+        const expected = createHmac("sha256", webhookSecret).update(req.rawBody).digest("hex");
+        if (constantTimeEqual(sig, expected)) return true;
       }
+      const token = req.query?.token;
+      return typeof token === "string" && constantTimeEqual(token, webhookSecret);
     },
     parseEvents(rawBody: Buffer): unknown[] {
       const parsed = JSON.parse(rawBody.toString("utf-8")) as unknown;

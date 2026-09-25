@@ -6,6 +6,7 @@ import { GupshupWhatsAppProvider, gupshupConfigFromSender } from "./gupshup-what
 import { FreshchatWhatsAppProvider, freshchatConfigFromSender } from "./freshchat-whatsapp.js";
 import { SendGridProvider } from "./sendgrid.js";
 import { SESProvider } from "./ses.js";
+import { resolveField, senderCredentials } from "./sender-credentials.js";
 import type {
   EmailMessage,
   EmailProvider,
@@ -27,6 +28,20 @@ interface BreakerState {
   lastFailureAt: number;
   failureThreshold: number;
   cooldownMs: number;
+}
+
+/** A provider that refuses every send with one explanation. */
+function unconfiguredProvider(name: string, problem: string): EmailProvider {
+  return {
+    name,
+    send: async () => ({ success: false, error: problem }),
+    sendBulk: async (messages: EmailMessage[]) => ({
+      total: messages.length,
+      sent: 0,
+      failed: messages.length,
+      results: messages.map((m) => ({ to: m.to, success: false, error: problem })),
+    }),
+  };
 }
 
 class SenderRegistry {
@@ -67,11 +82,13 @@ class SenderRegistry {
   private instantiateProvider(cfg: SenderConfig): EmailProvider | GupshupWhatsAppProvider | FreshchatWhatsAppProvider {
     if (cfg.channel === "email") {
       if (cfg.provider === "sendgrid") {
-        const apiKey =
-          cfg.sendgrid?.api_key?.trim() ||
-          (cfg.sendgrid?.api_key_env ? process.env[cfg.sendgrid.api_key_env]?.trim() : undefined) ||
-          process.env.SENDGRID_API_KEY;
-        return new SendGridProvider(apiKey);
+        // The sender's own key only. Boot validation guarantees it resolves; if
+        // it somehow does not, this sender fails its sends by name rather than
+        // borrowing SENDGRID_API_KEY — or throwing and taking every sender down.
+        const apiKey = resolveField("sendgrid", "api_key", cfg.sendgrid?.api_key, cfg.sendgrid?.api_key_env).value;
+        return apiKey
+          ? new SendGridProvider(apiKey)
+          : unconfiguredProvider("sendgrid", senderCredentials(cfg).problem ?? `SendGrid sender '${cfg.id}' has no API key`);
       }
       // SES provider
       const region = cfg.ses?.region || process.env.AWS_REGION || "ap-south-1";

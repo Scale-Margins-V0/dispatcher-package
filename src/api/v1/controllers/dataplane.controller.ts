@@ -56,6 +56,8 @@ import { getBuildInfo } from "../../../ops/build-info.js";
 import { getRuntimeStatus } from "../../../ops/diagnostics.js";
 import { loadEnvYaml } from "../../../env-yaml.js";
 import { registry } from "../../../providers/senders.js";
+import { senderCredentials, type SenderCredentialReport } from "../../../providers/sender-credentials.js";
+import type { SenderConfig } from "../../../providers/types.js";
 import { renderPlaceholderPreview } from "../../../personalize.js";
 import { rowToPlaceholderEntry } from "../../../variables/mapping.js";
 import { redactConfig, unmaskHeaders, unmaskQuery } from "../../../variables/redaction.js";
@@ -1080,6 +1082,20 @@ export async function deleteVariableHandler(
 /**
  * GET /senders — lists configured, active senders for Atlas routing.
  */
+/**
+ * Whether a sender's credentials resolve, and if not, exactly what to set.
+ * Names only (a field path or the variable an `_env` points at) — never a value.
+ */
+function serializeSenderCredentials(r: SenderCredentialReport) {
+  return {
+    ok: r.satisfied,
+    ...(r.problem ? { problem: r.problem } : {}),
+    configured: Object.fromEntries(r.sets.flatMap((set) => set.checks).map((c) => [c.source, c.present])),
+    webhook_verification: r.webhook?.present ?? false,
+    notes: r.notes,
+  };
+}
+
 export async function listSendersHandler(req: Request, res: Response): Promise<void> {
   try {
     const yaml = loadEnvYaml();
@@ -1104,6 +1120,7 @@ export async function listSendersHandler(req: Request, res: Response): Promise<v
         enabled: s.enabled !== false,
         organizations: s.organizations ?? ["*"],
         breaker_state: registry.getBreakerState(s.id)?.state ?? "closed",
+        credentials: serializeSenderCredentials(senderCredentials(s as SenderConfig)),
       }));
 
     res.json({

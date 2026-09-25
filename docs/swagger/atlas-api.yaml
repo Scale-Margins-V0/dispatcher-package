@@ -724,6 +724,69 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /api/v1/data-plane/senders:
+    get:
+      operationId: listSenders
+      summary: The sending accounts this dispatcher loaded, and whether each can send
+      description: |
+        Enabled `senders:` from `.env.yaml`. `credentials` reports whether the
+        sender's OWN credentials resolve (its inline value, or the variable its
+        `*_env` names — never a provider-wide variable). Names only, never a
+        value: `configured` maps `sendgrid.api_key` or the referenced variable
+        name to whether it is set.
+      tags: [Observability]
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema: { type: string, enum: [email, whatsapp] }
+        - name: organization_id
+          in: query
+          required: false
+          schema: { type: string, maxLength: 191 }
+      responses:
+        "200":
+          description: Senders
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generated_at: { type: string, format: date-time }
+                  senders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        channel: { type: string, enum: [email, whatsapp] }
+                        provider: { type: string, enum: [ses, sendgrid, gupshup, freshchat] }
+                        from: { type: string, nullable: true }
+                        weight: { type: number }
+                        enabled: { type: boolean }
+                        organizations: { type: array, items: { type: string } }
+                        breaker_state: { type: string, enum: [closed, open, half-open] }
+                        credentials:
+                          type: object
+                          properties:
+                            ok: { type: boolean }
+                            problem:
+                              type: string
+                              description: "Present when ok is false — names the sender and the field to set, e.g. \"SendGrid sender 'sg' has no API key — sendgrid.api_key_env names SG_KEY, which is not set\""
+                            configured:
+                              type: object
+                              additionalProperties: { type: boolean }
+                            webhook_verification:
+                              type: boolean
+                              description: Inbound webhook verification is configured on this sender (SendGrid key, Gupshup/Freshchat secret, SES configuration set)
+                            notes:
+                              type: array
+                              items: { type: string }
+                              description: Works, with limits — e.g. an API-key-only Gupshup sender cannot send media
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /api/v1/data-plane/metrics:
     get:
       operationId: getOverallMetrics

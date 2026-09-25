@@ -15,6 +15,7 @@ import { applyGupshupTag } from "../events/outbound/gupshup-tagger.js";
 import { componentLogger } from "../logging/logger.js";
 import { personalize, type PersonalizeDispatchContext } from "../personalize.js";
 import type { UserRecord } from "../user-lookup/types.js";
+import { resolveField } from "./sender-credentials.js";
 import type { SendContext, SendResult, SenderConfig } from "./types.js";
 
 const log = componentLogger("providers.gupshup");
@@ -54,6 +55,8 @@ export type GupshupWhatsAppMessage = {
 };
 
 export type GupshupConfig = {
+  /** The `senders:` entry this came from — named in errors. Absent for the env-only legacy path. */
+  senderId?: string;
   mode: GupshupAuthMode;
   apiKey?: string;
   userId?: string;
@@ -237,48 +240,40 @@ export function resolveGupshupConfig(): GupshupConfig | null {
   return null;
 }
 
-export function gupshupConfigFromSender(sender: SenderConfig): GupshupConfig | null {
+/**
+ * A `senders:` entry's Gupshup config, read ONLY from that sender — its inline
+ * values or the variables its `*_env` fields name. Never falls back to the
+ * provider-wide GUPSHUP_* variables: a sender missing its credentials must
+ * fail with its own name, not send on another account.
+ *
+ * Mode follows the credentials present (`mode:` is informational): an API key
+ * + src_name → API-key mode, else user id + password → enterprise. Boot
+ * validation (senderCredentials) guarantees one of the two; if neither is
+ * present this still returns a config, and the send reports what is missing.
+ */
+export function gupshupConfigFromSender(sender: SenderConfig): GupshupConfig {
   const g = sender.gupshup;
-  if (!g) return resolveGupshupConfig();
-
-  const mode = g.mode || (g.api_key || g.api_key_env ? "apikey" : "enterprise");
   const mediaDefaults = mediaDefaultsFromEnv();
-  const msgType = g.message_type || process.env.GUPSHUP_MESSAGE_TYPE?.trim() || "HSM";
-  const templateLanguage = g.template_language || process.env.GUPSHUP_TEMPLATE_LANGUAGE?.trim() || "en";
-
-  const apiKey = g.api_key?.trim() || (g.api_key_env ? process.env[g.api_key_env]?.trim() : undefined);
-  const userId = g.user_id?.trim() || (g.user_id_env ? process.env[g.user_id_env]?.trim() : undefined);
-  const password = g.password?.trim() || (g.password_env ? process.env[g.password_env]?.trim() : undefined);
-
-  if (mode === "apikey" || apiKey) {
-    return {
-      mode: "apikey",
-      apiKey: apiKey || process.env.GUPSHUP_API_KEY?.trim(),
-      ...(userId && password ? { userId, password } : {}),
-      msgType,
-      srcName: g.src_name?.trim() || process.env.GUPSHUP_SRC_NAME?.trim(),
-      source: g.source?.trim() || process.env.GUPSHUP_SOURCE?.trim(),
-      templateApiUrl: g.template_api_url?.trim() || "https://api.gupshup.io/wa/api/v1/template/msg",
-      enterpriseApiUrl: g.enterprise_api_url?.trim() || "https://smsgupshup.com",
-      ...mediaDefaults,
-      templateLanguage,
-    };
-  }
-
-  if (userId && password) {
-    return {
-      mode: "enterprise",
-      userId,
-      password,
-      msgType,
-      templateApiUrl: g.template_api_url?.trim() || "https://api.gupshup.io/wa/api/v1/template/msg",
-      enterpriseApiUrl: g.enterprise_api_url?.trim() || "https://smsgupshup.com",
-      ...mediaDefaults,
-      templateLanguage,
-    };
-  }
-
-  return resolveGupshupConfig();
+  const field = (inline: string | undefined, envName: string | undefined) =>
+    resolveField("gupshup", "", inline, envName).value;
+  const apiKey = field(g?.api_key, g?.api_key_env);
+  const userId = field(g?.user_id, g?.user_id_env);
+  const password = field(g?.password, g?.password_env);
+  const common = {
+    senderId: sender.id,
+    ...(userId && password ? { userId, password } : {}),
+    msgType: g?.message_type?.trim() || "HSM",
+    srcName: g?.src_name?.trim(),
+    source: g?.source?.trim(),
+    templateApiUrl: g?.template_api_url?.trim() || "https://api.gupshup.io/wa/api/v1/template/msg",
+    enterpriseApiUrl: g?.enterprise_api_url?.trim() || "https://smsgupshup.com",
+    ...mediaDefaults,
+    templateLanguage: g?.template_language?.trim() || "en",
+  };
+  if (apiKey && common.srcName) return { ...common, mode: "apikey", apiKey };
+  if (userId && password) return { ...common, mode: "enterprise" };
+  // Incomplete: keep whatever is there so the send error names what is missing.
+  return apiKey ? { ...common, mode: "apikey", apiKey } : { ...common, mode: "enterprise" };
 }
 
 function parseHasCta(value: unknown): boolean | undefined {
@@ -870,6 +865,16 @@ export function previewGupshupSendRequest(
     message,
   };
 }
+/**
+ * Media, text and enterprise-template sends go through the enterprise gateway,
+ * which authenticates with a user id + password — an API key alone cannot.
+ */
+function missingEnterpriseCredentials(config: GupshupConfig, what: string): string {
+  return config.senderId
+    ? `Gupshup sender '${config.senderId}' cannot send ${what}: set gupshup.user_id and gupshup.password (or their _env forms) on that sender — an API key alone only sends templates`
+    : `Gupshup cannot send ${what}: GUPSHUP_USER_ID and GUPSHUP_PASSWORD are required`;
+}
+
 async function sendViaMediaGateway(
   config: GupshupConfig,
   message: GupshupWhatsAppMessage,
@@ -878,8 +883,7 @@ async function sendViaMediaGateway(
   if (!config.userId || !config.password) {
     return {
       success: false,
-      error:
-        "WhatsApp media send requires GUPSHUP_USER_ID and GUPSHUP_PASSWORD",
+      error: missingEnterpriseCredentials(config, "media (image + caption) messages"),
     };
   }
   if (!message.caption?.trim() || !message.mediaUrl?.trim()) {
@@ -907,7 +911,7 @@ async function sendViaTextGateway(
   if (!config.userId || !config.password) {
     return {
       success: false,
-      error: "WhatsApp text send requires GUPSHUP_USER_ID and GUPSHUP_PASSWORD",
+      error: missingEnterpriseCredentials(config, "text (caption-only) messages"),
     };
   }
   if (!message.caption?.trim()) {
@@ -934,13 +938,19 @@ async function sendViaApiKey(
   tagJson?: string
 ): Promise<SendResult> {
   if (!config.apiKey) {
-    return { success: false, error: "GUPSHUP_API_KEY is not configured" };
+    return {
+      success: false,
+      error: config.senderId
+        ? `Gupshup sender '${config.senderId}' has no API key — set gupshup.api_key (or gupshup.api_key_env)`
+        : "GUPSHUP_API_KEY is not configured",
+    };
   }
   if (!config.srcName?.trim()) {
     return {
       success: false,
-      error:
-        "GUPSHUP_SRC_NAME (or GUPSHUP_EVENT_TEST_SRC_NAME) is required with GUPSHUP_API_KEY",
+      error: config.senderId
+        ? `Gupshup sender '${config.senderId}' has an API key but no gupshup.src_name — the Gupshup app name is required to send templates`
+        : "GUPSHUP_SRC_NAME (or GUPSHUP_EVENT_TEST_SRC_NAME) is required with GUPSHUP_API_KEY",
     };
   }
   if (!config.source?.trim()) {
@@ -985,7 +995,7 @@ async function sendViaEnterprise(
   if (!config.userId || !config.password) {
     return {
       success: false,
-      error: "GUPSHUP_USER_ID and GUPSHUP_PASSWORD are required",
+      error: missingEnterpriseCredentials(config, "template messages in enterprise mode"),
     };
   }
 
