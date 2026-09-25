@@ -391,3 +391,5 @@ export const ZCampaignMetricsQuerySchema = z.object({
 });
 
 export type ZCampaignMetricsQuery = z.infer<typeof ZCampaignMetricsQuerySchema>;
+
+export const ZOverallMetricsQuerySchema = ZCampaignMetricsQuerySchema.pick({ range: true });

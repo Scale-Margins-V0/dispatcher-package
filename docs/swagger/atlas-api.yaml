@@ -724,6 +724,36 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /api/v1/data-plane/metrics:
+    get:
+      operationId: getOverallMetrics
+      summary: Performance metrics across every campaign
+      description: |
+        The same report as `/campaigns/{programId}/metrics`, summed over all
+        programs, with `campaigns` (top 100 by messages) instead of `steps`,
+        and `program_id: null`.
+      tags: [Campaigns]
+      parameters:
+        - name: range
+          in: query
+          required: false
+          schema: { type: string, enum: ["1h", "6h", "24h", "3d", "7d"], default: "24h" }
+      responses:
+        "200":
+          description: The metrics report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [metrics]
+                properties:
+                  metrics: { $ref: "#/components/schemas/CampaignMetrics" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /api/v1/data-plane/logs:
     get:
       operationId: listLogs
@@ -1559,7 +1589,7 @@ components:
       type: object
       properties:
         generated_at: { type: string, format: date-time }
-        program_id: { type: string }
+        program_id: { type: string, nullable: true, description: null in the overall view }
         window:
           type: object
           properties:
@@ -1638,6 +1668,27 @@ components:
               e2e_p95_ms: { type: integer, nullable: true }
               api_calls: { type: integer }
               api_error_rate: { type: number, nullable: true }
+              resolve_p95_ms: { type: integer, nullable: true }
+              api_p95_ms: { type: integer, nullable: true }
+              fallback_rate: { type: number, nullable: true }
+        campaigns:
+          type: array
+          description: Overall view only — per program, busiest first (top 100). Empty for one campaign.
+          items:
+            type: object
+            properties:
+              program_id: { type: string }
+              messages: { type: integer }
+              resolve_failed: { type: integer }
+              resolve_p95_ms: { type: integer, nullable: true }
+              sent: { type: integer }
+              send_failed: { type: integer }
+              e2e_p50_ms: { type: integer, nullable: true }
+              e2e_p95_ms: { type: integer, nullable: true }
+              api_calls: { type: integer }
+              api_error_rate: { type: number, nullable: true }
+              api_p95_ms: { type: integer, nullable: true }
+              fallback_rate: { type: number, nullable: true }
 
     CallMetadata:
       allOf:

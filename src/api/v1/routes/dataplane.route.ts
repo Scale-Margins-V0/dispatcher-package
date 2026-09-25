@@ -141,6 +141,9 @@ router
   .route("/campaigns/:programId/metrics")
   .get(asyncApi(MetricsController.getCampaignMetricsHandler));
 
+/** Every campaign together — the Runs page's metrics. */
+router.route("/metrics").get(asyncApi(MetricsController.getOverallMetricsHandler));
+
 /*
  * Logs — the dispatcher's own structured log. Free-form text is PII-scrubbed
  * on the way out; see the controller.

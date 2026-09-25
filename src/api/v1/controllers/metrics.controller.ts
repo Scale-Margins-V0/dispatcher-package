@@ -6,12 +6,13 @@
  */
 
 import type { Request, Response } from "express";
-import { sumProgramMetrics, sumProgramMetricsBySteps } from "../../../db/repos/metrics.js";
+import { sumMetrics, sumMetricsBy } from "../../../db/repos/metrics.js";
 import { metricsRetentionDays } from "../../../db/retention.js";
 import { buildMetricsReport, METRIC_RANGES } from "../../../metrics/report.js";
 import { invalidRequest } from "../errors.js";
 import {
   ZCampaignMetricsQuerySchema,
+  ZOverallMetricsQuerySchema,
   ZProgramIdParamSchema,
 } from "../validators/dataplane.validator.js";
 import { logRejected, requireStateDb } from "./dataplane.controller.js";
@@ -41,9 +42,9 @@ export async function getCampaignMetricsHandler(req: Request, res: Response): Pr
     resolution,
     ...(step_id ? { stepId: step_id } : {}),
   };
-  const [rows, stepRows] = await Promise.all([
-    sumProgramMetrics(window),
-    sumProgramMetricsBySteps(window),
+  const [rows, groupRows] = await Promise.all([
+    sumMetrics(window),
+    sumMetricsBy(window, "step_id"),
   ]);
 
   res.json({
@@ -53,7 +54,36 @@ export async function getCampaignMetricsHandler(req: Request, res: Response): Pr
       fromMinute: window.fromMinute,
       toMinute,
       rows,
-      stepRows,
+      groupRows,
+      retentionDays: metricsRetentionDays(),
+    }),
+  });
+}
+
+/** GET /metrics?range=24h — every campaign together, plus a per-campaign table. */
+export async function getOverallMetricsHandler(req: Request, res: Response): Promise<void> {
+  if (!requireStateDb(res)) return;
+
+  const query = ZOverallMetricsQuerySchema.safeParse(req.query);
+  if (!query.success) {
+    logRejected("metrics.overall", query.error);
+    return invalidRequest(res, query.error);
+  }
+
+  const { range } = query.data;
+  const { minutes, resolution } = METRIC_RANGES[range];
+  const toMinute = Math.floor(Date.now() / 60_000);
+  const window = { fromMinute: toMinute - minutes + 1, toMinute, resolution };
+  const [rows, groupRows] = await Promise.all([sumMetrics(window), sumMetricsBy(window, "program_id")]);
+
+  res.json({
+    metrics: buildMetricsReport({
+      programId: null,
+      range,
+      fromMinute: window.fromMinute,
+      toMinute,
+      rows,
+      groupRows,
       retentionDays: metricsRetentionDays(),
     }),
   });

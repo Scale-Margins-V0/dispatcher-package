@@ -106,6 +106,33 @@ describe("GET /campaigns/:programId/metrics", () => {
   });
 });
 
+describe("GET /metrics (every campaign)", () => {
+  it("sums across programs and lists each one, busiest first", async () => {
+    recordMetric(PROGRAM, "message_resolve", "", { ok: 1, ms: 400 });
+    recordMetric(PROGRAM, "provider_send", "ses", { ok: 1, ms: 100 });
+    for (let i = 0; i < 3; i++) {
+      recordMetric({ program_id: "cmp_2" }, "message_resolve", "", { ok: 1, ms: 300 });
+      recordMetric({ program_id: "cmp_2" }, "api_call", "tier", { failed: 1, ms: 50 });
+    }
+    await flushMetrics();
+
+    const res = await api().get("/api/v1/data-plane/metrics?range=6h").set(auth);
+    expect(res.status).toBe(200);
+    const m = res.body.metrics;
+    expect(m.program_id).toBeNull();
+    expect(m.window.resolution_minutes).toBe(5);
+    expect(m.totals.message_resolve.count).toBe(4);
+    expect(m.steps).toEqual([]);
+    expect(m.campaigns.map((c: { program_id: string }) => c.program_id)).toEqual(["cmp_2", "seq_1"]);
+    expect(m.campaigns[0]).toMatchObject({ messages: 3, api_calls: 3, api_error_rate: 1 });
+  });
+
+  it("validates the range and needs the key", async () => {
+    expect((await api().get("/api/v1/data-plane/metrics?range=1y").set(auth)).status).toBe(400);
+    expect((await api().get("/api/v1/data-plane/metrics")).status).toBe(401);
+  });
+});
+
 describe("recording from the resolver", () => {
   beforeEach(() => resetPlaceholdersForTests());
 

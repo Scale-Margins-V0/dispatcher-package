@@ -1,6 +1,7 @@
 /**
- * Reads over dispatch_metrics. Every query is bounded: one program, a window of
- * at most 7 days, grouped server-side — never a scan returned row by row.
+ * Reads over dispatch_metrics. Every query is bounded: a window of at most 7
+ * days (one program, or all of them), grouped server-side — never a scan
+ * returned row by row.
  */
 
 import { and, eq, gte, lte, sql } from "drizzle-orm";
@@ -34,7 +35,7 @@ function sums(t: any) {
 function toSummed(r: Record<string, unknown>): SummedRow {
   return {
     bucket: num(r.bucket),
-    step_id: String(r.step_id ?? ""),
+    group: String(r.group ?? ""),
     kind: r.kind as MetricKind,
     subject: String(r.subject ?? ""),
     count: num(r.count),
@@ -53,7 +54,8 @@ function toSummed(r: Record<string, unknown>): SummedRow {
 }
 
 export type MetricsWindow = {
-  programId: string;
+  /** Omitted = every program (the overall view). */
+  programId?: string;
   fromMinute: number;
   toMinute: number;
   /** Bucket size in minutes — from a fixed whitelist, never user text. */
@@ -61,8 +63,16 @@ export type MetricsWindow = {
   stepId?: string;
 };
 
+function scope(t: any, w: MetricsWindow) {
+  return and(
+    w.programId !== undefined ? eq(t.program_id, w.programId) : undefined,
+    gte(t.minute, w.fromMinute),
+    lte(t.minute, w.toMinute)
+  );
+}
+
 /** Sums per (bucket, kind, subject) — the timeline, totals and per-variable data. */
-export async function sumProgramMetrics(w: MetricsWindow): Promise<SummedRow[]> {
+export async function sumMetrics(w: MetricsWindow): Promise<SummedRow[]> {
   const dbx = getDb();
   const t = tableFor(dbx, "dispatchMetrics");
   const res = Math.max(1, Math.trunc(w.resolution));
@@ -71,26 +81,22 @@ export async function sumProgramMetrics(w: MetricsWindow): Promise<SummedRow[]> 
   const rows: Record<string, unknown>[] = await queryDb(dbx)
     .select({ bucket, kind: t.kind, subject: t.subject, ...sums(t) })
     .from(t)
-    .where(
-      and(
-        eq(t.program_id, w.programId),
-        gte(t.minute, w.fromMinute),
-        lte(t.minute, w.toMinute),
-        w.stepId !== undefined ? eq(t.step_id, w.stepId) : undefined
-      )
-    )
+    .where(and(scope(t, w), w.stepId !== undefined ? eq(t.step_id, w.stepId) : undefined))
     .groupBy(bucket, t.kind, t.subject);
   return rows.map(toSummed);
 }
 
-/** Sums per (step, kind) over the window — the per-step table. */
-export async function sumProgramMetricsBySteps(w: MetricsWindow): Promise<SummedRow[]> {
+/**
+ * Sums per (group, kind) over the window: per step inside one program, per
+ * program across all of them. Ignores `stepId` so the step table can switch.
+ */
+export async function sumMetricsBy(w: MetricsWindow, by: "step_id" | "program_id"): Promise<SummedRow[]> {
   const dbx = getDb();
   const t = tableFor(dbx, "dispatchMetrics");
   const rows: Record<string, unknown>[] = await queryDb(dbx)
-    .select({ step_id: t.step_id, kind: t.kind, ...sums(t) })
+    .select({ group: t[by], kind: t.kind, ...sums(t) })
     .from(t)
-    .where(and(eq(t.program_id, w.programId), gte(t.minute, w.fromMinute), lte(t.minute, w.toMinute)))
-    .groupBy(t.step_id, t.kind);
+    .where(scope(t, w))
+    .groupBy(t[by], t.kind);
   return rows.map(toSummed);
 }

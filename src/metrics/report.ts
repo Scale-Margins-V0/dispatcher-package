@@ -24,10 +24,13 @@ export type MetricRange = keyof typeof METRIC_RANGES;
 const VARIABLE_SERIES_LIMIT = 10;
 const VARIABLE_LIMIT = 100;
 
-/** One SUM row: a bucket (epoch minute) × kind × subject, or a step × kind. */
+/** Campaigns listed in the overall view, busiest first. */
+const CAMPAIGN_LIMIT = 100;
+
+/** One SUM row: a bucket (epoch minute) × kind × subject, or a group (step / program) × kind. */
 export type SummedRow = {
   bucket: number;
-  step_id: string;
+  group: string;
   kind: MetricKind;
   subject: string;
   count: number;
@@ -67,7 +70,7 @@ export type Stat = {
   per_minute_peak: number | null;
 };
 
-type Acc = Omit<SummedRow, "bucket" | "step_id" | "kind" | "subject"> & { activeBuckets: Set<number>; bucketCounts: Map<number, number> };
+type Acc = Omit<SummedRow, "bucket" | "group" | "kind" | "subject"> & { activeBuckets: Set<number>; bucketCounts: Map<number, number> };
 
 function emptyAcc(): Acc {
   return {
@@ -157,12 +160,14 @@ const TIMELINE_KINDS: Array<[MetricKind, string]> = [
 export type TimelinePoint = { t: string } & Record<string, number | null | string>;
 
 export function buildMetricsReport(args: {
-  programId: string;
+  /** null = every program: `campaigns` is filled instead of `steps`. */
+  programId: string | null;
   range: MetricRange;
   fromMinute: number;
   toMinute: number;
   rows: SummedRow[];
-  stepRows: SummedRow[];
+  /** Per step for one program; per program for the overall view. */
+  groupRows: SummedRow[];
   retentionDays: number;
   generatedAt?: Date;
 }) {
@@ -237,25 +242,39 @@ export function buildMetricsReport(args: {
       .map(([name, acc]) => ({ name, ...stat(acc, resolution) }))
       .sort((a, b) => b.count - a.count);
 
-  const stepKinds = groupBy(args.stepRows, (r) => `${r.step_id}|${r.kind}`);
-  const steps = [...new Set(args.stepRows.map((r) => r.step_id))].map((step_id) => {
-    const get = (kind: MetricKind) => stat(stepKinds.get(`${step_id}|${kind}`) ?? emptyAcc(), resolution);
+  const groupKinds = groupBy(args.groupRows, (r) => `${r.group}|${r.kind}`);
+  const groups = [...new Set(args.groupRows.map((r) => r.group))].map((group) => {
+    const get = (kind: MetricKind) => stat(groupKinds.get(`${group}|${kind}`) ?? emptyAcc(), resolution);
     const resolve = get("message_resolve");
     const send = get("provider_send");
     const e2e = get("message_e2e");
     const api = get("api_call");
+    const query = get("query_var");
+    const served = api.items + query.items;
     return {
-      step_id: step_id || null,
+      group,
       messages: resolve.count,
       resolve_failed: resolve.failed,
+      resolve_p95_ms: resolve.p95_ms,
       sent: send.ok,
       send_failed: send.failed,
       e2e_p50_ms: e2e.p50_ms,
       e2e_p95_ms: e2e.p95_ms,
       api_calls: api.count,
       api_error_rate: api.error_rate,
+      api_p95_ms: api.p95_ms,
+      fallback_rate: served > 0 ? Math.round(((api.fallback + query.fallback) / served) * 1000) / 1000 : null,
     };
   });
+  const steps =
+    args.programId === null ? [] : groups.map(({ group, ...g }) => ({ step_id: group || null, ...g }));
+  const campaigns =
+    args.programId === null
+      ? groups
+          .map(({ group, ...g }) => ({ program_id: group, ...g }))
+          .sort((a, b) => b.messages - a.messages || b.api_calls - a.api_calls)
+          .slice(0, CAMPAIGN_LIMIT)
+      : [];
 
   return {
     generated_at: (args.generatedAt ?? new Date()).toISOString(),
@@ -282,6 +301,8 @@ export function buildMetricsReport(args: {
     providers: bySubject("provider_send"),
     lookup_modes: bySubject("lookup"),
     steps,
+    /** Overall view only: per program, busiest first (top 100). */
+    campaigns,
   };
 }
 
