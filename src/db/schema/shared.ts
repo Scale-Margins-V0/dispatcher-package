@@ -351,3 +351,38 @@ export const META_KEYS = {
   campaignEventsBackfillDoneAt: "campaign_events_backfill_done_at",
   campaignSummaryBackfillDoneAt: "campaign_summary_backfill_done_at",
 } as const;
+
+/** What a dispatch_metrics row measures — see src/metrics/collector.ts. */
+export type MetricKind =
+  | "dispatch"
+  | "lookup"
+  | "api_call"
+  | "query_var"
+  | "message_resolve"
+  | "provider_send"
+  | "message_e2e";
+
+export type MetricCounters = {
+  count: number;
+  ok: number;
+  failed: number;
+  timeout: number;
+  skipped: number;
+  fallback: number;
+  items: number;
+  sum_ms: number;
+  min_ms: number | null;
+  max_ms: number | null;
+  peak_per_sec: number;
+  /** Histogram b0..b10, bounds in src/metrics/histogram.ts. */
+  buckets: number[];
+};
+
+export type DispatchMetricRow = MetricCounters & {
+  id: string;
+  minute: number;
+  program_id: string;
+  step_id: string;
+  kind: MetricKind;
+  subject: string;
+};

@@ -677,6 +677,53 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /api/v1/data-plane/campaigns/{programId}/metrics:
+    parameters:
+      - $ref: "#/components/parameters/programId"
+    get:
+      operationId: getCampaignMetrics
+      summary: Performance metrics for one campaign
+      description: |
+        Per-minute rollups of the send path, summed over a fixed window:
+        api / SQL variable calls (rate, errors, timeouts, latency), the user
+        lookup, per-message resolve time (dispatch start → content ready),
+        provider send latency, and end to end (dispatch start → provider
+        accepted). Counts, latencies and variable / provider names only — no
+        user data is stored.
+
+        * Percentiles are estimated from fixed latency histograms
+          (10/25/50/100/250/500ms, 1/2.5/5/10s, above), capped at the observed max.
+        * `timeline` is dense — one point per bucket, zeros included.
+          Bucket size follows the range: 1h→1m, 6h→5m, 24h→15m, 3d→1h, 7d→2h.
+        * Kept for `dispatcher.retention.metrics_days` (default 7).
+        * An unknown program is `has_data: false`, not a 404.
+      tags: [Campaigns]
+      parameters:
+        - name: range
+          in: query
+          required: false
+          schema: { type: string, enum: ["1h", "6h", "24h", "3d", "7d"], default: "24h" }
+        - name: step_id
+          in: query
+          required: false
+          description: One drip step; omitted = the whole program.
+          schema: { type: string, maxLength: 191 }
+      responses:
+        "200":
+          description: The metrics report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [metrics]
+                properties:
+                  metrics: { $ref: "#/components/schemas/CampaignMetrics" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /api/v1/data-plane/logs:
     get:
       operationId: listLogs
@@ -1486,6 +1533,111 @@ components:
           minItems: 1
           maxItems: 50
           items: { $ref: "#/components/schemas/CallMetadataKey" }
+
+    MetricStat:
+      type: object
+      properties:
+        count: { type: integer, description: "Calls / messages / runs, by kind" }
+        ok: { type: integer }
+        failed: { type: integer }
+        timeout: { type: integer }
+        skipped: { type: integer, description: "api/query: recipients whose call was skipped (required call metadata missing); lookup: ids not found" }
+        fallback: { type: integer, description: "Recipients / messages that got a fallback value" }
+        items: { type: integer, description: "api/query: recipients served; lookup: ids asked; dispatch: recipients" }
+        error_rate: { type: number, nullable: true, description: "(failed + timeout) / count" }
+        avg_ms: { type: integer, nullable: true }
+        p50_ms: { type: integer, nullable: true }
+        p95_ms: { type: integer, nullable: true }
+        p99_ms: { type: integer, nullable: true }
+        min_ms: { type: integer, nullable: true }
+        max_ms: { type: integer, nullable: true }
+        peak_per_sec: { type: integer, description: Busiest single second }
+        per_minute_avg: { type: number, nullable: true, description: Mean per minute over active buckets }
+        per_minute_peak: { type: number, nullable: true, description: Busiest bucket, per minute }
+
+    CampaignMetrics:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time }
+        program_id: { type: string }
+        window:
+          type: object
+          properties:
+            range: { type: string }
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            resolution_minutes: { type: integer }
+        retention_days: { type: integer }
+        has_data: { type: boolean }
+        totals:
+          type: object
+          description: One MetricStat per kind
+          properties:
+            dispatch: { $ref: "#/components/schemas/MetricStat" }
+            lookup: { $ref: "#/components/schemas/MetricStat" }
+            api_call: { $ref: "#/components/schemas/MetricStat" }
+            query_var: { $ref: "#/components/schemas/MetricStat" }
+            message_resolve: { $ref: "#/components/schemas/MetricStat" }
+            provider_send: { $ref: "#/components/schemas/MetricStat" }
+            message_e2e: { $ref: "#/components/schemas/MetricStat" }
+        timeline:
+          type: array
+          description: >-
+            One point per bucket: `t` plus, for each of resolve / send / e2e /
+            api / query / lookup, `<p>_count`, `<p>_ok`, `<p>_failed`,
+            `<p>_avg_ms`, `<p>_p95_ms`; and `api_timeout`, `api_peak_per_sec`,
+            `fallbacks`.
+          items: { type: object, additionalProperties: true }
+        variables:
+          type: array
+          description: Top 100 api / query variables by calls; the top 10 carry a `series`.
+          items:
+            allOf:
+              - $ref: "#/components/schemas/MetricStat"
+              - type: object
+                properties:
+                  name: { type: string }
+                  source: { type: string, enum: [api, query] }
+                  fallback_rate: { type: number, nullable: true }
+                  series:
+                    type: array
+                    nullable: true
+                    items:
+                      type: object
+                      properties:
+                        t: { type: string, format: date-time }
+                        calls: { type: integer }
+                        failed: { type: integer }
+                        avg_ms: { type: integer, nullable: true }
+                        p95_ms: { type: integer, nullable: true }
+        providers:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/MetricStat"
+              - type: object
+                properties: { name: { type: string } }
+        lookup_modes:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/MetricStat"
+              - type: object
+                properties: { name: { type: string, description: database / network / mock } }
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              step_id: { type: string, nullable: true }
+              messages: { type: integer }
+              resolve_failed: { type: integer }
+              sent: { type: integer }
+              send_failed: { type: integer }
+              e2e_p50_ms: { type: integer, nullable: true }
+              e2e_p95_ms: { type: integer, nullable: true }
+              api_calls: { type: integer }
+              api_error_rate: { type: number, nullable: true }
 
     CallMetadata:
       allOf:

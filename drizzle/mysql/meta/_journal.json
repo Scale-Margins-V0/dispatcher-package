@@ -85,6 +85,13 @@
       "when": 1790321649616,
       "tag": "0011_third_vector",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1790329197145,
+      "tag": "0012_magenta_rictor",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { closeDispatcherDb } from "./db/shutdown.js";
+import { flushMetrics } from "./metrics/collector.js";
 import { flushLogSink } from "./logging/db-sink.js";
 import { componentLogger } from "./logging/logger.js";
 import { LogComponent, errorFields } from "./logging/conventions.js";
@@ -48,7 +49,8 @@ export function startServer(app: Express, port: number): void {
 
   const shutdown = (signal: NodeJS.Signals): void => {
     telemetry.capture("dispatcher_shutdown", { signal });
-    void Promise.allSettled([telemetry.shutdown(), flushLogSink()])
+    // Metrics before the DB closes: the last minute of samples lives in memory.
+    void Promise.allSettled([telemetry.shutdown(), flushLogSink(), flushMetrics()])
       .then(() => closeDispatcherDb())
       .finally(() => {
         process.exit(0);

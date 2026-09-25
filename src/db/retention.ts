@@ -25,6 +25,11 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/** dispatcher.retention.metrics_days — 7 by default, never more than 30. */
+export function metricsRetentionDays(): number {
+  return Math.min(intEnv("DISPATCHER_METRICS_RETENTION_DAYS", 7), 30);
+}
+
 export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
   if (!isDbInitialized()) return;
   const dbx = getDb();
@@ -145,6 +150,12 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
 
   const callbacks = tableFor(dbx, "campaignCallbacks");
   await q.delete(callbacks).where(lt(callbacks.last_used_at, daysAgo(30)));
+
+  // Per-minute metrics: small (rollups, not raw events) but only useful recent.
+  const metrics = tableFor(dbx, "dispatchMetrics");
+  await q
+    .delete(metrics)
+    .where(lt(metrics.minute, Math.floor(daysAgo(metricsRetentionDays()).getTime() / 60_000)));
 
   const devSent = tableFor(dbx, "devSentCampaigns");
   await q.delete(devSent).where(lt(devSent.sent_at, daysAgo(7)));

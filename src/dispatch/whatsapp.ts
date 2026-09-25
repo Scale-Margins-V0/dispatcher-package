@@ -22,7 +22,8 @@ import {
   sendWithFailover,
 } from "../providers/senders.js";
 import { telemetry } from "../telemetry/posthog.js";
-import { lookupUsers } from "../user-lookup.js";
+import { recordMetric } from "../metrics/collector.js";
+import { timedLookupUsers } from "../metrics/lookup.js";
 import { resolveDynamicValues } from "../variables/resolver.js";
 import { readCallMetadataPayload } from "../variables/call-metadata.js";
 import { programOf } from "../db/repos/dispatch-programs.js";
@@ -65,13 +66,18 @@ export async function processWhatsAppDispatch(
     resolvedAnalyticsUrl
   );
 
+  const program = programOf(payload);
+  const dispatchStarted = performance.now();
+  const sinceStart = () => performance.now() - dispatchStarted;
+
   const personalizeCtx = {
     campaign_id,
     organization_id: metadata.organization_id,
     call_metadata: readCallMetadataPayload(payload.call_metadata),
+    metrics: program,
   };
 
-  const users = await lookupUsers(user_ids, "whatsapp");
+  const users = await timedLookupUsers(program, user_ids, "whatsapp");
   // Params live in several content shapes (template JSON, caption, attributes);
   // scanning the serialized content catches `{{api_var.path}}` in any of them.
   const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx, [
@@ -79,7 +85,6 @@ export async function processWhatsAppDispatch(
   ]);
   const devRecipient = resolveDevTestRecipient() || resolveFreshchatDevTestRecipient();
 
-  const program = programOf(payload);
   // Provider message ids, for the operator to query out of the state database
   // and poll the provider with. Independent of the send log: that table is
   // pruned on its own window, this one on DISPATCHER_MESSAGE_ID_TTL.
@@ -130,6 +135,7 @@ export async function processWhatsAppDispatch(
         );
       } else {
         unresolved += 1;
+        recordMetric(program, "message_resolve", "", { failed: 1, ms: sinceStart() });
         log.debug({ user_id: userId }, "Recipient not found in user lookup — skipped");
         sendLogs.add({
           user_id: userId,
@@ -147,6 +153,7 @@ export async function processWhatsAppDispatch(
     const phone = resolveRecipientPhone(user, devRecipient);
     if (!phone) {
       missingPhone += 1;
+      recordMetric(program, "message_resolve", "", { failed: 1, ms: sinceStart() });
       log.debug({ user_id: userId }, "Recipient has no phone number — skipped");
       sendResults.push({
         userId,
@@ -183,6 +190,7 @@ export async function processWhatsAppDispatch(
 
     if (chain.length === 0) {
       unresolved += 1;
+      recordMetric(program, "message_resolve", "", { failed: 1, ms: sinceStart() });
       log.warn(
         { user_id: userId, organization_id: metadata.organization_id },
         "No enabled sender found for organization on WhatsApp channel"
@@ -283,9 +291,19 @@ export async function processWhatsAppDispatch(
           freshchatSpec: freshchatSpec ?? undefined,
         };
 
+    recordMetric(program, "message_resolve", "", {
+      ok: 1,
+      fallback: (resolution?.fallbacks.length ?? 0) > 0 ? 1 : 0,
+      ms: sinceStart(),
+    });
     const sendStartedAt = performance.now();
     const result = await sendWithFailover(message, chain, "whatsapp");
     const latencyMs = Math.round(performance.now() - sendStartedAt);
+    recordMetric(program, "provider_send", result.finalSender.config.provider, {
+      ...(result.success ? { ok: 1 } : { failed: 1 }),
+      ms: latencyMs,
+    });
+    if (result.success) recordMetric(program, "message_e2e", "", { ok: 1, ms: sinceStart() });
     // Provider errors are untrusted text. SES names the recipient in
     // "…is not authorized to perform 'ses:SendEmail' on resource …/noreply@…",
     // so scrub before it reaches a log line or the send-log table.
@@ -360,6 +378,12 @@ export async function processWhatsAppDispatch(
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;
 
+  recordMetric(program, "dispatch", "whatsapp", {
+    items: user_ids.length,
+    ok: sent,
+    failed: failed + unresolved,
+    ms: sinceStart(),
+  });
   if (missingPhone > 0) {
     log.warn(
       { channel: "whatsapp", missing_phone: missingPhone, requested: user_ids.length },

@@ -441,3 +441,49 @@ export const providerMessageIds = mysqlTable(
     index("provider_message_ids_user_idx").on(t.user_id),
   ]
 );
+
+/**
+ * Per-minute performance rollups (src/metrics/collector.ts): one row per
+ * flush per (minute, program, step, kind, subject) — reads SUM them. No PII:
+ * subjects are variable / provider / lookup-mode names, never user data.
+ * Pruned after dispatcher.retention.metrics_days (default 7).
+ */
+export const dispatchMetrics = mysqlTable(
+  "dispatch_metrics",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    /** Epoch minutes — integer so any bucket size is `minute - minute % n` in every dialect. */
+    minute: int("minute").notNull(),
+    program_id: id191("program_id").notNull(),
+    step_id: id191("step_id").notNull().default(""),
+    kind: varchar("kind", { length: 24 }).notNull(),
+    subject: id191("subject").notNull().default(""),
+    count: int("count").notNull().default(0),
+    ok: int("ok").notNull().default(0),
+    failed: int("failed").notNull().default(0),
+    timeout: int("timeout").notNull().default(0),
+    skipped: int("skipped").notNull().default(0),
+    fallback: int("fallback").notNull().default(0),
+    items: int("items").notNull().default(0),
+    sum_ms: int("sum_ms").notNull().default(0),
+    min_ms: int("min_ms"),
+    max_ms: int("max_ms"),
+    peak_per_sec: int("peak_per_sec").notNull().default(0),
+    /** Latency histogram — bounds in src/metrics/histogram.ts. */
+    b0: int("b0").notNull().default(0),
+    b1: int("b1").notNull().default(0),
+    b2: int("b2").notNull().default(0),
+    b3: int("b3").notNull().default(0),
+    b4: int("b4").notNull().default(0),
+    b5: int("b5").notNull().default(0),
+    b6: int("b6").notNull().default(0),
+    b7: int("b7").notNull().default(0),
+    b8: int("b8").notNull().default(0),
+    b9: int("b9").notNull().default(0),
+    b10: int("b10").notNull().default(0),
+  },
+  (t) => [
+    index("dispatch_metrics_program_minute_idx").on(t.program_id, t.minute),
+    index("dispatch_metrics_minute_idx").on(t.minute),
+  ]
+);

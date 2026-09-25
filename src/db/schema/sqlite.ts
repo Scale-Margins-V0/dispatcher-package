@@ -432,3 +432,49 @@ export const providerMessageIds = sqliteTable(
     index("provider_message_ids_user_idx").on(t.user_id),
   ]
 );
+
+/**
+ * Per-minute performance rollups (src/metrics/collector.ts): one row per
+ * flush per (minute, program, step, kind, subject) — reads SUM them. No PII:
+ * subjects are variable / provider / lookup-mode names, never user data.
+ * Pruned after dispatcher.retention.metrics_days (default 7).
+ */
+export const dispatchMetrics = sqliteTable(
+  "dispatch_metrics",
+  {
+    id: text("id").primaryKey(),
+    /** Epoch minutes — integer so any bucket size is `minute - minute % n` in every dialect. */
+    minute: integer("minute").notNull(),
+    program_id: text("program_id").notNull(),
+    step_id: text("step_id").notNull().default(""),
+    kind: text("kind").notNull(),
+    subject: text("subject").notNull().default(""),
+    count: integer("count").notNull().default(0),
+    ok: integer("ok").notNull().default(0),
+    failed: integer("failed").notNull().default(0),
+    timeout: integer("timeout").notNull().default(0),
+    skipped: integer("skipped").notNull().default(0),
+    fallback: integer("fallback").notNull().default(0),
+    items: integer("items").notNull().default(0),
+    sum_ms: integer("sum_ms").notNull().default(0),
+    min_ms: integer("min_ms"),
+    max_ms: integer("max_ms"),
+    peak_per_sec: integer("peak_per_sec").notNull().default(0),
+    /** Latency histogram — bounds in src/metrics/histogram.ts. */
+    b0: integer("b0").notNull().default(0),
+    b1: integer("b1").notNull().default(0),
+    b2: integer("b2").notNull().default(0),
+    b3: integer("b3").notNull().default(0),
+    b4: integer("b4").notNull().default(0),
+    b5: integer("b5").notNull().default(0),
+    b6: integer("b6").notNull().default(0),
+    b7: integer("b7").notNull().default(0),
+    b8: integer("b8").notNull().default(0),
+    b9: integer("b9").notNull().default(0),
+    b10: integer("b10").notNull().default(0),
+  },
+  (t) => [
+    index("dispatch_metrics_program_minute_idx").on(t.program_id, t.minute),
+    index("dispatch_metrics_minute_idx").on(t.minute),
+  ]
+);

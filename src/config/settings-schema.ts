@@ -143,6 +143,8 @@ export const retentionSchema = z
     campaign_event_days: z.coerce.number().int().positive().optional(),
     campaign_event_max_rows: z.coerce.number().int().positive().optional(),
     outbox_max_attempts: z.coerce.number().int().positive().optional(),
+    /** Days of per-minute performance metrics to keep (default 7, max 30). */
+    metrics_days: z.coerce.number().int().positive().max(30).optional(),
   })
   .strict();
 

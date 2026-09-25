@@ -378,3 +378,16 @@ export type ZLogIdParam = z.infer<typeof ZLogIdParamSchema>;
 
 /** Re-exported so the controller and the docs quote one mask, not two. */
 export { HEADER_MASK };
+
+/*
+ * Campaign metrics
+ */
+
+export const ZCampaignMetricsQuerySchema = z.object({
+  /** Fixed windows only — each maps to a bucket size that keeps the response small. */
+  range: z.enum(["1h", "6h", "24h", "3d", "7d"]).default("24h"),
+  /** One drip step; omitted = the whole program. */
+  step_id: z.string().trim().min(1).max(191).optional(),
+});
+
+export type ZCampaignMetricsQuery = z.infer<typeof ZCampaignMetricsQuerySchema>;

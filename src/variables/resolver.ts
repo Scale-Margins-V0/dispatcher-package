@@ -17,6 +17,7 @@ import { deriveResponseSchema, renderValue, valueAtPath, type ResponseField } fr
 import { listCallMetadata } from "../db/repos/call-metadata.js";
 import type { CallMetadataRow } from "../db/schema/index.js";
 import { valuesForVariable, type CallMetadataPayload } from "./call-metadata.js";
+import { recordMetric, type MetricScope } from "../metrics/collector.js";
 
 const log = componentLogger("variables.resolver");
 
@@ -32,7 +33,14 @@ export type ResolveContext = {
   call_metadata?: CallMetadataPayload;
   /** `{{key.v}}` for the variable being resolved — set per variable, never by callers. */
   meta_values?: Record<string, string>;
+  /** Where api/query timings are recorded (src/metrics/collector.ts). Absent = not recorded. */
+  metrics?: MetricScope;
 };
+
+/** An abort or our own race timer — reported apart from other failures. */
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || /timed? ?out/i.test(error.message));
+}
 
 const SAMPLE_CTX: ResolveContext = { campaign_id: "cmp_sample", organization_id: "org_sample" };
 
@@ -398,10 +406,19 @@ export async function resolveDynamicValues(
   const outcomes = new Map<string, Extracted | null>();
   await mapLimit([...jobByKey.keys()], CONCURRENCY, async (key) => {
     const { name, entry, user, ctx: entryCtx } = jobByKey.get(key)!;
+    const kind = entry.source === "api" ? "api_call" : "query_var";
+    const started = performance.now();
     try {
       outcomes.set(key, await executeVariable(entry, user, entryCtx, paths.get(name) ?? NO_PATHS));
+      if (ctx.metrics) recordMetric(ctx.metrics, kind, name, { ok: 1, ms: performance.now() - started });
     } catch (error) {
       outcomes.set(key, null);
+      if (ctx.metrics) {
+        recordMetric(ctx.metrics, kind, name, {
+          ...(isTimeout(error) ? { timeout: 1 } : { failed: 1 }),
+          ms: performance.now() - started,
+        });
+      }
       log.warn(
         { err: error instanceof Error ? error : new Error(String(error)), source: entry.source },
         `Dynamic variable resolution failed (${entry.source}) — using fallback`
@@ -409,7 +426,19 @@ export async function resolveDynamicValues(
     }
   });
 
+  // Per variable: recipients served, how many fell back, how many were skipped.
+  const served = new Map<string, { kind: "api_call" | "query_var"; items: number; fallback: number; skipped: number }>();
   for (const plan of plans) {
+    const tally = served.get(plan.name) ?? {
+      kind: plan.entry.source === "api" ? "api_call" : "query_var",
+      items: 0,
+      fallback: 0,
+      skipped: 0,
+    };
+    served.set(plan.name, tally);
+    tally.items += 1;
+    if (plan.key.endsWith("\u0000skipped")) tally.skipped += 1;
+    const fallbacksBefore = result.get(plan.userId)?.fallbacks.length ?? 0;
     const extracted = outcomes.get(plan.key) ?? null;
     const bucket = result.get(plan.userId) ?? { values: {}, fallbacks: [] };
     const fallback = plan.entry.fallback ?? "";
@@ -424,6 +453,12 @@ export async function resolveDynamicValues(
       if (!resolved) bucket.fallbacks.push(token);
     }
     result.set(plan.userId, bucket);
+    if (bucket.fallbacks.length > fallbacksBefore) tally.fallback += 1;
+  }
+  if (ctx.metrics) {
+    for (const [name, t] of served) {
+      recordMetric(ctx.metrics, t.kind, name, { count: 0, items: t.items, fallback: t.fallback, skipped: t.skipped });
+    }
   }
   return result;
 }

@@ -21,6 +21,7 @@ import { LogComponent } from "../../../logging/conventions.js";
 import { requireApiKey } from "../auth.js";
 import * as CallMetadataController from "../controllers/call-metadata.controller.js";
 import * as DataPlaneController from "../controllers/dataplane.controller.js";
+import * as MetricsController from "../controllers/metrics.controller.js";
 import { corsMiddleware } from "../cors.js";
 import { apiError, asyncApi } from "../errors.js";
 
@@ -135,6 +136,10 @@ router
 router
   .route("/campaigns/:programId/sends")
   .get(asyncApi(DataPlaneController.listCampaignSendsHandler));
+
+router
+  .route("/campaigns/:programId/metrics")
+  .get(asyncApi(MetricsController.getCampaignMetricsHandler));
 
 /*
  * Logs — the dispatcher's own structured log. Free-form text is PII-scrubbed
