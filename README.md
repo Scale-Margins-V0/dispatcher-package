@@ -1,120 +1,169 @@
-# ScaleMargin Dispatcher
+# Deploying the ScaleMargin Dispatcher
 
-**What you are installing.** One container that runs inside your infrastructure,
-next to your customer database. ScaleMargin sends it campaigns containing
-placeholders and opaque IDs; it looks up the real values in _your_ database,
-personalizes each message, and sends through _your_ email provider. No customer
-data ever reaches ScaleMargin.
+> 📦 **What you are installing** — one container that runs inside your infrastructure. ScaleMargin sends it campaigns containing placeholders and opaque user IDs; it resolves those into real people, personalizes each message, and sends through *your* provider account. No customer data ever reaches ScaleMargin.
+>
+> **What it takes** — two files, `docker-compose.yml` and `.env.yaml`, then `docker compose up -d`. About twenty minutes.
 
-**What it takes.** One `.env.yaml` file and `docker compose up -d`. Roughly
-twenty minutes end to end.
+## Contents
 
----
-
-## 1. Before you start
-
-| You need                                   | Notes                                                         |
-| ------------------------------------------ | ------------------------------------------------------------- |
-| Docker Engine 24+ with Compose v2          | `docker --version`, `docker compose version`                  |
-| 2 vCPU / 2 GB RAM / 10 GB disk             | Comfortable for millions of sends a month                     |
-| Recipient data the dispatcher can reach     | Read-only database access, **or** a lookup API you host. See §6 |
-| An email provider account                  | AWS SES or SendGrid, with a **verified sender address**       |
-| Two secrets from ScaleMargin               | `SCALEMARGIN_DISPATCH_SECRET`, `SCALEMARGIN_ANALYTICS_SECRET` |
-| Outbound access to `ghcr.io`               | To pull the image. No account or credentials needed — see §3  |
-
-The dispatcher must be able to reach your customer database, your email
-provider, and `api.scalemargin.com`. It does **not** need to accept inbound
-traffic from the internet unless you want provider webhooks (delivery and open
-tracking) or want to manage it from the ScaleMargin platform — see §9.
-
----
-
-## 2. There are two databases. This is the thing to get right.
-
-|                   | Your customer database                   | The dispatcher's own database                  |
-| ----------------- | ---------------------------------------- | ---------------------------------------------- |
-| Contains          | Your customers — names, emails, balances | Variables, campaign history, logs, event queue |
-| Who owns it       | You, already                             | Created by this compose file                   |
-| Dispatcher access | **Read only**                            | Read and write                                 |
-| Configured by     | `user_lookup:` in `.env.yaml`            | `dispatcher.database:` in `.env.yaml`          |
-| Runs where        | Wherever it already runs                 | The `postgres` service in this stack           |
-
-The dispatcher never writes to your customer database. It reads the columns you
-map in `.env.yaml` and nothing else — or, if you prefer, it never touches your
-database at all and asks an API you host instead (§6).
+- [1. How it works](#1-how-it-works)
+  - [The shape of a send](#the-shape-of-a-send)
+  - [Who holds what](#who-holds-what)
+  - [The four things you configure](#the-four-things-you-configure)
+- [2. Where the data lives — three options](#2-where-the-data-lives--three-options)
+- [3. Before you start](#3-before-you-start)
+- [4. Get the files](#4-get-the-files)
+- [5. docker-compose.yml](#5-docker-composeyml)
+- [6. .env.yaml](#6-envyaml)
+  - [6.1 How the file is laid out](#61-how-the-file-is-laid-out)
+  - [6.2 dispatcher: — this service](#62-dispatcher--this-service)
+  - [6.3 scalemargin: — platform secrets](#63-scalemargin--platform-secrets)
+  - [6.4 user_lookup: — where recipient data comes from](#64-user_lookup--where-recipient-data-comes-from)
+  - [6.5 senders: and routing: — which accounts send](#65-senders-and-routing--which-accounts-send)
+  - [6.6 links:, events:, storage: — optional](#66-links-events-storage--optional)
+  - [6.7 env: — optional escape hatch](#67-env--optional-escape-hatch)
+- [7. Samples](#7-samples)
+  - [Sample A — Network mode](#sample-a--network-mode)
+  - [Sample B — Host mode](#sample-b--host-mode)
+- [8. Share with ScaleMargin, register webhooks](#8-share-with-scalemargin-register-webhooks)
+  - [8.1 What to share with ScaleMargin](#81-what-to-share-with-scalemargin)
+  - [8.2 Register provider webhooks](#82-register-provider-webhooks)
+- [9. Start it and check](#9-start-it-and-check)
+- [10. Day-two operations](#10-day-two-operations)
+- [11. Troubleshooting](#11-troubleshooting)
+- [12. Security summary](#12-security-summary)
 
 ---
 
-## 3. Get the files
+# 1. How it works
 
-Create a directory and put these files in it:
+Read this part even if you skip the rest. Most setup mistakes come from not knowing which system holds what.
 
+## The shape of a send
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant SM as ScaleMargin
+  participant D as Dispatcher<br/>(your network)
+  participant L as Your data
+  participant P as Your provider<br/>(SES / SendGrid / WhatsApp)
+  participant R as Recipient
+
+  SM->>D: Campaign + opaque user IDs + placeholders
+  Note over SM,D: Signed request. No names,<br/>no addresses, no phone numbers.
+  D->>L: Who are these IDs?
+  L-->>D: email (or phone, for WhatsApp)
+  Note over D,L: A read-only SQL query,<br/>or an HTTPS call to your API.
+  D->>D: Fill placeholders per recipient
+  D->>P: Send, using your account
+  P->>R: The message
+  P-->>D: delivered / opened / bounced
+  D-->>SM: Counts, opaque IDs, timestamps
+  Note over D,SM: Still no personal data.
 ```
+
+## Who holds what
+
+|  | Holds | Never holds |
+| --- | --- | --- |
+| **ScaleMargin** | Campaign copy, opaque user IDs, aggregate counts | Names, emails, phone numbers, message bodies |
+| **The dispatcher** | Your provider keys, your lookup credentials, campaign history | Customer data at rest — it reads a record, sends, and forgets it |
+| **You** | Everything about your customers | — |
+
+## The four things you configure
+
+1. **Where recipient data comes from** — a read-only database user, or an API you host. `user_lookup:`
+2. **Which accounts send** — one account, or several with weights and failover. `senders:` and `routing:`
+3. **How ScaleMargin reaches the dispatcher** — a shared key and a public URL. `dispatcher:`
+4. **The dispatcher's own database** — created by the compose file; you set one password. `dispatcher.database:`
+
+All four live in one file, `.env.yaml`. There is no `.env`.
+
+---
+
+# 2. Where the data lives — three options
+
+This is the thing to get right. Recipients are resolved from **one of two sources you choose** — your API (network mode) or your database (database mode). Separately, the dispatcher always keeps **its own Postgres** for its working state.
+
+|  | 🌐 Network mode | 🗄️ Database mode | 🐘 Dispatcher's own Postgres |
+| --- | --- | --- | --- |
+| What it is | An HTTPS lookup API you host | Your customer database | The dispatcher's working database |
+| Used for | Resolving recipients — email or phone | Resolving recipients — email or phone, plus columns your `field` variables read | Variables, campaign history, logs, metrics, event queue |
+| Who owns it | You, already | You, already | Created by the compose file |
+| Dispatcher access | Calls it with a bearer token — **no database credentials at all** | **Read only**, a dedicated user | Read and write |
+| Configured by | `user_lookup:` with `mode: network` | `user_lookup:` with `mode: database` | `dispatcher.database:` |
+| Choose it when | Data sits behind a service, or policy forbids direct database access | You can grant a read-only user to a table or view | Always — it is not optional |
+
+Pick **network or database** for recipients — never both. The dispatcher's own Postgres is always there, and it never holds your customer data. The dispatcher never writes to your API or your customer database.
+
+---
+
+# 3. Before you start
+
+| You need | Notes |
+| --- | --- |
+| Docker Engine 24+ with Compose v2 | `docker --version`, `docker compose version` |
+| 2 vCPU · 2 GB RAM · 10 GB disk | Comfortable for millions of sends a month |
+| Recipient data the dispatcher can reach | Read-only database access **or** a lookup API you host |
+| A provider account | SES or SendGrid (WhatsApp: Gupshup or Freshchat), with a **verified sender** |
+| Two secrets from ScaleMargin | `dispatch_secret` and `analytics_secret`, from your onboarding email |
+| Outbound access to `ghcr.io` | To pull the image. No account needed |
+
+The dispatcher must reach your data, your provider and ScaleMargin (`app.scalemargins.tech`). It needs **inbound** access only for provider webhooks (delivery and open tracking) and for management from the ScaleMargin platform.
+
+> 💡 On Apple Silicon and ARM servers the published `linux/amd64` image runs under emulation — slower to boot, fully functional. Ask us for a native ARM build if you need one.
+
+---
+
+# 4. Get the files
+
+```text
 dispatcher/
-  docker-compose.yml     from §4 below
-  .env.yaml              from §5 below — you fill this in
+  docker-compose.yml     section 5
+  .env.yaml              section 6 — you fill this in
 ```
 
-**One configuration file.** There is no `.env`. Everything that used to live
-there — platform secrets, database settings, provider keys, retention, logging
-— is now a block in `.env.yaml`. It holds credentials, so `chmod 600` it.
-
-**There is no registry login step.** Our image is published publicly on GitHub
-Container Registry, so you pull it the same way you would pull `postgres`:
+`.env.yaml` holds every secret. Create it **before** the first start, and lock it down:
 
 ```bash
-docker pull ghcr.io/scale-margins-v0/scalemargin-dispatcher:0.3.0
+chmod 600 .env.yaml
 ```
 
-No account, no key file, no token, nothing that expires. If that command
-succeeds you have everything you need from us on the registry side, and
-`docker compose pull` will keep working unattended for as long as the machine
-lives.
+The image is public — no registry login:
 
-Only requirement: the host can reach `ghcr.io` on port 443. If your egress is
-filtered, allowlist `ghcr.io` and `pkg-containers.githubusercontent.com` (the
-latter serves the actual layers). If you cannot allow outbound access to a
-public registry at all, tell us — we will send you the image as a signed tarball
-instead.
+```bash
+docker pull ghcr.io/scale-margins-v0/scalemargin-dispatcher:latest
+```
+
+If your egress is filtered, allowlist `ghcr.io` and `pkg-containers.githubusercontent.com`. If you cannot reach a public registry at all, we can send the image as a signed tarball.
 
 ---
 
-## 4. `docker-compose.yml`
+# 5. docker-compose.yml
 
-Copy this exactly. The only line you should change is the image tag, and only
-when we tell you to upgrade.
+Copy this as-is. Change the image tag only when we tell you to upgrade.
 
 ```yaml
 services:
   dispatcher:
-    image: ghcr.io/scale-margins-v0/scalemargin-dispatcher:0.3.0
+    image: ghcr.io/scale-margins-v0/scalemargin-dispatcher:latest
     restart: unless-stopped
     ports:
-      # Bind to localhost only. Put a reverse proxy in front if you need
-      # provider webhooks or the ScaleMargin dashboard — see section 8.
+      # Localhost only. Put a reverse proxy in front to accept
+      # provider webhooks or management from ScaleMargin.
       - "127.0.0.1:3100:3100"
-    # Nothing is set here: the dispatcher's own database is configured by the
-    # `dispatcher.database:` block in .env.yaml. Anything you DO put here wins over
-    # that file, which is the intended escape hatch for injected secrets.
     volumes:
-      # Where recipient data comes from (§6) and which accounts send (§7).
-      # Create this file BEFORE the first `up` — Docker silently creates an
-      # empty directory in its place otherwise, and the dispatcher then runs
-      # in MOCK mode and mails nobody real.
+      # All configuration. Create the file BEFORE the first `up` —
+      # otherwise Docker creates a DIRECTORY here and the dispatcher
+      # boots in mock mode, mailing nobody real.
       - ./.env.yaml:/app/.env.yaml:ro
-      # Local runtime state. Small, but keep it across restarts.
       - dispatcher-data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://localhost:3100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
-        ]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -129,9 +178,7 @@ services:
     environment:
       POSTGRES_DB: dispatcher_state
       POSTGRES_USER: dispatcher
-      # Must match `state_database.password` in .env.yaml. Written literally
-      # because Compose's ${VAR} interpolation reads a `.env` file, and there
-      # is no longer one to read.
+      # Must match dispatcher.database.password in .env.yaml
       POSTGRES_PASSWORD: replace-with-a-long-random-string
     volumes:
       - dispatcher-postgres-data:/var/lib/postgresql/data
@@ -140,471 +187,254 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    # Not published to the host — only the dispatcher needs to reach it.
 
 volumes:
   dispatcher-data:
   dispatcher-postgres-data:
 ```
 
-Two deliberate choices worth knowing about:
+Three deliberate choices:
 
-- **Postgres has no `ports:` entry.** It is reachable only from the dispatcher
-  container on the compose network. Publishing it would expose your campaign
-  history to the host network for no benefit.
-- **The dispatcher binds to `127.0.0.1`.** Nothing from outside the machine can
-  reach it until you deliberately put a proxy in front.
-- **No `env_file:` and no `${VAR}` interpolation.** Both read a `.env` file.
-  Configuration comes from the mounted `.env.yaml` instead; the one value that
-  must be repeated is the Postgres password, because the database container
-  needs it before the dispatcher has read anything.
+- **Postgres publishes no port.** Only the dispatcher reaches it, over the compose network.
+- **The dispatcher binds to `127.0.0.1`.** Nothing outside the machine reaches it until you add a proxy.
+- **No `env_file:` and no `${VAR}`.** Both read a `.env`, which no longer exists. The Postgres password is the one value written twice — the database container needs it before the dispatcher has read anything.
 
 ---
 
-## 5. `.env.yaml` — the only configuration file
+# 6. .env.yaml
 
-Everything the dispatcher needs is one YAML file. There is no `.env`.
+The only configuration file. Almost every key is optional and has a sensible default; the dispatcher tells you at boot what it could not find. Four things are required:
 
-Create it next to `docker-compose.yml`, `chmod 600` it, and fill in the blocks
-you need. Almost every key is optional — the dispatcher boots with sensible
-defaults and tells you at startup what it could not find. The exceptions are
-your two ScaleMargin secrets and **`dispatcher.retention.message_id_ttl`** (§5.3), which
-has no default and will stop the container if unset.
+- `scalemargin.dispatch_secret` and `scalemargin.analytics_secret` — it will not start without them
+- `dispatcher.retention.message_id_ttl` — no default, on purpose
+- `user_lookup:` — technically optional, but without it the dispatcher runs in **mock mode**
+- `senders:` — at least one email sender, each with its own verified `from:`
+
+> 🔐 **This file holds credentials** — database passwords, provider keys, a lookup token, your management key. `chmod 600`, keep it out of version control, never paste it into a ticket. In Kubernetes mount it as a **Secret** with `defaultMode: 0400`, never a ConfigMap.
+
+## 6.1 How the file is laid out
+
+One rule decides where a setting goes: `dispatcher:` is *this service*; everything else, top-level, is *what it does*.
+
+```text
+version: 1
+dispatcher:        this service — port, public URL, keys, its own database, retention
+scalemargin:       your two platform secrets
+user_lookup:       where recipient data comes from
+routing: / senders: which accounts send
+links:             unsubscribe and preference links
+events:, storage:  webhooks and campaign images (optional)
+env:               optional — values for *_env references, anything else verbatim
+```
+
+**Where a value can come from**, highest priority first:
+
+|  | Source | Use it for |
+| --- | --- | --- |
+| 1 | A real environment variable (compose `environment:`, a Kubernetes Secret) | Rotated secrets, per-environment overrides. Never overwritten by the file |
+| 2 | A typed block in `.env.yaml` | Everything else |
+| 3 | The `env:` map at the bottom of `.env.yaml` | Provider keys, and anything without a typed block |
+
+**Two ways to write any secret:**
+
+| Written as | Means |
+| --- | --- |
+| `api_key: "SG.abc…"` | The value itself |
+| `api_key_env: SENDGRID_API_KEY` | The **name** of a variable holding it — from the `env:` map, compose `environment:` or a Secret |
+
+> ⚠️ **The `_env` suffix is the whole difference.** `api_key: SENDGRID_API_KEY` sets your key to that literal text, and the first send fails with an auth error. A misspelled key such as `atlas_keys:` is rejected at boot rather than ignored, and an empty file is a parse error — give it at least `version: 1`.
+
+## 6.2 dispatcher: — this service
 
 ```yaml
-version: 1
-
-# This service itself — how it is reached, and its own database and retention.
 dispatcher:
   port: 3100
   public_url: https://dispatcher.your-company.com
-  atlas_key: "…" # openssl rand -base64 32, then share it with us
+  atlas_key: "replace-with-openssl-rand-base64-32"
+  # atlas_cors_origins: [https://app.scalemargins.tech]   # only if we ask
 
-  # Its OWN database — not your customer database.
-  database:
-    dialect: postgres
+  database:                      # its OWN database — not your customers
+    dialect: postgres            # postgres | mysql | sqlite
     host: postgres
     port: 5432
     user: dispatcher
-    password: "replace-with-a-long-random-string" # must match docker-compose.yml
+    password: "replace-with-a-long-random-string"   # = POSTGRES_PASSWORD
     database: dispatcher_state
 
-  # How long provider message ids are kept. MANDATORY — no default. See §5.3.
   retention:
-    message_id_ttl: "5d 2h"
+    message_id_ttl: "5d 2h"      # REQUIRED
+    # metrics_days: 7
 
-# The two secrets from your onboarding email.  REQUIRED
-scalemargin:
-  dispatch_secret: "…"
-  analytics_secret: "…"
-
-# Where recipient data comes from. See §6 — this is the one to get right.
-user_lookup:
-  mode: database
-  # …
-
-# Sending, for a single account. See §7 for several.
-email:
-  provider: ses
-  from: campaigns@your-company.com
-
-# Anything not modelled above, set verbatim. This is where provider keys live
-# now that there is no `.env`.
-env:
-  AWS_ACCESS_KEY_ID: "…"
-  AWS_SECRET_ACCESS_KEY: "…"
+  # logging:
+  #   level: info
 ```
 
-A complete file, with every block and worked examples for four different
-environments, is in **§13 at the end of this document**. The same content ships
-in the package as `.env.yaml.example`.
-
-### 5.0 How the file is laid out
-
-One rule decides where a setting goes:
-
-- **`dispatcher:`** — how the dispatcher itself runs. How it is reached, who may
-  reach it, its own database, admin auth, retention, logging, telemetry.
-- **Everything else is top-level** — what it does. `scalemargin:`,
-  `user_lookup:`, `email:` / `routing:` / `senders:`, `links:`, `events:`,
-  `storage:`, and the `env:` escape hatch.
-
-```
-dispatcher:            ← this service
-  port, public_url, atlas_key, atlas_cors_origins, logs_api_token
-  database:            its own state database
-  admin:               console auth, session secret
-  retention:           incl. the mandatory message_id_ttl
-  logging:
-  telemetry:
-scalemargin:           ← what it does
-user_lookup:
-email / routing / senders
-links / events / storage
-env:
-```
-
-**If you wrote an earlier version of this file,** `state_database:`, `admin:`,
-`retention:`, `logging:` and `telemetry:` used to be top-level. They are now
-rejected there, with a message naming where each went — they are not silently
-ignored:
-
-```
-state_database: moved — write this block under `dispatcher.database` instead
-admin:          moved — write this block under `dispatcher.admin` instead
-```
-
-Indent the block two spaces under `dispatcher:`, and rename `state_database`
-to `database`. Nothing else about the block changes.
-
-### 5.1 Where a setting can come from
-
-Three places, highest priority first:
-
-<!-- prettier-ignore -->
-| | Source | Use it for |
+| Key | What it does | If unset |
 | --- | --- | --- |
-| 1 | A real environment variable — Docker `environment:`, a Kubernetes Secret, a shell export | Rotated secrets, per-environment overrides, one-off debugging |
-| 2 | A typed block in `.env.yaml` | Everything else |
-| 3 | The `env:` map in `.env.yaml` | Provider keys and anything not modelled as a typed block |
+| `port` | Port inside the container | `3100` |
+| `public_url` | How the outside world reaches you. Used for unsubscribe links, webhooks and secure cookies | `links.unsubscribe_url_base`, then localhost |
+| `atlas_key` | The key ScaleMargin uses to read health, variables, campaigns, logs and metrics. Generate with `openssl rand -base64 32` and share the same value with us | **The management API is off** — 503 on every route |
+| `atlas_cors_origins` | Browser origins allowed to call that API. Leave it out unless we ask | No CORS headers — server-to-server only, the safe default |
+| `database.*` | The dispatcher's own database. `url:` may replace the discrete fields; `dialect: sqlite` takes `file:` instead | A local SQLite file — fine for trials, not production |
+| `retention.message_id_ttl` | How long provider message IDs are kept, as a duration: `"5d 2h"`, `"12h"`, `"30d"`. Minimum `1h` | **Refuses to start** — there is no safe default |
+| `retention.metrics_days` | Days of per-minute campaign metrics (API latency, failures, throughput) to keep. Max 30 | `7` |
+| `retention.log_days`, `campaign_event_days` | Log and event history windows | `14`, `90` |
+| `logging.level` | `trace` · `debug` · `info` · `warn` · `error` · `fatal` | `info` |
 
-**A real environment variable is never overwritten by the file.** That ordering
-is deliberate: a platform injecting a freshly rotated secret has to win over a
-value baked into a mounted file, and
-`DISPATCHER_LOG_LEVEL=debug docker compose up` has to actually take effect.
+Retention runs hourly, so a row lives at most one hour past its window.
 
-If a typed block and the `env:` map set the same thing, the typed block wins and
-the dispatcher says so at boot rather than picking one quietly.
-
-### 5.2 Two ways to write any secret
-
-<!-- prettier-ignore -->
-| In `.env.yaml` | Meaning |
-| --- | --- |
-| `atlas_key: "abc123"` | The value itself |
-| `atlas_key_env: DISPATCHER_ATLAS_KEY` | The **name** of a variable holding it |
-
-The `_env` form keeps the secret out of the file, which matters if you template
-`.env.yaml` into version control. It needs the named variable to exist
-somewhere — your container's `environment:`, a Kubernetes Secret, or the `env:`
-map at the bottom of the same file.
-
-> ⚠️ **The `_env` suffix is the whole difference.** `atlas_key: DISPATCHER_ATLAS_KEY`
-> does **not** read a variable. It sets your key to that literal text. If the
-> name you reference does not exist, the dispatcher says so at boot instead of
-> storing the name as the value.
-
-### 5.3 `dispatcher.retention.message_id_ttl` — the one mandatory setting
-
-Every provider gives a message an id when it accepts it. The dispatcher records
-those ids in the **`provider_message_ids`** table of its own database, so you can
-query them and poll the provider for status yourself.
+## 6.3 scalemargin: — platform secrets
 
 ```yaml
-dispatcher:
-  retention:
-    message_id_ttl: "5d 2h" # REQUIRED — the dispatcher will not start without it
+scalemargin:
+  dispatch_secret: "from-your-onboarding-email"
+  analytics_secret: "from-your-onboarding-email"
+  analytics_callback_url: https://app.scalemargins.tech/api/webhooks/campaign-analytics   # recommended
 ```
 
-One row per accepted WhatsApp send. No API — it is yours to query directly:
+`dispatch_secret` verifies that a campaign really came from ScaleMargin; `analytics_secret` signs the delivery events sent back. Both are required.
 
-| Column | |
-| --- | --- |
-| `id` | Row id |
-| `provider` | `freshchat` or `gupshup` — the sender that actually sent it |
-| `provider_message_id` | What the provider called the message. Freshchat returns its `request_id` |
-| `user_id` | The recipient — the user id ScaleMargin sent in the dispatch |
-| `sent_at` | When we sent it |
+`analytics_callback_url` is where events go. Campaign events normally use the URL that arrives with each campaign, but **WhatsApp delivery receipts carry no campaign** — they go to this URL, or else to the one from the most recent campaign. Set it so receipts never depend on that. It is `POST /api/webhooks/campaign-analytics` on your ScaleMargin host: `app.scalemargins.tech` in production (`stg.` staging, `dev.` development).
 
-```sql
-SELECT user_id, provider_message_id, sent_at
-FROM provider_message_ids
-WHERE provider = 'freshchat' AND sent_at > now() - interval '1 day';
-```
+## 6.4 user_lookup: — where recipient data comes from
 
-Full reference, and how delivery/read events reach ScaleMargin:
-[docs/message-ids-and-analytics.md](docs/message-ids-and-analytics.md).
+ScaleMargin sends opaque IDs. This block turns them into an email address (for email) or a phone number (for WhatsApp) — contact details only, and only the one the send needs. Personalization such as names comes from **variables**, managed in the ScaleMargin platform. **Pick one mode.**
 
-**The format is a duration** — `"5d 2h"`, `"12h"`, `"30d"`. Days, hours and
-minutes, in any order. **Minimum one hour.**
-
-**There is deliberately no default,** which is why it is the only mandatory
-setting besides your ScaleMargin secrets. Too short and the ids are gone before
-you used them; too long and you are storing them forever. Only you know which,
-so the dispatcher refuses to guess:
-
-```
-[FATAL] dispatcher.retention.message_id_ttl (DISPATCHER_MESSAGE_ID_TTL) is required —
-        set it to how long to keep the data, e.g. "5d 2h". Minimum 1h.
-```
-
-Two details worth knowing:
-
-- **Pruning runs hourly**, so a row survives at most one tick past its window.
-  `"2h"` deletes rows between two and three hours old — never younger than two.
-- **Only accepted sends are recorded.** A send the provider rejected has no id
-  to look up, so it gets no row. Failures are in `dispatch_send_logs`.
-
----
-
-## 6. `.env.yaml` — where recipient data comes from
-
-ScaleMargin sends the dispatcher opaque IDs. This section tells it how to turn
-those into an email address and a name.
-
-**Pick one mode.** Without a `user_lookup` block the dispatcher starts in **mock
-mode** — it personalizes with fabricated data while appearing perfectly healthy.
-
-<!-- prettier-ignore -->
 | Mode | The dispatcher | Choose it when |
 | --- | --- | --- |
-| `database` | Connects read-only to your database and `SELECT`s the columns you map | You are comfortable granting a read-only user |
-| `network` | Calls an HTTPS endpoint you host, with a bearer token | Your data is behind a service, or policy forbids direct DB access |
+| `database` | Connects read-only and selects only the columns in use | You can grant a read-only user |
+| `network` | Calls an HTTPS endpoint you host, with a bearer token | Data sits behind a service, or policy forbids direct access |
 | `mock` | Fabricates recipients | Local trials only |
 
-> ⚠️ **`.env.yaml` holds credentials** — a database password or a bearer token.
-> `chmod 600 .env.yaml`, keep it out of version control, and treat it exactly
-> like any other credential store. In Kubernetes it is a Secret mounted at
-> `defaultMode: 0400`,
-> never a ConfigMap.
+> 🚨 **No `user_lookup:` block means mock mode.** The dispatcher personalizes with invented data and mails nobody real — while looking perfectly healthy. Section 9 shows how to confirm the mode.
 
-### 6.1 `mode: database`
+### Database mode
 
 ```yaml
-version: 1
-
 user_lookup:
   mode: database
-  backend: postgres # postgres | mysql | sqlite
-
-  # Read-only credentials for YOUR customer database.
+  backend: postgres            # postgres | mysql | sqlite
   connection:
-    host: db.internal # see §6.3 for what to put here
+    host: db.internal          # see the table below
     port: 5432
     user: dispatcher_ro
-    password: "a-long-random-password" # or: password_env: DB_PASSWORD
+    password: "a-long-random-password"
     database: your_db
     ssl: true
-
   source:
-    kind: table # table | view
-    name: customers # your table
-    id_column: external_id # the column holding the ID ScaleMargin sends
-    id_type: string # string | int | bigint | uuid
-
-  # Your column for each contact field. The lookup returns these and nothing
-  # else: `email` to send email, `phone` to send WhatsApp.
-  # Personalization (names, company, …) is variables: a `field` variable reads
-  # any other column of `source`, and only the columns in use are ever read.
-  fields:
+    kind: view                 # table | view
+    name: dispatcher_recipients
+    id_column: external_id     # holds the ID ScaleMargin sends
+    id_type: string            # string | int | bigint | uuid
+  fields:                      # your column for each contact field
     email: email_address
     phone: mobile_number
-
   batch:
     max_ids_per_query: 1000
     dedupe: true
 ```
 
-**A view is often the better answer.** Rather than granting access to a customer
-table, expose exactly the columns the dispatcher needs:
+| Key | Meaning |
+| --- | --- |
+| `backend` | Your database engine. For `sqlite`, `connection` is just `file: /app/data/customers.sqlite` |
+| `connection` | Read-only credentials. `password_env:` works instead of `password:` |
+| `source` | The table or view to read, and the column holding the ID we send. `id_type` must match that column |
+| `fields` | `email` is needed to send email, `phone` to send WhatsApp. Nothing else goes here |
+| `batch` | IDs per query, and whether to de-duplicate them first |
+
+**A view is usually the better answer.** It is your allow-list: `field` variables can read any column the view has and none it lacks, and consent filtering lives in your database, where it belongs.
 
 ```sql
 CREATE VIEW dispatcher_recipients AS
-  SELECT external_id, email_address, given_name, family_name, mobile_number, account_name
+  SELECT external_id, email_address, mobile_number, given_name, family_name
   FROM customers
   WHERE deleted_at IS NULL AND marketing_consent = true;
-```
 
-Then set `kind: view` and `name: dispatcher_recipients`. Consent filtering
-happens in your database, where it belongs. **The view is also your allow-list:**
-a `field` variable can read any column the view has, and no column it lacks.
-
-**The database user** — grant `SELECT` only. The dispatcher never writes to your
-database, so a read-only user is not a restriction, it is a guarantee.
-
-```sql
 -- PostgreSQL
 CREATE USER dispatcher_ro WITH PASSWORD 'a-long-random-password';
 GRANT CONNECT ON DATABASE your_db TO dispatcher_ro;
 GRANT USAGE ON SCHEMA public TO dispatcher_ro;
-GRANT SELECT ON dispatcher_recipients TO dispatcher_ro;   -- that view only
-```
+GRANT SELECT ON dispatcher_recipients TO dispatcher_ro;
 
-```sql
 -- MySQL
 CREATE USER 'dispatcher_ro'@'%' IDENTIFIED BY 'a-long-random-password';
 GRANT SELECT ON your_db.dispatcher_recipients TO 'dispatcher_ro'@'%';
-FLUSH PRIVILEGES;
 ```
 
-For `backend: sqlite`, replace the connection block with a path:
-`connection: { file: /app/data/customers.sqlite }`.
+Grant `SELECT` only. A read-only user is not a restriction — it is a guarantee.
 
-### 6.2 `mode: network`
+**What to put in `connection.host`** — the dispatcher runs inside a container, so `localhost` means *the container itself*:
 
-The dispatcher never touches your database. It POSTs a batch of IDs to an
-endpoint you host and you return the contact details.
+| Your database runs | host | Extra step |
+| --- | --- | --- |
+| Managed service (RDS, Cloud SQL, Neon…) | The service hostname | Allow the Docker host's IP in the firewall |
+| Another server | Its hostname or IP | — |
+| **On the Docker host itself** | `host.docker.internal` | On Linux, add `extra_hosts` — see Sample B |
+| In another compose stack | Its service name | Attach both to the same external network |
+
+### Network mode
+
+The dispatcher never touches your database. It POSTs a batch of IDs to an endpoint you host.
 
 ```yaml
-version: 1
-
 user_lookup:
   mode: network
   network:
     url: https://api.your-company.com/scalemargin/lookup
-    token: "the-bearer-token" # or: token_env: LOOKUP_API_TOKEN
+    token: "the-bearer-token"    # or token_env: LOOKUP_API_TOKEN
     timeout_ms: 3000
-    retries: 2 # 5xx and timeouts only; 4xx is never retried
-
-  # Contact details only — email and phone. Any other key is ignored, with a
-  # warning at boot. The right-hand side is YOUR name for it; we ask for and
-  # read back that name. An email send asks only for email, a WhatsApp send
-  # only for phone.
-  fields:
+    retries: 2                   # 5xx and timeouts only; 4xx never retried
+  fields:                        # email and phone only; right side = YOUR key
     email: email
     phone: phone
-
   batch:
     max_ids_per_query: 500
     dedupe: true
 ```
 
-We send (for an email campaign; a WhatsApp one sends `"channel": "whatsapp"`
-and `phone` instead of `email`):
+We ask only for what the send needs — an email campaign asks for `email`, a WhatsApp one for `phone`:
 
 ```json
+// We send
 { "user_ids": ["usr_1", "usr_2"], "channel": "email", "fields": ["email"] }
-```
 
-You return:
-
-```json
+// You return — omit anyone you cannot resolve
 { "users": [{ "user_id": "usr_1", "email": "ada@example.com" }] }
 ```
 
-Omit anyone you cannot resolve — a missing ID skips that recipient and the rest
-of the campaign still sends. **The full contract, with error handling, batching
-and a worked implementation, is in
-[`docs/user-lookup-network-contract.md`](docs/user-lookup-network-contract.md)** — that
-is the page to hand to whoever builds the endpoint.
+A missing ID skips that one recipient; the rest of the campaign still sends. Hand [User lookup over the network — the contract](docs/user-lookup-network-contract.md) to whoever builds the endpoint — it covers errors, batching and a worked implementation.
 
-There is no `source:` block, because there is no table to point at, and no
-`connection:`, because there is no database to connect to.
+> ℹ️ **Two variable types need a database.** `field` reads a column and `query` runs SQL, so neither can resolve in network mode — the dispatcher refuses to create them and the platform hides both. Personalize with `api`, `computed` and `constant` variables instead.
 
-> **Two variable types are unavailable in network mode.** `field` reads a column
-> of your database and `query` runs SQL against it; with no connection neither
-> can produce a value, so the dispatcher refuses to create them and the
-> ScaleMargin platform hides both options. Any that already exist are kept but
-> sit inactive, rendering their fallback, until you switch back to `database`
-> mode. Personalize with `api`, `computed` and `constant` variables instead —
-> `GET /api/v1/data-plane/lookup/fields` tells a client what is available.
+## 6.5 senders: and routing: — which accounts send
 
-### 6.3 What to put in `connection.host`
+Every account that sends is one `senders:` entry — email or WhatsApp, one account or several. **Each email sender needs its own verified `from:`** — there is no global From address, and the dispatcher refuses to start without it.
 
-This trips people up, because the dispatcher is inside a container.
-
-| Your database runs                      | `host`                 | Extra step                                                                                       |
-| --------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------ |
-| Managed service (RDS, Cloud SQL, Neon…) | The service hostname   | Allow the host's IP in the firewall                                                              |
-| Another server                          | Its hostname or IP     | —                                                                                                |
-| **On the Docker host itself**           | `host.docker.internal` | On Linux, add to the dispatcher service:<br>`extra_hosts: ["host.docker.internal:host-gateway"]` |
-| In another compose stack                | The service name       | Attach both to the same external network                                                         |
-
-`localhost` here means _inside the dispatcher container_, which is almost never
-what you want.
-
-### 6.4 Upgrading from an older dispatcher
-
-Two things moved into `.env.yaml`, and both old forms still work for now:
-
-<!-- prettier-ignore -->
-| Was | Now | Status |
-| --- | --- | --- |
-| `config/dispatch.yaml` | `user_lookup:` in `.env.yaml` | Still read if `.env.yaml` has no `user_lookup` block. Logs a deprecation warning at boot; will be removed in a future release |
-| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_SSL` | `user_lookup.connection:` | Still read from the environment if there is no `connection:` block. Logs a warning |
-
-`.env.yaml` always wins. Precedence is **per file, not per key** — an inline
-`connection:` block ignores every `DB_*` variable, rather than merging with
-them, so there is never a configuration that is half from one place and half
-from the other.
-
-To migrate: copy the `user_lookup:` block out of `config/dispatch.yaml` into
-`.env.yaml`, add `mode: database` at the top of it, move the `DB_*` values into
-`connection:`, then delete `config/dispatch.yaml` and its volume mount. Your
-`placeholders:` block does **not** move — variables live in the dispatcher's own
-database and are edited from the ScaleMargin platform. Anything still in
-`config/dispatch.yaml` was seeded on first boot and is already there.
-
----
-
-## 7. `.env.yaml` — senders and deployment settings (optional)
-
-Same file as §6, second half. Skip §7.1–7.4 if you send from a single address —
-everything above already works with one provider and one `FROM_EMAIL`. §7.5 is
-independent of senders and useful on its own.
-
-Add a `senders:` block when you want any of:
-
-- **Several sending accounts**, with traffic split between them
-- **Automatic failover** — if one account starts rejecting messages, the next takes over
-- **Different accounts per organization**, when you run more than one brand
-- **WhatsApp as well as email**
-
-### 7.1 Keep the sending secrets out of this file
-
-Every provider credential can be written two ways:
-
-<!-- prettier-ignore -->
-| In `.env.yaml` | Meaning |
-| --- | --- |
-| `api_key_env: SENDGRID_API_KEY` | **Recommended.** Read the value from a variable named `SENDGRID_API_KEY` — set in the container's `environment:` or the `env:` map (§5.2) |
-| `api_key: SG.xxxxx` | The literal key, written here |
-
-Prefer the `_env` form if you template this file into version control — it
-keeps the key itself out of the file. If the file is already a mounted Secret,
-writing the value inline is equally safe and simpler to read.
-
-> ⚠️ **The `_env` suffix is the whole difference.** `api_key: SENDGRID_API_KEY`
-> does **not** read an environment variable. It sets your API key to the literal
-> text `SENDGRID_API_KEY`, and the first send fails with an authentication
-> error. The dispatcher cannot warn you, because any string is a plausible key
-> as far as it knows.
-
-This does **not** make `.env.yaml` safe to circulate: the `user_lookup`
-credentials in §6 are written inline. Treat the file as a secret regardless.
-
-### 7.2 A working example
-
-Two email accounts and one WhatsApp account. These keys sit alongside the
-`user_lookup:` block from §6 in the same `.env.yaml` — `version: 1` appears once.
+**Credentials live on the sender** — inline (`api_key: "…"`, as in the samples) or via `_env` naming a variable (`api_key_env: SENDGRID_API_KEY`, whose value then goes in the optional `env:` block). Every provider key goes **inside** its provider block (`gupshup:`, `sendgrid:` …) — a key written beside `provider:` stops boot with a message naming the block it belongs in. A sender never falls back to a provider-wide variable, so one account can never quietly send on another's key. If a credential is missing, boot stops with the sender's name and the exact field to set.
 
 ```yaml
-version: 1
-
 routing:
   failover:
-    max_attempts: 2 # attempts per recipient, across accounts
-    on_timeout: false # never retry an unclear outcome — avoids duplicates
-    on_identity_error: false # an unverified sender is a config fault, not a blip
+    max_attempts: 2            # accounts tried per recipient
+    on_timeout: false          # never retry an unclear outcome — avoids duplicates
+    on_identity_error: false   # an unverified sender is config, not a blip
     breaker:
-      failure_threshold: 5 # consecutive failures before an account is parked
-      cooldown_ms: 60000 # how long it stays parked
+      failure_threshold: 5     # consecutive failures before an account is parked
+      cooldown_ms: 60000
   default_sender:
     email: primary-ses
-    whatsapp: primary-wa
 
 senders:
   - id: primary-ses
     channel: email
     provider: ses
-    organizations: ["*"] # ["*"] = every org, or ["org_1", "org_2"]
-    from: "campaigns@your-domain.com"
-    reply_to: "support@your-domain.com"
-    weight: 3 # roughly 3x the traffic of a weight-1 account
+    organizations: ["*"]       # or ["org_1", "org_2"]
+    from: campaigns@your-company.com
+    weight: 3                  # ~3x the traffic of a weight-1 account; 0 = pin-only
     enabled: true
     ses:
       region: ap-south-1
-      configuration_set: ses-events # needed for open/click/bounce tracking
+      configuration_set: ses-events     # needed for open / click / bounce tracking
       access_key_id_env: AWS_ACCESS_KEY_ID
       secret_access_key_env: AWS_SECRET_ACCESS_KEY
 
@@ -612,841 +442,640 @@ senders:
     channel: email
     provider: sendgrid
     organizations: ["*"]
-    from: "campaigns@your-domain.com"
+    from: news@your-company.com   # each email sender has its own address
     weight: 1
     enabled: true
     sendgrid:
       api_key_env: SENDGRID_API_KEY
       event_webhook_public_key_env: SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY
+```
 
-  - id: primary-wa
+| Per account | Meaning |
+| --- | --- |
+| `id` | Your name for it — shown in logs and reporting |
+| `channel` · `provider` | `email` with `ses` or `sendgrid`; `whatsapp` with `gupshup` or `freshchat` |
+| `from` | **Required on email senders.** Verified with that provider, and **unique** across email senders — a campaign can pin a sender by its From address |
+| `organizations` | `["*"]` for all, or the organization IDs it may send for |
+| `weight` | Share of traffic. A recipient always lands on the same account, which warms reputation evenly |
+| `enabled` | `false` parks the account without deleting it |
+| routing: | Meaning |
+| --- | --- |
+| `default_sender` | The **primary** account per channel — used for the console invitation email, `/health` and diagnostics. Must name an enabled sender, or boot fails. Recipient traffic still spreads across every sender by `weight` |
+| `failover.max_attempts` | How many accounts to try for one recipient before giving up |
+| `on_timeout` · `on_identity_error` | Leave both `false`: a timeout often means the message *was* sent, and an unverified sender fails the same way on the next account |
+| `breaker` | Consecutive failures before an account is parked, and for how long |
+
+Omit the SES keys entirely to use an IAM role — recommended on EC2, ECS and EKS. The full WhatsApp blocks ship in `.env.yaml.example`.
+
+> 🔁 **Upgrading an older file?** The top-level `email:` shorthand is gone. A file that still has it fails at boot with a message showing the `senders:` entry to write instead — it is never silently ignored.
+
+## 6.6 links:, events:, storage: — optional
+
+```yaml
+links:
+  unsubscribe_url_base: https://dispatcher.your-company.com
+  # logo_url: https://cdn.your-company.com/logo.png
+  # unsubscribe_redirect_url: https://your-company.com/goodbye
+```
+
+| Block | Set it when |
+| --- | --- |
+| `links:` | You use the built-in unsubscribe and preference links |
+| `events:` | You want to tune how provider webhooks are batched and forwarded. Defaults are fine |
+| `storage:` | Campaign images should live in S3 or GCS rather than on local disk |
+
+## 6.7 env: — optional escape hatch
+
+**Not needed** when credentials are written inline on the senders, as in both samples in section 7. Use it only if you prefer `*_env` references (`api_key_env: SENDGRID_API_KEY`) to keep secret values out of the sender blocks — the referenced values then live here. Anything without a typed block can also be set here verbatim. Lowest precedence: a real environment variable or a typed block wins, and a collision is reported at boot.
+
+```yaml
+env:
+  AWS_ACCESS_KEY_ID: "AKIA…"
+  AWS_SECRET_ACCESS_KEY: "…"
+  # SENDGRID_API_KEY: "SG.…"
+```
+
+---
+
+# 7. Samples
+
+Two complete, end-to-end files — **every key the dispatcher accepts, filled in**. Both were validated against the dispatcher's own boot checks. Copy the one that matches you, replace every `replace-…` value, delete the blocks you do not use, and `chmod 600`.
+
+> ✂️ Only four things must stay: `scalemargin:` secrets, `dispatcher.retention.message_id_ttl`, `user_lookup:`, and at least one email sender. Everything else has a sensible default. Credentials are written **inline on each sender**, so neither sample needs an `env:` block. Where a key has an alternative that cannot be set at the same time (`atlas_key` vs `atlas_key_env`), the alternative is shown as a comment.
+
+## Sample A — Network mode
+
+Your API resolves recipients; the dispatcher holds no customer-database credentials at all. Two email accounts (SES + SendGrid), two WhatsApp accounts (Gupshup + Freshchat), webhooks verified on all four, images on S3.
+
+```yaml
+version: 1
+
+# ── This service ───────────────────────────────────────────────────────────────────────
+dispatcher:
+  port: 3100
+  public_url: https://dispatcher.your-company.com
+  atlas_key: "replace-with-openssl-rand-base64-32"   # or atlas_key_env: NAME
+  atlas_cors_origins:                                 # omit unless we ask
+    - https://app.scalemargins.tech
+  logs_api_token: "replace-with-openssl-rand-hex-32"  # or logs_api_token_env: NAME
+
+  database:                        # the dispatcher's OWN database
+    dialect: postgres              # postgres | mysql | sqlite
+    host: postgres
+    port: 5432
+    user: dispatcher
+    password: "replace-with-a-long-random-string"   # = POSTGRES_PASSWORD
+    database: dispatcher_state
+    # url: postgres://dispatcher:…@postgres:5432/dispatcher_state   # instead of the fields above
+    # file: ./data/dispatcher.db                                     # dialect: sqlite only
+
+  retention:
+    message_id_ttl: "5d 2h"        # REQUIRED — no default
+    log_days: 14
+    log_max_rows: 200000
+    campaign_event_days: 90
+    campaign_event_max_rows: 500000
+    outbox_max_attempts: 10
+    metrics_days: 7                # max 30
+
+  logging:
+    level: info                    # trace | debug | info | warn | error | fatal
+
+# ── ScaleMargin platform ──────────────────────────────────────────────────
+scalemargin:
+  dispatch_secret: "replace-from-onboarding"
+  analytics_secret: "replace-from-onboarding"
+  analytics_callback_url: https://app.scalemargins.tech/api/webhooks/campaign-analytics   # recommended
+
+# ── Recipients: your API resolves them ────────────────────────────────────
+user_lookup:
+  mode: network
+  network:
+    url: https://api.your-company.com/scalemargin/lookup
+    token: "replace-with-the-bearer-token"    # or token_env: NAME
+    timeout_ms: 3000
+    retries: 2                     # 5xx and timeouts only; 4xx never retried
+  fields:                          # email and phone only; right side = YOUR key
+    email: email
+    phone: phone
+  batch:
+    max_ids_per_query: 500
+    dedupe: true
+
+# ── Who sends ─────────────────────────────────────────────────────────────
+routing:
+  failover:
+    max_attempts: 2                # accounts tried per recipient
+    on_timeout: false              # never resend an unclear outcome
+    on_identity_error: false       # an unverified sender is config, not a blip
+    breaker:
+      failure_threshold: 5         # consecutive failures before parking an account
+      cooldown_ms: 60000
+  default_sender:                  # primary account per channel
+    email: primary-ses
+    whatsapp: primary-gupshup
+
+senders:
+  # Email — Amazon SES
+  - id: primary-ses
+    channel: email
+    provider: ses
+    organizations: ["*"]           # or ["org_1", "org_2"]
+    from: campaigns@your-company.com       # verified in SES, unique per sender
+    reply_to: support@your-company.com
+    weight: 3                      # ~3x a weight-1 sender; 0 = only when pinned
+    enabled: true
+    failover:
+      max_attempts: 3              # overrides routing.failover for this sender
+    ses:
+      region: ap-south-1
+      configuration_set: ses-events        # open / click / bounce tracking
+      access_key_id: "AKIA-replace-me"     # omit both keys to use an IAM role
+      secret_access_key: "replace-me"
+
+  # Email — SendGrid
+  - id: backup-sendgrid
+    channel: email
+    provider: sendgrid
+    organizations: ["*"]
+    from: news@your-company.com
+    reply_to: support@your-company.com
+    weight: 1
+    enabled: true
+    sendgrid:
+      api_key: "SG.replace-me"
+      event_webhook_public_key: "replace-with-the-base64-ecdsa-key"
+
+  # WhatsApp — Gupshup
+  - id: primary-gupshup
     channel: whatsapp
     provider: gupshup
     organizations: ["*"]
     weight: 1
     enabled: true
     gupshup:
-      mode: api_key # api_key | enterprise
-      api_key_env: GUPSHUP_API_KEY
+      mode: api_key                # informational — the credentials decide
+      api_key: "replace-me"        # templates via the Gupshup API…
       src_name: YourAppName
-      source: "919999999999" # sender number, digits only
+      user_id: "2000000000"        # …and user id + password for media and text
+      password: "replace-me"
+      source: "919999999999"       # sender number, digits only
       default_template: welcome_v1
       template_language: en
-      webhook_secret_env: GUPSHUP_WEBHOOK_SECRET
+      message_type: HSM
+      webhook_secret: "replace-with-openssl-rand-hex-32"   # also ?token= on Gupshup's callback URL
+      template_api_url: https://api.gupshup.io/wa/api/v1/template/msg
+      enterprise_api_url: https://smsgupshup.com
+      media_api_url: https://mediaapi.smsgupshup.com/GatewayAPI/rest
+
+  # WhatsApp — Freshchat
+  - id: backup-freshchat
+    channel: whatsapp
+    provider: freshchat
+    organizations: ["*"]
+    weight: 1
+    enabled: true
+    freshchat:
+      mode: api_key
+      api_key: "replace-me"
+      source: "918888888888"       # the WhatsApp number you send from
+      template_api_url: https://your-org.freshchat.com/v2/outbound-messages/whatsapp
+      namespace: "replace-me"
+      default_template: welcome_v1
+      template_language: en
+      webhook_secret: "replace-with-openssl-rand-hex-32"
+
+# ── Links inside messages ─────────────────────────────────────────────────
+links:
+  unsubscribe_url_base: https://dispatcher.your-company.com
+  unsubscribe_redirect_url: https://your-company.com/goodbye
+  unsubscribe_analytics_url: https://app.scalemargins.tech/api/webhooks/campaign-analytics
+  preferences_redirect_url: https://your-company.com/preferences
+  logo_url: https://cdn.your-company.com/logo.png
+  unsubscribe_reasons:
+    - Too many emails
+    - Not relevant to me
+    - I never signed up
+
+# ── Provider webhooks in, analytics out ───────────────────────────────────
+events:
+  forward_mode: batched            # batched | sync
+  delivery_mode: at_least_once     # at_least_once | best_effort
+  batch_size: 100
+  batch_interval_ms: 5000
+  providers_enabled: [ses, sendgrid, gupshup, freshchat]
+  providers_disabled: []
+  sendgrid_inbound_events: "*"     # or [delivered, open, click, bounce]
+  debug: false
+
+# ── Campaign images ───────────────────────────────────────────────────────
+storage:
+  provider: s3                     # local | s3 | gcs
+  s3_bucket: your-campaign-images
+  s3_region: ap-south-1
+  s3_prefix: dispatcher/
+  cdn_base_url: https://cdn.your-company.com
 ```
 
-A template covering every provider, including Freshchat for WhatsApp, ships in
-the package as `.env.yaml.example`.
+## Sample B — Host mode
 
-### 7.3 What each field does
-
-**Per account:**
-
-<!-- prettier-ignore -->
-| Field | Meaning |
-| --- | --- |
-| `id` | Your name for the account. It appears in reporting and logs — make it recognisable |
-| `channel` | `email` or `whatsapp` |
-| `provider` | `ses`, `sendgrid`, `gupshup` or `freshchat` |
-| `organizations` | `["*"]` for all, or a list of organization IDs this account may send for |
-| `from` | The sending address. Must be verified with the provider |
-| `reply_to` | Optional. Where replies go, if different |
-| `weight` | Share of traffic. `3` gets roughly three times as much as `1`. **`0` means never chosen automatically** |
-| `enabled` | `false` parks the account without deleting its configuration |
-
-**Routing:**
-
-<!-- prettier-ignore -->
-| Field | Meaning |
-| --- | --- |
-| `default_sender` | Which account to use per channel when nothing else applies |
-| `max_attempts` | How many accounts to try for one recipient before giving up |
-| `on_timeout` | Retry when the outcome is unclear. **Leave `false`** — a timeout often means the message *was* sent, and retrying delivers it twice |
-| `on_identity_error` | Retry on an unverified-sender error. **Leave `false`** — that is broken configuration, and the next account fails the same way |
-| `failure_threshold` | Consecutive failures before an account is parked |
-| `cooldown_ms` | How long it stays parked before being tried again |
-
-Recipients are spread across accounts by a stable hash, so the same recipient
-consistently uses the same account. That warms sender reputation evenly instead
-of at random, and keeps a person's mail coming from one address.
-
-### 7.4 Check it loaded
-
-```bash
-docker compose up -d
-docker compose logs dispatcher | grep -i "env.yaml"
-```
-
-<!-- prettier-ignore -->
-| What you see | Meaning |
-| --- | --- |
-| `Loaded .env.yaml multi-sender configuration` | Working |
-| `No .env.yaml found — using single-sender back-compat configuration from environment` | Not picked up. The dispatcher **still sends**, using the single account from `email:` |
-| `references missing env var 'X'` | An `_env` field names a variable that does not exist — add it to the `env:` map or the container's `environment:` |
-
-The middle line is the one to watch for. A `.env.yaml` that fails to load stops
-nothing — sending carries on with one account, and you only notice when the
-traffic split and failover you configured never happen.
-
-To see what the dispatcher actually loaded:
-
-```bash
-curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
-  localhost:3100/api/v1/data-plane/senders | jq
-```
-
-```json
-{
-  "generated_at": "2026-08-27T10:00:00.000Z",
-  "senders": [
-    {
-      "id": "primary-ses",
-      "channel": "email",
-      "provider": "ses",
-      "from": "campaigns@your-domain.com",
-      "weight": 3,
-      "enabled": true,
-      "organizations": ["*"],
-      "breaker_state": "closed"
-    }
-  ]
-}
-```
-
-`breaker_state` is `closed` when healthy, `open` when the account has been
-parked after repeated failures, and `half_open` while it is being tried again.
-No credentials appear in this response, so it is safe to paste into a support
-thread.
-
-### 7.5 Deployment settings in `.env.yaml` (optional)
-
-Four settings that describe how this deployment is reached. Useful when your
-deployment templates `.env.yaml` as a single secret and you would rather not
-maintain two files.
+Your customer database runs on the same machine as Docker; the dispatcher reads it through `host.docker.internal` with a read-only user. Same senders as Sample A, images on Google Cloud Storage.
 
 ```yaml
+version: 1
+
+# ── This service ───────────────────────────────────────────────────────────────────────
 dispatcher:
   port: 3100
   public_url: https://dispatcher.your-company.com
-  atlas_key: "the-key-you-shared-with-us" # or: atlas_key_env: DISPATCHER_ATLAS_KEY
-  atlas_cors_origins:
-    - https://atlas.scalemargin.com
+  atlas_key: "replace-with-openssl-rand-base64-32"   # or atlas_key_env: NAME
+  atlas_cors_origins:                                 # omit unless we ask
+    - https://app.scalemargins.tech
+  logs_api_token: "replace-with-openssl-rand-hex-32"  # or logs_api_token_env: NAME
+
+  database:                        # the dispatcher's OWN database
+    dialect: postgres              # postgres | mysql | sqlite
+    host: postgres
+    port: 5432
+    user: dispatcher
+    password: "replace-with-a-long-random-string"   # = POSTGRES_PASSWORD
+    database: dispatcher_state
+    # url: postgres://dispatcher:…@postgres:5432/dispatcher_state   # instead of the fields above
+    # file: ./data/dispatcher.db                                     # dialect: sqlite only
+
+  retention:
+    message_id_ttl: "5d"        # REQUIRED — no default
+    log_days: 14
+    log_max_rows: 200000
+    campaign_event_days: 90
+    campaign_event_max_rows: 500000
+    outbox_max_attempts: 10
+    metrics_days: 7                # max 30
+
+  logging:
+    level: info                    # trace | debug | info | warn | error | fatal
+
+# ── ScaleMargin platform ──────────────────────────────────────────────────
+scalemargin:
+  dispatch_secret: "replace-from-onboarding"
+  analytics_secret: "replace-from-onboarding"
+  analytics_callback_url: https://app.scalemargins.tech/api/webhooks/campaign-analytics   # recommended
+
+# ── Recipients: read-only from your database on this host ─────────────────
+user_lookup:
+  mode: database
+  backend: postgres                # postgres | mysql | sqlite
+  connection:
+    host: host.docker.internal     # your database, on the Docker host
+    port: 5432
+    user: dispatcher_ro
+    password: "replace-me"         # or password_env: NAME
+    database: your_db
+    ssl: false                     # same machine; true for anything remote
+    # file: /app/data/customers.sqlite   # backend: sqlite only
+  source:
+    kind: view                     # table | view
+    name: dispatcher_recipients
+    id_column: external_id         # holds the ID ScaleMargin sends
+    id_type: string                # string | int | bigint | uuid
+  fields:                          # your column for each contact field
+    email: email_address
+    phone: mobile_number
+  batch:
+    max_ids_per_query: 1000
+    dedupe: true
+
+# ── Who sends ─────────────────────────────────────────────────────────────
+routing:
+  failover:
+    max_attempts: 2                # accounts tried per recipient
+    on_timeout: false              # never resend an unclear outcome
+    on_identity_error: false       # an unverified sender is config, not a blip
+    breaker:
+      failure_threshold: 5         # consecutive failures before parking an account
+      cooldown_ms: 60000
+  default_sender:                  # primary account per channel
+    email: primary-ses
+    whatsapp: primary-gupshup
+
+senders:
+  # Email — Amazon SES
+  - id: primary-ses
+    channel: email
+    provider: ses
+    organizations: ["*"]           # or ["org_1", "org_2"]
+    from: campaigns@your-company.com       # verified in SES, unique per sender
+    reply_to: support@your-company.com
+    weight: 3                      # ~3x a weight-1 sender; 0 = only when pinned
+    enabled: true
+    failover:
+      max_attempts: 3              # overrides routing.failover for this sender
+    ses:
+      region: ap-south-1
+      configuration_set: ses-events        # open / click / bounce tracking
+      access_key_id: "AKIA-replace-me"     # omit both keys to use an IAM role
+      secret_access_key: "replace-me"
+
+  # Email — SendGrid
+  - id: backup-sendgrid
+    channel: email
+    provider: sendgrid
+    organizations: ["*"]
+    from: news@your-company.com
+    reply_to: support@your-company.com
+    weight: 1
+    enabled: true
+    sendgrid:
+      api_key: "SG.replace-me"
+      event_webhook_public_key: "replace-with-the-base64-ecdsa-key"
+
+  # WhatsApp — Gupshup
+  - id: primary-gupshup
+    channel: whatsapp
+    provider: gupshup
+    organizations: ["*"]
+    weight: 1
+    enabled: true
+    gupshup:
+      mode: api_key                # informational — the credentials decide
+      api_key: "replace-me"        # templates via the Gupshup API…
+      src_name: YourAppName
+      user_id: "2000000000"        # …and user id + password for media and text
+      password: "replace-me"
+      source: "919999999999"       # sender number, digits only
+      default_template: welcome_v1
+      template_language: en
+      message_type: HSM
+      webhook_secret: "replace-with-openssl-rand-hex-32"   # also ?token= on Gupshup's callback URL
+      template_api_url: https://api.gupshup.io/wa/api/v1/template/msg
+      enterprise_api_url: https://smsgupshup.com
+      media_api_url: https://mediaapi.smsgupshup.com/GatewayAPI/rest
+
+  # WhatsApp — Freshchat
+  - id: backup-freshchat
+    channel: whatsapp
+    provider: freshchat
+    organizations: ["*"]
+    weight: 1
+    enabled: true
+    freshchat:
+      mode: api_key
+      api_key: "replace-me"
+      source: "918888888888"       # the WhatsApp number you send from
+      template_api_url: https://your-org.freshchat.com/v2/outbound-messages/whatsapp
+      namespace: "replace-me"
+      default_template: welcome_v1
+      template_language: en
+      webhook_secret: "replace-with-openssl-rand-hex-32"
+
+# ── Links inside messages ─────────────────────────────────────────────────
+links:
+  unsubscribe_url_base: https://dispatcher.your-company.com
+  unsubscribe_redirect_url: https://your-company.com/goodbye
+  unsubscribe_analytics_url: https://app.scalemargins.tech/api/webhooks/campaign-analytics
+  preferences_redirect_url: https://your-company.com/preferences
+  logo_url: https://cdn.your-company.com/logo.png
+  unsubscribe_reasons:
+    - Too many emails
+    - Not relevant to me
+    - I never signed up
+
+# ── Provider webhooks in, analytics out ───────────────────────────────────
+events:
+  forward_mode: batched            # batched | sync
+  delivery_mode: at_least_once     # at_least_once | best_effort
+  batch_size: 100
+  batch_interval_ms: 5000
+  providers_enabled: [ses, sendgrid, gupshup, freshchat]
+  providers_disabled: []
+  sendgrid_inbound_events: "*"     # or [delivered, open, click, bounce]
+  debug: false
+
+# ── Campaign images ───────────────────────────────────────────────────────
+storage:
+  provider: gcs                    # local | s3 | gcs
+  gcs_bucket: your-campaign-images
+  gcs_project_id: your-gcp-project
+  gcs_prefix: dispatcher/
+  gcs_credentials_json: '{"type":"service_account","project_id":"your-gcp-project"}'
+  cdn_base_url: https://cdn.your-company.com
+  # provider: local
+  # local_dir: ./public/images
+  # local_base_url: https://dispatcher.your-company.com/images
 ```
 
-<!-- prettier-ignore -->
-| Key | Replaces | If set in neither place |
-| --- | --- | --- |
-| `port` | `PORT` | `3100` |
-| `public_url` | `DISPATCHER_PUBLIC_URL` | Falls back to `UNSUBSCRIBE_URL_BASE`, then `localhost` |
-| `atlas_key` | `DISPATCHER_ATLAS_KEY` | **The management API is off** — every route returns 503 |
-| `atlas_cors_origins` | `DISPATCHER_ATLAS_CORS_ORIGINS` | No CORS headers; server-to-server calls only |
+On **Linux**, `host.docker.internal` does not exist by default. Add this to the `dispatcher` service in `docker-compose.yml`:
 
-**Nothing changes if you skip this.** The environment variables are not
-deprecated and every existing deployment keeps working untouched.
-
-Two details worth knowing:
-
-- **Precedence is per key here**, unlike the `connection:` block in §6, which is
-  per file. `port` from the environment and `atlas_key` from this file is an
-  ordinary setup, not a half-migration.
-- **A typo is rejected at boot**, not ignored. `atlas_keys:` fails to start
-  rather than silently leaving the management API disabled — which is the
-  failure you would otherwise discover when ScaleMargin cannot reach you.
-
-`atlas_cors_origins` also accepts a comma-separated string, so you can paste the
-old environment variable value straight in.
-
-### 7.6 Changing it later
-
-`.env.yaml` is read once at startup:
-
-```bash
-docker compose restart dispatcher
+```yaml
+services:
+  dispatcher:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 ```
 
-If the file has a mistake, the dispatcher logs the problem and falls back to
-single-sender — it does not refuse to start. Always re-check the log line in
-§7.4 after a change.
+Your database must also listen on an address the container can reach — not only `127.0.0.1` — and allow the Docker network in `pg_hba.conf`.
 
 ---
 
-## 8. Start it
+# 8. Share with ScaleMargin, register webhooks
+
+Two hand-offs finish the setup: a few values exchanged with the ScaleMargin team, and one webhook per provider so delivery, open and bounce events reach the dispatcher.
+
+## 8.1 What to share with ScaleMargin
+
+| Value | In `.env.yaml` | Who creates it | What ScaleMargin uses it for |
+| --- | --- | --- | --- |
+| **Dispatcher URL** | `dispatcher.public_url` | You → send to ScaleMargin | Where campaigns are sent (`POST /api/scalemargin/dispatch`) and status is read (`/api/v1/data-plane/*`) |
+| **Atlas key** | `dispatcher.atlas_key` | You generate (`openssl rand -base64 32`) → send to ScaleMargin | The bearer key the ScaleMargin platform uses to read health, variables, campaigns, logs and metrics. Same value on both sides |
+| **Atlas CORS origins** | `dispatcher.atlas_cors_origins` | ScaleMargin tells you → confirm back what you set | Browser origins allowed to call the management API directly — `https://app.scalemargins.tech` in production (the Atlas console lives at `/atlas` on that host). Leave unset if ScaleMargin calls you server-to-server |
+| **Dispatch secret** | `scalemargin.dispatch_secret` | Shared — must match on both sides | ScaleMargin signs every campaign with `X-ScaleMargin-Signature` (HMAC-SHA256). Anything unsigned or signed with another secret is rejected |
+| **Analytics secret** | `scalemargin.analytics_secret` | Shared — must match on both sides | The dispatcher signs the events it sends back (`X-ScaleMargin-Signature: sha256=…`); ScaleMargin verifies them |
+| **Analytics callback URL** | `scalemargin.analytics_callback_url` | ScaleMargin tells you → confirm back what you set | **Recommended.** `https://app.scalemargins.tech/api/webhooks/campaign-analytics` in production. WhatsApp delivery receipts carry no campaign and always go here; other events use it when their campaign's URL is unknown |
+
+> 🔒 Exchange these over a secure channel — never a ticket, chat or plain email. ScaleMargin never needs your provider keys, database passwords, lookup token or webhook secrets; do not send them.
+
+## 8.2 Register provider webhooks
+
+Each provider reports what happened to a message — delivered, opened, bounced — by calling the dispatcher. Register one webhook per provider you send with. Every endpoint is `POST`, JSON, on your `public_url` over **HTTPS**, reachable from the internet (put a TLS proxy in front of `127.0.0.1:3100`).
+
+| Provider | Register this URL | How the dispatcher checks it | Set in `.env.yaml` |
+| --- | --- | --- | --- |
+| SendGrid | `https://<dispatcher>/api/scalemargin/sendgrid-events` | SendGrid's ECDSA signature (Signed Event Webhook) | `sendgrid.event_webhook_public_key` |
+| Amazon SES | `https://<dispatcher>/api/scalemargin/ses-notifications` (as an SNS subscription) | AWS SNS message signature — automatic | `ses.configuration_set` |
+| Gupshup | `https://<dispatcher>/api/scalemargin/gupshup-events?token=<webhook_secret>` | The `token` in the URL (or an `X-Gupshup-Signature` HMAC) | `gupshup.webhook_secret` |
+| Freshchat | `https://<dispatcher>/api/scalemargin/freshchat-events` | `Authorization: Bearer <webhook_secret>` (or an `X-Freshchat-Signature` HMAC) | `freshchat.webhook_secret` |
+
+### SendGrid
+
+1. **Settings → Mail Settings → Event Webhook → Create new webhook.**
+2. Post URL: `https://dispatcher.your-company.com/api/scalemargin/sendgrid-events`
+3. Actions to post: **Processed, Delivered, Deferred, Bounced, Dropped, Spam reports, Unsubscribe, Group unsubscribe** — plus **Opened** and **Clicked**, which are forwarded when `events.sendgrid_inbound_events` is `"*"` (as in both samples).
+4. Turn on **Signed Event Webhook**, copy the **Verification Key**, and set it as `event_webhook_public_key` on the SendGrid sender. Leave OAuth off.
+5. Restart the dispatcher. SendGrid's "Test Integration" payloads carry no campaign data — they are accepted and then ignored, which is expected.
+
+### Amazon SES
+
+1. **SES → Configuration sets → Create** — name it exactly as `ses.configuration_set` (e.g. `ses-events`).
+2. **Event destinations → Add → Amazon SNS**, event types: **Sends, Deliveries, Bounces, Complaints, Rejects, Opens, Clicks, Rendering failures, Delivery delays**. Create or pick an SNS topic.
+3. **SNS → that topic → Create subscription** — protocol **HTTPS**, endpoint `https://dispatcher.your-company.com/api/scalemargin/ses-notifications`. Keep **raw message delivery off**: the dispatcher verifies the SNS signature on the standard envelope.
+4. Nothing to confirm by hand — the dispatcher confirms the subscription itself (only for an AWS `SubscribeURL`) and logs `SNS subscription confirmed`. The subscription turns **Confirmed** within seconds.
+
+### Gupshup
+
+1. Generate a secret: `openssl rand -hex 32`. Set it as `webhook_secret` **inside** the `gupshup:` block of the sender.
+2. In the Gupshup console, set the delivery-report callback URL to `https://dispatcher.your-company.com/api/scalemargin/gupshup-events?token=<that secret>` — method POST.
+3. Restart the dispatcher. **Do steps 1 and 2 together**: with the secret set and the old callback URL still in place, every receipt is rejected.
+4. Your own tools pushing events may sign instead: header `X-Gupshup-Signature: <hex HMAC-SHA256 of the raw body, keyed with the secret>`.
+
+### Freshchat
+
+1. Generate a secret: `openssl rand -hex 32`. Set it as `webhook_secret` inside the `freshchat:` block of the sender.
+2. In Freshchat, add a webhook for outbound message status: URL `https://dispatcher.your-company.com/api/scalemargin/freshchat-events` (`/freshchat-notifications` also works), method POST.
+3. Authentication: header `Authorization: Bearer <that secret>`. If Freshchat signs instead: `X-Freshchat-Signature: sha256=<hex HMAC-SHA256 of the raw body>`.
+4. Restart the dispatcher.
+
+### Check each webhook
+
+```bash
+# Gupshup — the right token passes, a wrong one is 401
+curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" -d '[]' \
+  "https://dispatcher.your-company.com/api/scalemargin/gupshup-events?token=$GUPSHUP_SECRET"   # 200
+
+# Freshchat — the bearer secret passes
+curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $FRESHCHAT_SECRET" -d '{}' \
+  https://dispatcher.your-company.com/api/scalemargin/freshchat-events                          # not 401
+
+# Every sender: are credentials and webhook verification in place?
+curl -s -H "Authorization: Bearer $ATLAS_KEY" \
+  https://dispatcher.your-company.com/api/v1/data-plane/senders | jq '.senders[] | {id, credentials}'
+```
+
+In the last one, each sender shows `"ok": true` and `"webhook_verification": true`. Anything but `401` on the first two means authentication passed.
+
+---
+
+# 9. Start it and check
 
 ```bash
 docker compose up -d
 docker compose logs -f dispatcher
 ```
 
-Migrations run automatically on first boot — there is no separate step.
-
-### What a healthy first boot looks like
-
-```
-Dispatcher started {"port":3100,"provider":"ses","node_env":"production"}
-[UserLookup][postgres] Resolved 0/0 users
-```
-
-### Verify, in order
+Migrations run automatically on first boot. Then verify, in order:
 
 ```bash
-# 1. The process is alive
+# 1. Alive
 curl -s localhost:3100/health
-# {"status":"ok"}
 
-# 2. Dependencies are actually reachable
+# 2. Dependencies reachable — every check true
 curl -s localhost:3100/api/v1/internal/ready | jq
-# every check "ok": true
 
-# 3. Recipient lookup is wired up
-docker compose logs dispatcher | grep -i "UserLookup"
-
-# 4. NOT in mock mode  — this must print nothing
-docker compose logs dispatcher | grep -i "MOCK user lookup"
-
-# 5. Sender is configured — this must also print nothing
-docker compose logs dispatcher | grep -i "FROM_EMAIL is not set"
-```
-
-```bash
-# 6. Management API is enabled (only if you set DISPATCHER_ATLAS_KEY)
-curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
-  localhost:3100/api/v1/data-plane/build | jq '.service'
-# => version, git_sha, build_time
-
-# 7. The lookup mode is the one you configured
-curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
+# 3. The lookup mode is the one you configured   ← the important one
+curl -s -H "Authorization: Bearer $ATLAS_KEY" \
   localhost:3100/api/v1/data-plane/state | jq '.lookup'
 ```
 
 ```json
-{
-  "mode": "database",
-  "backend": "postgres",
-  "supported_variable_sources": [
-    "field",
-    "computed",
-    "constant",
-    "query",
-    "api"
-  ]
-}
+// Database mode
+{ "mode": "database", "backend": "postgres",
+  "supported_variable_sources": ["field", "computed", "constant", "query", "api"] }
+
+// Network mode
+{ "mode": "network", "backend": null,
+  "supported_variable_sources": ["computed", "constant", "api"] }
 ```
 
-`"mode": "mock"` here means the dispatcher did not find your `user_lookup`
-block — it will run, and mail nobody real. In `network` mode `backend` is `null`
-and `query` is absent from the list (§6.2).
+> 🚨 `"mode": "mock"` means your `user_lookup:` block never reached the container. Check the volume mount, and that `.env.yaml` is a file rather than a directory Docker created.
 
-Tell your ScaleMargin contact you are up, and give them the `DISPATCHER_ATLAS_KEY`
-value plus your dispatcher's URL. They will send one test campaign to an address
-you nominate.
+Then tell us you are up and send the values in section 8.1. We will send one test campaign to an address you nominate.
 
 ---
 
-## 9. Exposing the dispatcher (only if you need to)
+# 10. Day-two operations
 
-Everything above works with the dispatcher bound to localhost. You need inbound
-access for two optional things:
-
-| Feature                                        | Needs                          | Path                        |
-| ---------------------------------------------- | ------------------------------ | --------------------------- |
-| Delivery / open / click tracking               | Your provider to POST webhooks | `/api/scalemargin/*-events` |
-| Managing variables, reading campaigns and logs | ScaleMargin to reach the API   | `/api/v1/data-plane/*`      |
-
-Since there is no local console, the second row is how you administer this
-dispatcher at all. If you cannot expose it, everything still sends — you just
-manage configuration through us instead of directly.
-
-Put a TLS-terminating reverse proxy in front. Nginx:
-
-```nginx
-server {
-  listen 443 ssl;
-  server_name dispatcher.yourdomain.com;
-
-  ssl_certificate     /etc/letsencrypt/live/dispatcher.yourdomain.com/fullchain.pem;
-  ssl_certificate_key /etc/letsencrypt/live/dispatcher.yourdomain.com/privkey.pem;
-
-  location / {
-    proxy_pass http://127.0.0.1:3100;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  }
-
-  # No /admin rule needed — the console is not shipped and the route 503s.
-}
-```
-
-Then set `dispatcher.public_url: https://dispatcher.yourdomain.com` in
-`.env.yaml` and restart. The dispatcher trusts exactly one proxy hop, which is what lets it set
-secure cookies correctly.
-
-`/api/v1/internal/*` is for your own monitoring and should **not** be exposed.
-
-### Browser access to the management API (CORS)
-
-By default the dispatcher sends **no CORS headers**, so a web page cannot call
-`/api/v1/data-plane/*` — only server-to-server calls work. That is deliberate:
-any browser able to reach that API must carry `DISPATCHER_ATLAS_KEY`, and that
-key grants full read access and cannot be revoked without a restart.
-
-Set `DISPATCHER_ATLAS_CORS_ORIGINS` only if ScaleMargin tells you their console
-calls your dispatcher directly from the browser rather than from their backend:
+**Upgrading** — change the image tag, then:
 
 ```bash
-DISPATCHER_ATLAS_CORS_ORIGINS=https://atlas.scalemargin.com,https://staging.atlas.example
-```
-
-Comma-separated, absolute origins, scheme included. The dispatcher warns at boot
-if you use `*`, list an unparseable entry, or use plaintext `http://` for
-anything other than localhost — the last one would put your API key on the wire
-in clear.
-
-Authentication is a bearer header rather than a cookie, so the dispatcher never
-sends `Access-Control-Allow-Credentials`.
-
----
-
-## 10. Day-two operations
-
-### Upgrading
-
-```bash
-# 1. Change the image tag in docker-compose.yml to the version we specify
-# 2. Pull and restart
-docker compose pull
-docker compose up -d
-
-# 3. Confirm
+docker compose pull && docker compose up -d
 curl -s localhost:3100/api/v1/internal/ready | jq '.checks'
 ```
 
-Migrations apply automatically. **Back up first** — see below. Pin an explicit
-version; never use `latest`, or an unattended `pull` becomes an unplanned
-upgrade.
+Migrations apply automatically. Back up first, and pin an explicit version — never `latest`, or an unattended pull becomes an unplanned upgrade.
 
-### Backups
-
-The `dispatcher-postgres-data` volume holds campaign history, logs and the
-outgoing event queue. Your customer data is not in it.
+**Backups** — the `dispatcher-postgres-data` volume holds campaign history, logs, metrics and the outgoing event queue. Your customer data is not in it.
 
 ```bash
-docker compose exec -T postgres \
-  pg_dump -U dispatcher dispatcher_state | gzip > dispatcher-$(date +%F).sql.gz
+# Back up
+docker compose exec -T postgres pg_dump -U dispatcher dispatcher_state | gzip > dispatcher-$(date +%F).sql.gz
+
+# Restore
+gunzip -c dispatcher-2026-09-25.sql.gz | docker compose exec -T postgres psql -U dispatcher -d dispatcher_state
 ```
 
-Restore:
+**Config changes** — `.env.yaml` is read once at startup:
 
 ```bash
-gunzip -c dispatcher-2026-08-20.sql.gz | \
-  docker compose exec -T postgres psql -U dispatcher -d dispatcher_state
+docker compose restart dispatcher
 ```
 
-### Logs
+Then re-run check 3 from section 9.
+
+**Logs and metrics** — `docker compose logs -f dispatcher` for the live stream. The same logs, plus per-campaign metrics (API failure rate, latency, throughput), are browsable in the ScaleMargin platform under Dispatcher — no shell access needed.
+
+**Housekeeping** is automatic: an hourly sweep prunes data past each `retention:` window.
+
+**Stopping**
 
 ```bash
-docker compose logs -f dispatcher              # live
-docker compose logs dispatcher | grep -i warn  # problems only
-```
-
-The same logs are browsable in the ScaleMargin platform with filters for level,
-component and campaign — usually faster than the terminal, and it works without
-shell access to this machine.
-
-### Stopping
-
-```bash
-docker compose down            # stop, keep all data
-docker compose down -v         # stop and DELETE all campaign history. Careful.
+docker compose down        # stop, keep all data
+docker compose down -v     # stop and DELETE all campaign history — careful
 ```
 
 ---
 
-## 11. Troubleshooting
+# 11. Troubleshooting
 
-| Symptom                                                            | Cause                                                                                   | Fix                                                                                                                    |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Container exits immediately, `[FATAL] Missing required env vars`   | `scalemargin:` secrets blank or the block missing                                       | Fill `dispatch_secret` and `analytics_secret` in `.env.yaml` — §5                                                       |
-| `denied` or `unauthorized` pulling the image                       | Not an auth problem — the image is public and needs no login                            | Check the tag is spelled right; then tell us, it may be a publishing fault on our side                                 |
-| Pull hangs or times out                                            | Egress to `ghcr.io` is filtered                                                         | Allowlist `ghcr.io` and `pkg-containers.githubusercontent.com` — §3                                                    |
-| `manifest unknown`                                                 | That version tag does not exist                                                         | Use the exact tag from our release note; do not invent version numbers                                                 |
-| `exec format error`                                                | Image architecture mismatch                                                             | Tell us your platform — we will publish a matching build                                                               |
-| Sends fail with `403 Forbidden` or `Email address is not verified` | `FROM_EMAIL` not verified in your provider                                              | Verify that exact address, or use one that is                                                                          |
-| Campaigns report success but reach nobody real                     | No `user_lookup` block reached the container → mock mode                                | Step 7 in §8. Usually the `.env.yaml` mount, or a stray directory Docker created in its place                          |
-| `getaddrinfo ENOTFOUND` for your database                          | `connection.host` unreachable from the container                                        | §6.3 — usually `host.docker.internal`                                                                                  |
-| `Resolved 0/N users` on every send                                 | `id_column` or `id_type` mismatch — or, in network mode, your API returned no `user_id` match | Confirm the column holds the ID ScaleMargin sends; in network mode compare `user_id` values against what we sent  |
-| Personalization shows fallbacks everywhere                         | `fields` map points at wrong columns or wrong field names                               | Compare the `fields:` block in `.env.yaml` with your schema (or your API's response keys)                             |
-| The platform will not let you create a `query` variable            | **Expected in network mode** — there is no database to query                            | §6.2. Use `field`, `computed`, `constant` or `api` instead                                                             |
-| Boot warns `Reading user lookup from config/dispatch.yaml`                  | Lookup config still in the old file                                                     | Migrate it into `.env.yaml` — §6.4                                                                                     |
-| `password authentication failed` at boot                           | `DISPATCHER_DB_PASSWORD` changed after the volume was created                           | Postgres keeps the original password. Either restore it, or `docker compose down -v` and start fresh (deletes history) |
-| No opens or clicks recorded                                        | Provider webhooks not configured, or dispatcher not reachable                           | §9, and confirm `SES_EVENT_CONFIG_SET` for SES                                                                         |
-| `/admin` returns 503                                               | **Expected** — no console is shipped in this image                                      | Manage through the ScaleMargin platform                                                                                |
-| Traffic split / failover not happening                             | `.env.yaml` did not load; still on a single account                                     | §7.4 — check the boot log                                                                                              |
-| Provider rejects every message with an auth error                  | Used `api_key:` where you meant `api_key_env:`                                          | §7.1                                                                                                                   |
-| `.env.yaml` exists but the dispatcher cannot read it               | Docker created it as a _directory_ because the file was missing when you first ran `up` | `rm -rf .env.yaml`, create the real file, then `docker compose up -d`                                                  |
-| ScaleMargin cannot reach the dispatcher                            | Not exposed, or `DISPATCHER_ATLAS_KEY` unset                                            | §9, and confirm the key is set and shared                                                                              |
-| `EADDRINUSE` on 3100                                               | Something else on that port                                                             | Change the host side: `"127.0.0.1:3200:3100"`                                                                          |
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Campaigns succeed but reach nobody real | No `user_lookup:` reached the container → mock mode | Check 3 in section 9. Usually the mount, or a directory Docker created in place of the file |
+| `.env.yaml` exists but cannot be read | Docker created it as a directory on the first `up` | `rm -rf .env.yaml`, create the real file, `docker compose up -d` |
+| Container exits: YAML error | An empty file, or a misspelled key | Start with `version: 1`; the error names the bad key |
+| Container exits: `message_id_ttl is required` | No retention window set | Set `dispatcher.retention.message_id_ttl` |
+| Container exits: missing ScaleMargin secrets | `scalemargin:` block empty or missing | Fill both secrets — section 6.3 |
+| `password authentication failed` for the dispatcher's own database | `POSTGRES_PASSWORD` and `dispatcher.database.password` differ, or the password changed after the volume was created | Make them match. Postgres keeps the first password; `down -v` resets it and deletes history |
+| `getaddrinfo ENOTFOUND` for your database | `connection.host` unreachable from the container | Section 6.4 host table — usually `host.docker.internal` |
+| `Resolved 0/N users` on every send | `id_column` / `id_type` mismatch, or your API returned no matching `user_id` | Confirm the column or API holds the exact ID we send |
+| Provider rejects every message with an auth error | `api_key:` used where `api_key_env:` was meant | Section 6.1 |
+| `Email address is not verified` | The `from` address is not verified with the provider | Verify that exact address |
+| Container exits: `SendGrid sender 'X' has no API key — sendgrid.api_key_env names Y, which is not set` (same shape for SES, Gupshup, Freshchat) | A sender's credential is missing. Credentials come **only from the sender**, never from a provider-wide variable like `SENDGRID_API_KEY` | Set the field the message names, or add the named variable to the `env:` map or compose `environment:` |
+| Container exits: `Gupshup sender 'X' has no usable credentials. Either API key: … Or enterprise: …` | A Gupshup sender needs `api_key` + `src_name`, **or** `user_id` + `password` | Set one pair. Media and caption-only messages always need `user_id` + `password` |
+| Container exits: `'webhook_secret' is not a sender key — it belongs inside the gupshup: block` | A provider key written beside `provider:` instead of inside its block — it used to be dropped silently | Indent it under the named block (`gupshup:`, `sendgrid:`, `ses:`, `freshchat:`). Unknown or misspelled keys fail the same way, with the key named |
+| Container exits: `email: removed — declare the account under senders:` | An older file still has the top-level `email:` block | Move it into a `senders:` entry — the message shows the exact shape |
+| Container exits: `Email sender 'X' needs a from: address` | That sender has no From address of its own | Add `from:`, verified with its provider |
+| Container exits: `default_sender.email 'X' not found or disabled` | `routing.default_sender` names a sender that is missing, disabled, or on the other channel | Point it at an enabled sender of that channel |
+| The platform will not offer `field` or `query` variables | **Expected in network mode** | Use `api`, `computed` or `constant` |
+| Boot warns `Gupshup inbound webhook is OPEN` | The Gupshup sender has no `webhook_secret`, so anyone can post to `/api/scalemargin/gupshup-events` | Generate a secret (`openssl rand -hex 32`), set it as `webhook_secret` on the Gupshup sender, **and** set Gupshup's delivery-report callback URL to `https://<dispatcher>/api/scalemargin/gupshup-events?token=<secret>`, then restart. Do both — the secret alone rejects every receipt until the URL carries the token |
+| No opens or clicks recorded | Provider webhooks not set up, or the dispatcher not reachable | Register the provider's webhook — section 8.2 |
+| ScaleMargin cannot reach the dispatcher | Not exposed, or `atlas_key` unset | Set `atlas_key` and `public_url`, put a TLS proxy in front |
+| `exec format error` | ARM host, amd64 image | Runs under emulation; ask us for a native build |
+| `EADDRINUSE` on 3100 | Something else uses the port | Change the host side: `"127.0.0.1:3200:3100"` |
 
-Still stuck? Send us:
+Still stuck? Send us these two — neither contains customer data or credentials:
 
 ```bash
 docker compose logs --tail=200 dispatcher > dispatcher-logs.txt
 curl -s localhost:3100/api/v1/internal/ready > ready.json
 ```
 
-Both are safe to share — neither contains customer data, passwords or
-connection strings.
-
 ---
 
-## 12. Security summary
-
-- The dispatcher holds **read-only** credentials to your customer database — or,
-  in network mode, no database credentials at all.
-- Customer data never leaves your network. ScaleMargin receives counts, opaque
-  IDs and timestamps — never names, addresses, phone numbers or message content.
-- Provider error messages are scrubbed of email addresses, phone numbers and IPs
-  before they are stored or shared.
-- Both databases live on machines you control.
-- **`.env.yaml` is the only file, and it holds every secret.** `chmod 600` it,
-  keep it out of version control, and back it up as you would any other
-  credential. It carries your customer-database password, your lookup token and
-  your management key — it is not a file to circulate or paste into a ticket.
-- The Atlas key is the only management credential, and leaving it unset turns
-  the management API off entirely.
-
----
-
-## 13. `.env.yaml` — the complete reference
-
-Everything the dispatcher reads, in one file. Nothing here is required; delete
-any block you do not need. The same content ships as `.env.yaml.example`.
-
-Skip to §13.2 for four worked environments — local, staging, production, and
-network-lookup — if you would rather start from something closer to your case.
-
-### 13.1 Every block
-
-```yaml
-version: 1
-
-# ═══ dispatcher: — THIS SERVICE ════════════════════════════════════════════
-# Everything about how the dispatcher itself runs. What it DOES — lookup,
-# sending, links, events, images — is top-level, below.
-dispatcher:
-  # ── How it is reached ──────────────────────────────────────────────────
-  port: 3100
-  public_url: https://dispatcher.your-company.com
-
-  # ── Who may reach it ───────────────────────────────────────────────────
-  atlas_key: "32-char-random" # or: atlas_key_env: DISPATCHER_ATLAS_KEY
-  atlas_cors_origins: # omit entirely for server-to-server only
-    - https://atlas.scalemargin.com
-  # logs_api_token: "…"       # overrides the console-managed logs token
-  # logs_api_token_env: DISPATCHER_LOGS_API_TOKEN
-
-  # ── Its own database ───────────────────────────────────────────────────
-  database:
-    dialect: postgres # sqlite | mysql | postgres
-    host: postgres
-    port: 5432
-    user: dispatcher
-    password: "…" # or: password_env: DISPATCHER_DB_PASSWORD
-    database: dispatcher_state
-    # url: postgres://user:pass@host:5432/db    # wins over the fields above
-    # file: ./data/dispatcher.db                # dialect: sqlite only
-
-  # ── Admin console and session security ─────────────────────────────────
-  admin:
-    auth_secret: "32-char-random" # generated if omitted; set it in production
-    # api_key_encryption_secret_env: DISPATCHER_API_KEY_ENCRYPTION_SECRET
-    # email: operator@your-company.com
-    # password_env: DISPATCHER_ADMIN_PASSWORD
-    # cookie_secure: true
-    # trusted_origins: [https://console.your-company.com]
-    # auth_secret_file: ./data/.better-auth-secret           # where a generated secret persists
-    # credentials_file: ./data/initial-admin-credentials.txt # first-boot login
-
-  # ── Retention ──────────────────────────────────────────────────────────
-  retention:
-    # REQUIRED, no default. How long provider message ids are kept in
-    # `provider_message_ids` for you to query. "5d 2h", "12h", "30d".
-    # Minimum 1h; the sweep runs hourly. See §5.3.
-    message_id_ttl: "5d 2h"
-    # log_days: 14
-    # log_max_rows: 200000
-    # campaign_event_days: 90
-    # campaign_event_max_rows: 500000
-    # outbox_max_attempts: 10
-
-  # ── Logging and telemetry ──────────────────────────────────────────────
-  # logging:
-  #   level: info                # trace | debug | info | warn | error | fatal
-  # telemetry:
-  #   disabled: false
-
-# ═══ scalemargin: — platform credentials (from onboarding)  REQUIRED ══════
-scalemargin:
-  dispatch_secret: "…"
-  analytics_secret: "…"
-  # dispatch_secret_env: SCALEMARGIN_DISPATCH_SECRET
-  # analytics_secret_env: SCALEMARGIN_ANALYTICS_SECRET
-  # analytics_callback_url: https://api.scalemargin.com/analytics
-
-# ═══ user_lookup: — where recipient data comes from. PICK ONE MODE (§6) ═══
-user_lookup:
-  mode: database # database | network | mock
-  backend: postgres
-  connection:
-    host: db.internal
-    port: 5432
-    user: dispatcher_ro
-    password: "…"
-    database: customers
-    ssl: true
-  source:
-    kind: view
-    name: dispatcher_recipients
-    id_column: external_id
-    id_type: string
-  fields:
-    email: email_address
-    phone: mobile_number
-  batch:
-    max_ids_per_query: 1000
-    dedupe: true
-
-# ═══ email: — sending, one-account shorthand ══════════════════════════════
-email:
-  provider: ses # ses | sendgrid
-  from: campaigns@your-company.com
-  reply_to: support@your-company.com
-
-# ═══ routing: + senders: — several accounts, weights, failover (§7) ═══════
-# `senders:` wins over `email:` above when both are present.
-routing:
-  failover:
-    max_attempts: 2
-    on_timeout: false
-    on_identity_error: false
-    breaker: { failure_threshold: 5, cooldown_ms: 60000 }
-  default_sender:
-    email: primary-ses
-    whatsapp: primary-wa
-
-senders:
-  - id: primary-ses
-    channel: email
-    provider: ses
-    organizations: ["*"]
-    from: campaigns@your-company.com
-    weight: 3
-    enabled: true
-    ses:
-      region: ap-south-1
-      configuration_set: ses-events
-      access_key_id_env: AWS_ACCESS_KEY_ID
-      secret_access_key_env: AWS_SECRET_ACCESS_KEY
-
-# ═══ links: — URLs inside messages ════════════════════════════════════════
-links:
-  unsubscribe_url_base: https://dispatcher.your-company.com
-  # logo_url: https://cdn.your-company.com/logo.png
-  # unsubscribe_redirect_url: https://your-company.com/goodbye
-  # preferences_redirect_url: https://your-company.com/preferences
-  # unsubscribe_reasons: [Too many emails, Not relevant, I never signed up]
-
-# ═══ events: — the event pipeline ═════════════════════════════════════════
-# events:
-#   batch_size: 100
-#   batch_interval_ms: 5000
-#   buffer_dir: ./data/events
-#   sendgrid_inbound_events: "*"
-#   providers_enabled: [ses, sendgrid]
-#   debug: false
-#   config_path: ./config/events.yaml
-
-# ═══ storage: — campaign images ═══════════════════════════════════════════
-# storage:
-#   provider: local                  # local | s3 | gcs
-#   local_dir: ./public/images
-#   local_base_url: https://dispatcher.your-company.com/images
-#   # s3_bucket / s3_region / s3_prefix / cdn_base_url
-#   # gcs_bucket / gcs_project_id / gcs_credentials_json_env
-
-# ═══ env: — escape hatch: anything not modelled above, set verbatim ═══════
-# Lowest precedence. This is where provider keys live now that there is no
-# `.env`, and where the targets of any `_env:` reference above must exist.
-env:
-  AWS_ACCESS_KEY_ID: "…"
-  AWS_SECRET_ACCESS_KEY: "…"
-  # SENDGRID_API_KEY: "SG.…"
-  # GUPSHUP_API_KEY: "…"
-  # FRESHCHAT_API_KEY: "…"
-```
-
-### 13.2 Four worked environments
-
-#### A. Local development — nothing real, nothing sent
-
-Mock lookup means no customer database. SQLite means no Postgres container.
-
-```yaml
-version: 1
-
-dispatcher:
-  database:
-    dialect: sqlite
-    file: ./data/dispatcher.db
-
-  retention:
-    message_id_ttl: "2h" # REQUIRED — short locally; ids are throwaway here
-
-  logging:
-    level: debug
-
-  telemetry:
-    disabled: true
-
-scalemargin:
-  dispatch_secret: "local-dev-placeholder"
-  analytics_secret: "local-dev-placeholder"
-
-user_lookup:
-  mode: mock # fabricates recipients; mails nobody real
-
-email:
-  provider: ses
-  from: dev@example.com
-```
-
-#### B. Staging — real data, real sending, loose retention
-
-```yaml
-version: 1
-
-dispatcher:
-  port: 3100
-  public_url: https://dispatcher.staging.your-company.com
-  atlas_key_env: DISPATCHER_ATLAS_KEY # injected by the platform
-  atlas_cors_origins:
-    - https://staging.atlas.scalemargin.com
-
-  database:
-    dialect: postgres
-    host: postgres
-    user: dispatcher
-    password_env: DISPATCHER_DB_PASSWORD
-    database: dispatcher_state
-
-  retention:
-    message_id_ttl: "2d" # REQUIRED
-    log_days: 3 # staging logs are noise after a few days
-    campaign_event_days: 14
-
-  logging:
-    level: debug
-
-scalemargin:
-  dispatch_secret_env: SCALEMARGIN_DISPATCH_SECRET
-  analytics_secret_env: SCALEMARGIN_ANALYTICS_SECRET
-
-user_lookup:
-  mode: database
-  backend: postgres
-  connection:
-    host: staging-db.internal
-    user: dispatcher_ro
-    password_env: DB_PASSWORD
-    database: customers_staging
-    ssl: true
-  source:
-    { kind: view, name: dispatcher_recipients, id_column: external_id }
-  fields:
-    email: email_address
-
-email:
-  provider: sendgrid
-  from: staging@your-company.com
-
-links:
-  unsubscribe_url_base: https://dispatcher.staging.your-company.com
-
-env:
-  SENDGRID_API_KEY: "SG.staging-key"
-```
-
-Every secret here is a `_env` reference, so this file can live in version
-control and the real values are injected by the platform.
-
-#### C. Production — multi-sender, failover, strict retention
-
-```yaml
-version: 1
-
-dispatcher:
-  port: 3100
-  public_url: https://dispatcher.your-company.com
-  atlas_key_env: DISPATCHER_ATLAS_KEY
-  atlas_cors_origins:
-    - https://atlas.scalemargin.com
-
-  database:
-    dialect: postgres
-    url_env: DISPATCHER_DB_URL
-
-  admin:
-    auth_secret_env: BETTER_AUTH_SECRET # stable across redeploys
-    api_key_encryption_secret_env: DISPATCHER_API_KEY_ENCRYPTION_SECRET
-    cookie_secure: true
-
-  retention:
-    message_id_ttl: "30d" # REQUIRED — how long you can poll the provider
-    log_days: 14
-    campaign_event_days: 90
-    campaign_event_max_rows: 500000
-
-  logging:
-    level: info # debug on a production send path is a lot of rows
-
-scalemargin:
-  dispatch_secret_env: SCALEMARGIN_DISPATCH_SECRET
-  analytics_secret_env: SCALEMARGIN_ANALYTICS_SECRET
-
-user_lookup:
-  mode: database
-  backend: postgres
-  connection:
-    host: prod-db.internal
-    user: dispatcher_ro
-    password_env: DB_PASSWORD
-    database: customers
-    ssl: true
-  source:
-    kind: view
-    name: dispatcher_recipients
-    id_column: external_id
-    id_type: uuid
-  fields:
-    email: email_address
-    phone: mobile_number
-    first_name: given_name
-  batch:
-    max_ids_per_query: 1000
-    dedupe: true
-
-routing:
-  failover:
-    max_attempts: 2
-    on_timeout: false # a timeout often means it WAS sent
-    on_identity_error: false # an unverified sender fails the same way twice
-    breaker: { failure_threshold: 5, cooldown_ms: 60000 }
-  default_sender:
-    email: primary-ses
-
-senders:
-  - id: primary-ses
-    channel: email
-    provider: ses
-    organizations: ["*"]
-    from: campaigns@your-company.com
-    weight: 3
-    enabled: true
-    ses:
-      region: ap-south-1
-      configuration_set: ses-events
-      access_key_id_env: AWS_ACCESS_KEY_ID
-      secret_access_key_env: AWS_SECRET_ACCESS_KEY
-
-  - id: backup-sendgrid
-    channel: email
-    provider: sendgrid
-    organizations: ["*"]
-    from: campaigns@your-company.com
-    weight: 1
-    enabled: true
-    sendgrid:
-      api_key_env: SENDGRID_API_KEY
-      event_webhook_public_key_env: SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY
-
-links:
-  unsubscribe_url_base: https://dispatcher.your-company.com
-  logo_url: https://cdn.your-company.com/logo.png
-
-storage:
-  provider: s3
-  s3_bucket: prod-campaign-images
-  s3_region: ap-south-1
-  cdn_base_url: https://cdn.your-company.com
-```
-
-No `env:` block at all — every secret is injected by the platform, so this file
-holds nothing sensitive.
-
-#### D. Network lookup — we never touch your database
-
-```yaml
-version: 1
-
-dispatcher:
-  public_url: https://dispatcher.your-company.com
-  atlas_key_env: DISPATCHER_ATLAS_KEY
-
-  database:
-    dialect: postgres
-    url_env: DISPATCHER_DB_URL
-
-  retention:
-    message_id_ttl: "5d 2h" # REQUIRED
-
-scalemargin:
-  dispatch_secret_env: SCALEMARGIN_DISPATCH_SECRET
-  analytics_secret_env: SCALEMARGIN_ANALYTICS_SECRET
-
-user_lookup:
-  mode: network
-  network:
-    url: https://api.your-company.com/scalemargin/lookup
-    token_env: LOOKUP_API_TOKEN
-    timeout_ms: 3000
-    retries: 2
-  fields:
-    email: email
-    phone: phone
-  batch:
-    max_ids_per_query: 500
-    dedupe: true
-
-email:
-  provider: ses
-  from: campaigns@your-company.com
-
-links:
-  unsubscribe_url_base: https://dispatcher.your-company.com
-```
-
-There is no `connection:` and no `source:` — there is no database to point at.
-Remember that `source: query` variables cannot resolve in this mode (§6.2).
-
-### 13.3 Things that will waste your afternoon
-
-**An empty `.env.yaml` is a boot failure, not a no-op.** `yaml.load("")` is
-`undefined` and the schema rejects it. Keep at least `version: 1`.
-
-**Create the file before the first `docker compose up`.** If the bind-mount
-source does not exist, Docker creates a *directory* in its place. The dispatcher
-then boots in mock mode, looking perfectly healthy and mailing nobody real.
-
-**An unknown key is rejected, not ignored.** `retention: { log_dayz: 14 }` fails
-at boot rather than silently keeping the default. This is deliberate: a typo in
-a retention or security setting that is quietly ignored is worse than one that
-stops the container.
-
-**A `_env:` reference to a variable that does not exist** is reported at boot.
-It will not be stored as the literal name.
-
-**Real environment variables win.** If a setting seems not to apply, check
-whether something is already exporting it — `docker compose exec dispatcher env | grep NAME`.
-
-**`dispatcher.retention.message_id_ttl` has no default and will stop the container.** It is
-the only non-secret setting that does. `"5d 2h"`, minimum `1h` — §5.3.
+# 12. Security summary
+
+- The dispatcher holds **read-only** credentials to your customer database — or, in network mode, none at all.
+- It reads only contact details and the columns your variables use, and never writes.
+- Customer data never leaves your network. ScaleMargin receives counts, opaque IDs and timestamps.
+- Provider error messages are scrubbed of email addresses, phone numbers and IPs before being stored or shared. Metrics hold counts and timings only.
+- Both databases live on machines you control; the dispatcher's own database publishes no port.
+- **`.env.yaml`** is the single file holding every secret. `chmod 600`, keep it out of version control, and in Kubernetes mount it as a Secret at `defaultMode: 0400`.
+- `atlas_key` is the only management credential. Leave it unset and the management API is off entirely.
