@@ -25,6 +25,21 @@ export const variables = sqliteTable("variables", {
   updated_by: text("updated_by"),
 });
 
+/**
+ * Call metadata schemas: a named set of keys (with a sample and an optional
+ * validation regex each) an `api` variable can attach, making `{{key.k}}` /
+ * `{{key.v}}` usable in its request. Definitions only — never a value.
+ */
+export const callMetadata = sqliteTable("call_metadata", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  /** [{ key, placeholder?, regex? }] */
+  keys: json("keys").notNull(),
+  created_at: ts("created_at").notNull(),
+  updated_at: ts("updated_at").notNull(),
+  updated_by: text("updated_by"),
+});
+
 export const dispatchRuns = sqliteTable(
   "dispatch_runs",
   {

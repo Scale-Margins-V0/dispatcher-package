@@ -78,6 +78,13 @@
       "when": 1790234683588,
       "tag": "0010_cynical_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1790321649616,
+      "tag": "0011_third_vector",
+      "breakpoints": true
     }
   ]
 }

@@ -63,6 +63,7 @@ import { apiPlaceholders, type ResponseField } from "../../../variables/api-resp
 import { refreshPlaceholders } from "../../../variables/service.js";
 import { isSystemVariable, SYSTEM_VARIABLES } from "../../../variables/system.js";
 import { lookupFields } from "../../../variables/lookup-fields.js";
+import { checkVariableMetadata, metadataNames } from "../../../variables/call-metadata.js";
 import { componentLogger } from "../../../logging/logger.js";
 import { LogComponent, errorFields } from "../../../logging/conventions.js";
 import { apiError, invalidRequest } from "../errors.js";
@@ -98,7 +99,7 @@ const log = componentLogger(LogComponent.apiDataplane);
  * access log, so nothing here repeats that. These helpers record only what the
  * router cannot see: which rule rejected a payload, and what a write changed.
  */
-function logRejected(resource: string, error: { issues: Array<{ path: PropertyKey[]; message: string }> }): void {
+export function logRejected(resource: string, error: { issues: Array<{ path: PropertyKey[]; message: string }> }): void {
   log.warn(
     {
       resource,
@@ -263,7 +264,7 @@ export async function getState(_req: Request, res: Response): Promise<void> {
  * against an unattached database would report success and lose the definition.
  * Refuse up front instead.
  */
-function requireStateDb(res: Response): boolean {
+export function requireStateDb(res: Response): boolean {
   if (isDbInitialized()) return true;
   log.error(
     { status_code: 503 },
@@ -352,11 +353,20 @@ function placeholdersOf(row: VariableRow): string[] {
   return apiPlaceholders(row.name, Array.isArray(schema) ? schema : undefined, config?.json_path ?? "");
 }
 
-function serializeVariable(row: VariableRow) {
+/**
+ * `names` resolves an attached call metadata id to its current name — the
+ * variable stores the id, so a renamed schema shows its new name here.
+ */
+function serializeVariable(row: VariableRow, names?: Map<string, string>) {
+  const definition = serializeDefinition(row);
+  const api = (definition as { api?: { metadata?: { id: string; required: boolean } | null } }).api;
+  if (api?.metadata) {
+    api.metadata = { ...api.metadata, name: names?.get(api.metadata.id) ?? null } as typeof api.metadata;
+  }
   return {
     name: row.name,
     source: row.source,
-    definition: serializeDefinition(row),
+    definition,
     placeholders: placeholdersOf(row),
     fallback: row.fallback,
     sample: row.sample,
@@ -399,10 +409,10 @@ function serializeSystemVariable(name: string): ReturnType<typeof serializeVaria
 
 /** The whole catalog: system variables first, then the stored ones they don't shadow. */
 async function catalog(): Promise<ReturnType<typeof serializeVariable>[]> {
-  const rows = await listVariables();
+  const [rows, names] = await Promise.all([listVariables(), metadataNames()]);
   return [
     ...Object.keys(SYSTEM_VARIABLES).map(serializeSystemVariable),
-    ...rows.filter((row) => !isSystemVariable(row.name)).map(serializeVariable),
+    ...rows.filter((row) => !isSystemVariable(row.name)).map((row) => serializeVariable(row, names)),
   ];
 }
 
@@ -448,7 +458,7 @@ function resolveSample(
 }
 
 /** The authenticated Atlas caller, for the audit column. */
-function actor(req: Request): string {
+export function actor(req: Request): string {
   const key = req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "";
   return key ? `atlas:${key.slice(0, 8)}` : "atlas";
 }
@@ -559,7 +569,19 @@ export async function getVariableHandler(
     apiError(res, "not_found", `Variable "${params.data.name}" does not exist`);
     return;
   }
-  res.json({ variable: serializeVariable(row) });
+  res.json({ variable: serializeVariable(row, await metadataNames()) });
+}
+
+/**
+ * Refuses an api definition whose call metadata does not add up: an unknown
+ * schema, or a {{key.k|v}} that is not one of its keys. True = already answered.
+ */
+async function rejectBadMetadata(res: Response, definition: ZVariableDefinition): Promise<boolean> {
+  if (definition.source !== "api") return false;
+  const details = await checkVariableMetadata(definition.api);
+  if (details.length === 0) return false;
+  apiError(res, "invalid_request", "Request failed validation", details);
+  return true;
 }
 
 /** POST /variables */
@@ -638,6 +660,8 @@ export async function createVariableHandler(
     }
   }
 
+  if (await rejectBadMetadata(res, definition)) return;
+
   const row = await createVariable({
     name,
     ...definitionToColumns(definition),
@@ -651,7 +675,7 @@ export async function createVariableHandler(
     { variable: name, source: definition.source, enabled, has_fallback: fallback !== null },
     "Variable created — applies to the next dispatch"
   );
-  res.status(201).json({ variable: serializeVariable(row) });
+  res.status(201).json({ variable: serializeVariable(row, await metadataNames()) });
 }
 
 /**
@@ -724,6 +748,8 @@ export async function updateVariableHandler(
             },
           }
         : definition;
+    // After unmasking: a stored header value can carry {{key.v}} too.
+    if (await rejectBadMetadata(res, restored)) return;
     Object.assign(patch, definitionToColumns(restored));
     patch.sample = resolveSample(
       restored,
@@ -753,7 +779,7 @@ export async function updateVariableHandler(
     apiError(res, "not_found", `Variable "${current}" no longer exists`);
     return;
   }
-  res.json({ variable: serializeVariable(row) });
+  res.json({ variable: serializeVariable(row, await metadataNames()) });
 }
 
 /*

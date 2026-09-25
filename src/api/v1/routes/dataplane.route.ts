@@ -19,6 +19,7 @@ import express, { Router } from "express";
 import { componentLogger } from "../../../logging/logger.js";
 import { LogComponent } from "../../../logging/conventions.js";
 import { requireApiKey } from "../auth.js";
+import * as CallMetadataController from "../controllers/call-metadata.controller.js";
 import * as DataPlaneController from "../controllers/dataplane.controller.js";
 import { corsMiddleware } from "../cors.js";
 import { apiError, asyncApi } from "../errors.js";
@@ -148,6 +149,21 @@ router.route("/logs/:id").get(asyncApi(DataPlaneController.getLogHandler));
  * Variables — the authoring surface. Definitions in, definitions out; a
  * resolved customer value has no route through here.
  */
+
+/*
+ * Call metadata — schemas of keys an api variable can attach ({{key.k}} / {{key.v}}).
+ */
+
+router
+  .route("/call-metadata")
+  .get(asyncApi(CallMetadataController.listCallMetadataHandler))
+  .post(asyncApi(CallMetadataController.createCallMetadataHandler));
+
+router
+  .route("/call-metadata/:name")
+  .get(asyncApi(CallMetadataController.getCallMetadataHandler))
+  .patch(asyncApi(CallMetadataController.updateCallMetadataHandler))
+  .delete(asyncApi(CallMetadataController.deleteCallMetadataHandler));
 
 // Not under /variables/: "fields" is a legal variable name.
 router.route("/lookup/fields").get(asyncApi(DataPlaneController.getLookupFieldsHandler));

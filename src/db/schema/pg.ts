@@ -34,6 +34,21 @@ export const variables = pgTable("variables", {
   updated_by: id191("updated_by"),
 });
 
+/**
+ * Call metadata schemas: a named set of keys (with a sample and an optional
+ * validation regex each) an `api` variable can attach, making `{{key.k}}` /
+ * `{{key.v}}` usable in its request. Definitions only — never a value.
+ */
+export const callMetadata = pgTable("call_metadata", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  name: id191("name").notNull().unique(),
+  /** [{ key, placeholder?, regex? }] */
+  keys: jsonb("keys").notNull(),
+  created_at: ts("created_at").notNull(),
+  updated_at: ts("updated_at").notNull(),
+  updated_by: id191("updated_by"),
+});
+
 export const dispatchRuns = pgTable(
   "dispatch_runs",
   {

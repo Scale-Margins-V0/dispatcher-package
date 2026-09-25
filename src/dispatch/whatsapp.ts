@@ -24,6 +24,7 @@ import {
 import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
 import { resolveDynamicValues } from "../variables/resolver.js";
+import { readCallMetadataPayload } from "../variables/call-metadata.js";
 import { programOf } from "../db/repos/dispatch-programs.js";
 import { SendLogRecorder } from "./send-log-recorder.js";
 import { MessageIdRecorder } from "./message-id-recorder.js";
@@ -67,6 +68,7 @@ export async function processWhatsAppDispatch(
   const personalizeCtx = {
     campaign_id,
     organization_id: metadata.organization_id,
+    call_metadata: readCallMetadataPayload(payload.call_metadata),
   };
 
   const users = await lookupUsers(user_ids, "whatsapp");

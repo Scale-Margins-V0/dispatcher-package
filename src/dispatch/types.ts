@@ -24,6 +24,11 @@ export type DispatchPayload = {
     is_complex?: boolean;
   };
   personalization_fields?: string[];
+  /**
+   * `{{key.v}}` values for api variables attaching call metadata schema `id`.
+   * One set per dispatch — the same for every recipient.
+   */
+  call_metadata?: { id: string; values: Record<string, string> };
   images?: Array<{
     placeholder: string;
     url: string;

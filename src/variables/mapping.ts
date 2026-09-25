@@ -36,6 +36,9 @@ function readApiConfig(config: Record<string, unknown> | null): ApiConfig {
     ...(typeof cfg.body === "string" ? { body: cfg.body } : {}),
     ...(typeof cfg.timeout_ms === "number" ? { timeout_ms: cfg.timeout_ms } : {}),
     ...(schema.length ? { response_schema: schema } : {}),
+    ...(cfg.metadata && typeof cfg.metadata.id === "string"
+      ? { metadata: { id: cfg.metadata.id, required: cfg.metadata.required !== false } }
+      : {}),
   };
 }
 

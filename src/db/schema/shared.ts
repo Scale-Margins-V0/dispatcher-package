@@ -20,6 +20,8 @@ export type ApiConfig = {
   json_path: string;
   body?: string;
   timeout_ms?: number;
+  /** Attached call metadata schema, by id — see src/variables/call-metadata.ts. */
+  metadata?: { id: string; required: boolean } | null;
   /** Addressable response paths — see src/variables/api-response.ts. */
   response_schema?: Array<{
     path: string;
@@ -81,6 +83,25 @@ export type DispatchRunRow = {
   error_stack: string | null;
   occurred_at: Date;
   updated_at: Date;
+};
+
+/** One key of a call metadata schema. */
+export type CallMetadataKey = {
+  /** Identifier; used in an api variable's request as `{{key.k}}` / `{{key.v}}`. */
+  key: string;
+  /** A sample value — shown in the UI, never sent. */
+  placeholder?: string;
+  /** Optional validation for the value, once values are wired. */
+  regex?: string;
+};
+
+export type CallMetadataRow = {
+  id: string;
+  name: string;
+  keys: CallMetadataKey[];
+  created_at: Date;
+  updated_at: Date;
+  updated_by: string | null;
 };
 
 export type SendLogStatus = "sent" | "failed";

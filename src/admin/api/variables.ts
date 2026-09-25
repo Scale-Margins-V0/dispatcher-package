@@ -40,6 +40,7 @@ import { refreshPlaceholders } from "../../variables/service.js";
 import { isSourceSupported, unsupportedSourceMessage } from "../../variables/guard.js";
 import { isSystemVariable, SYSTEM_VARIABLES } from "../../variables/system.js";
 import { lookupFields } from "../../variables/lookup-fields.js";
+import { checkVariableMetadata } from "../../variables/call-metadata.js";
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -122,6 +123,7 @@ function payloadToEntry(d: Payload): PlaceholderEntry {
           ...(d.api!.body ? { body: d.api!.body } : {}),
           ...(d.api!.timeout_ms ? { timeout_ms: d.api!.timeout_ms } : {}),
           ...(d.api!.response_schema?.length ? { response_schema: d.api!.response_schema } : {}),
+          ...(d.api!.metadata ? { metadata: d.api!.metadata } : {}),
         },
         ...fb,
       };
@@ -255,6 +257,15 @@ function rejectUnsupportedSource(res: Response, source: PlaceholderEntry["source
   return true;
 }
 
+/** Unknown call metadata schema, or a {{key.k|v}} not in it → 400. True = answered. */
+async function rejectBadMetadata(res: Response, data: Payload): Promise<boolean> {
+  if (data.source !== "api" || !data.api) return false;
+  const details = await checkVariableMetadata(data.api);
+  if (details.length === 0) return false;
+  res.status(400).json({ error: "Invalid variable payload", details });
+  return true;
+}
+
 /** Express 4 does not catch async handler rejections — wrap them. */
 export const asyncHandler =
   (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
@@ -303,6 +314,7 @@ export const registerVariableRoutes = (app: Express): void => {
         res.status(409).json({ error: `Variable "${parsed.data.name}" already exists` });
         return;
       }
+      if (await rejectBadMetadata(res, parsed.data)) return;
       const row = await createVariable(toNewVariable(parsed.data, req));
       await refreshPlaceholders();
       res.status(201).json({ variable: serialize(row) });
@@ -329,6 +341,7 @@ export const registerVariableRoutes = (app: Express): void => {
         return;
       }
       mergeMaskedHeaders(parsed.data, existing);
+      if (await rejectBadMetadata(res, parsed.data)) return;
       const row = await updateVariable(currentName, toNewVariable(parsed.data, req));
       await refreshPlaceholders();
       res.json({ variable: serialize(row!) });

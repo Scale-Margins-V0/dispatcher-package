@@ -108,8 +108,13 @@ export const ZApiConfigSchema = z.object({
   headers: z
     .record(z.string(), z.string().max(4000))
     .refine(
-      (headers) => Object.keys(headers).every((key) => /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(key)),
-      "Header names may only contain HTTP token characters"
+      // Checked as it will be sent: a {{token}} (e.g. `X-{{tenure.k}}`) becomes
+      // an identifier, which is a valid header-name character run.
+      (headers) =>
+        Object.keys(headers).every((key) =>
+          /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(key.replace(/\{\{\s*[a-zA-Z_][a-zA-Z0-9_.]*\s*\}\}/g, "x"))
+        ),
+      "Header names may only contain HTTP token characters (and {{tokens}})"
     )
     .optional(),
   /**

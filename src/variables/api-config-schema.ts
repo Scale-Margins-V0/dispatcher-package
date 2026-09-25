@@ -17,6 +17,7 @@ import {
   RESPONSE_FIELD_TYPES,
   type ResponseField,
 } from "./api-response.js";
+import { ZVariableMetadataSchema } from "./call-metadata.js";
 
 const MAX_QUERY_ROWS = 50;
 const MAX_SAMPLE_BYTES = 256 * 1024;
@@ -49,6 +50,8 @@ export const apiExtrasShape = {
     )
     .max(MAX_RESPONSE_FIELDS, `At most ${MAX_RESPONSE_FIELDS} response fields`)
     .optional(),
+  /** One call metadata schema; its keys become {{key.k}} / {{key.v}} in the request. */
+  metadata: ZVariableMetadataSchema.optional(),
   /** Write-only. A sample JSON response; its paths are merged into `response_schema`. */
   response_sample: z
     .string()

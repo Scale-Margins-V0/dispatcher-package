@@ -409,6 +409,131 @@ paths:
         "503": { $ref: "#/components/responses/Unavailable" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /api/v1/data-plane/call-metadata:
+    get:
+      operationId: listCallMetadata
+      summary: List call metadata schemas
+      description: >
+        Named sets of keys an api variable can attach. Each schema carries
+        `used_by` — the api variables attaching it. Not paginated (tens per
+        dispatcher).
+      tags: [Call Metadata]
+      responses:
+        "200":
+          description: Every schema
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [generated_at, call_metadata]
+                properties:
+                  generated_at: { type: string, format: date-time }
+                  call_metadata:
+                    type: array
+                    items: { $ref: "#/components/schemas/CallMetadata" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      operationId: createCallMetadata
+      summary: Create a call metadata schema
+      tags: [Call Metadata]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CallMetadataInput" }
+            example:
+              name: gold_metadata
+              keys:
+                - { key: tenure, placeholder: "24", regex: "^\\d+$" }
+                - { key: age, placeholder: "36" }
+                - { key: limit }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  call_metadata: { $ref: "#/components/schemas/CallMetadata" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/data-plane/call-metadata/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$" }
+    get:
+      operationId: getCallMetadata
+      summary: Get one call metadata schema
+      tags: [Call Metadata]
+      responses:
+        "200":
+          description: The schema
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  call_metadata: { $ref: "#/components/schemas/CallMetadata" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      operationId: updateCallMetadata
+      summary: Rename and/or replace the key list
+      description: >
+        Send `name`, `keys`, or both; `keys` replaces the list whole. Renaming is
+        always safe — api variables reference the schema by id. Removing or
+        renaming a key an api variable's request still uses is **409 conflict**,
+        with one `details[]` entry (path `keys`) per variable and key.
+      tags: [Call Metadata]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                keys:
+                  type: array
+                  items: { $ref: "#/components/schemas/CallMetadataKey" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  call_metadata: { $ref: "#/components/schemas/CallMetadata" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      operationId: deleteCallMetadata
+      summary: Delete a call metadata schema
+      description: Refused with **409 conflict** while any api variable attaches it; the message names them.
+      tags: [Call Metadata]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  name: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /api/v1/data-plane/campaigns:
     get:
       operationId: listCampaigns
@@ -1277,6 +1402,20 @@ components:
                 description: Dot-separated keys (letters, digits, _) or array indexes; at most 8 deep; cannot start with an index
               type: { type: string, enum: [string, number, boolean, "null"], description: '"null" = the sample had null there; real type unknown' }
               example: { type: string, maxLength: 200, description: Short example, when derived from a sample }
+        metadata:
+          type: object
+          nullable: true
+          description: >
+            One call metadata schema. Its keys become `{{key.k}}` (the key's
+            name) and `{{key.v}}` (its value — supplied per send; empty until
+            that is wired) in the URL, query names/values, header names/values
+            and body. Every `{{key.k|v}}` used must be a key of this schema, and
+            using one with no schema attached is refused.
+          required: [id]
+          properties:
+            id: { type: string }
+            required: { type: boolean, default: true, description: Stored; enforced once values are wired }
+            name: { type: string, nullable: true, readOnly: true, description: The schema's current name }
         response_sample:
           type: string
           writeOnly: true
@@ -1315,6 +1454,60 @@ components:
           constant: "#/components/schemas/ConstantDefinition"
           query: "#/components/schemas/QueryDefinition"
           api: "#/components/schemas/ApiDefinition"
+
+    CallMetadataKey:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          maxLength: 64
+          pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+          description: >
+            Unique within the schema; `field` is reserved. An api variable
+            attaching the schema uses it as `{{key.k}}` (the key's name) and
+            `{{key.v}}` (its value) anywhere in its request.
+        placeholder:
+          type: string
+          maxLength: 500
+          description: A sample value shown in the UI — never sent. Must match `regex` when both are set.
+        regex:
+          type: string
+          maxLength: 500
+          description: Validates the value once values are supplied per send. Must compile.
+
+    CallMetadataInput:
+      type: object
+      required: [name, keys]
+      properties:
+        name: { type: string, maxLength: 191, pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$" }
+        keys:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: "#/components/schemas/CallMetadataKey" }
+
+    CallMetadata:
+      allOf:
+        - $ref: "#/components/schemas/CallMetadataInput"
+        - type: object
+          properties:
+            id: { type: string, description: What api variables reference — stable across renames }
+            used_by:
+              type: array
+              items: { type: string }
+              description: Api variables attaching this schema
+            required_keys:
+              type: array
+              items: { type: string }
+              description: >-
+                Keys used as `{{key.v}}` by a variable attaching this schema as
+                required. A dispatch missing one (or sending a value that fails
+                the key's regex) skips that variable's API call and renders its
+                fallback.
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+            updated_by: { type: string, nullable: true }
 
     Variable:
       type: object

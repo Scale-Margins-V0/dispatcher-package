@@ -15,6 +15,7 @@ import type { EmailMessage, Sender } from "../providers/types.js";
 import { telemetry } from "../telemetry/posthog.js";
 import { lookupUsers } from "../user-lookup.js";
 import { resolveDynamicValues } from "../variables/resolver.js";
+import { readCallMetadataPayload } from "../variables/call-metadata.js";
 import { programOf } from "../db/repos/dispatch-programs.js";
 import { SendLogRecorder } from "./send-log-recorder.js";
 import { deriveTemplateRef } from "./template-ref.js";
@@ -71,6 +72,7 @@ export async function processDispatch(
   const personalizeCtx = {
     campaign_id,
     organization_id: metadata.organization_id,
+    call_metadata: readCallMetadataPayload(payload.call_metadata),
   };
 
   const users = await lookupUsers(user_ids, "email");
