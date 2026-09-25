@@ -482,3 +482,29 @@ describe("gupshup-whatsapp", () => {
     expect(body.get("caption")).toBe(caption);
   });
 });
+
+// Before this, query/api values were resolved for the run and then never handed
+// to a Gupshup send, so every such variable rendered its fallback.
+describe("Gupshup params use pre-resolved query/api values", () => {
+  it("fills {{api_var}} and {{api_var.path}} from the resolved map", async () => {
+    const { setDispatchConfigForTests, resetDispatchConfigForTests } = await import("../user-lookup/config.js");
+    setDispatchConfigForTests({
+      user_lookup: { backend: "mock", fields: {} },
+      placeholders: {
+        user_info: { source: "api", api: { method: "GET", url: "https://x.example", json_path: "info.firstname" }, fallback: "friend" },
+      },
+    } as never);
+    try {
+      const u: UserRecord = { user_id: "u1", email: "", fields: {} };
+      const out = personalizeTemplateValues(
+        ["{{user_info}}", "{{user_info.info.address.pincode}}"],
+        u,
+        { campaign_id: "c", organization_id: "o" },
+        { user_info: "Ada", "user_info.info.address.pincode": "560001" }
+      );
+      expect(out).toEqual(["Ada", "560001"]);
+    } finally {
+      resetDispatchConfigForTests();
+    }
+  });
+});

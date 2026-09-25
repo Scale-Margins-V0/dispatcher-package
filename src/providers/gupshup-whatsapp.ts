@@ -435,12 +435,18 @@ export function templateParamKeys(spec: WhatsAppTemplateSpec): string[] {
   return spec.params ?? spec.attributes ?? [];
 }
 
+/**
+ * `resolved` carries the pre-fetched query/api values. Without it every
+ * query/api variable in a Gupshup template rendered its fallback — the values
+ * were resolved for the run and then never handed to this send.
+ */
 export function personalizeTemplateValues(
   values: string[],
   user: UserRecord,
-  ctx: PersonalizeDispatchContext
+  ctx: PersonalizeDispatchContext,
+  resolved?: Record<string, string>
 ): string[] {
-  return values.map((value) => personalize(value, user, ctx));
+  return values.map((value) => personalize(value, user, ctx, resolved));
 }
 
 export function resolveTemplateId(spec: WhatsAppTemplateSpec): string {
@@ -1117,11 +1123,12 @@ export function buildWhatsAppMediaMessageForUser(
   user: UserRecord,
   to: string,
   ctx: PersonalizeDispatchContext,
-  sendContext?: SendContext
+  sendContext?: SendContext,
+  resolved?: Record<string, string>
 ): GupshupWhatsAppMessage {
   return {
     to,
-    caption: personalize(spec.caption, user, ctx),
+    caption: personalize(spec.caption, user, ctx, resolved),
     mediaUrl: spec.media_url,
     mediaMsgType: spec.msg_type,
     isTemplate: spec.is_template ?? true,
@@ -1135,10 +1142,11 @@ export function buildWhatsAppMessageForUser(
   user: UserRecord,
   to: string,
   ctx: PersonalizeDispatchContext,
-  sendContext?: SendContext
+  sendContext?: SendContext,
+  resolved?: Record<string, string>
 ): GupshupWhatsAppMessage {
   const rawParams = templateParamKeys(spec);
-  const personalized = personalizeTemplateValues(rawParams, user, ctx);
+  const personalized = personalizeTemplateValues(rawParams, user, ctx, resolved);
   return {
     to,
     template: {

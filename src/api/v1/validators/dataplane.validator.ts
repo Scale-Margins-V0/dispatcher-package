@@ -15,6 +15,11 @@
 import { z } from "zod";
 import { validateComputedExpression } from "../../../personalize.js";
 import { HEADER_MASK } from "../../../variables/redaction.js";
+import {
+  apiExtrasShape,
+  checkApiConfig,
+  finalizeApiConfig,
+} from "../../../variables/api-config-schema.js";
 
 /**
  * A placeholder name is whatever the operator types between `{{ }}`: no
@@ -107,7 +112,10 @@ export const ZApiConfigSchema = z.object({
       "Header names may only contain HTTP token characters"
     )
     .optional(),
-  /** Dotted path into the JSON response; empty means "use the whole body". */
+  /**
+   * What `{{name}}` alone renders: a dotted path into the JSON response; empty
+   * means the whole body. `{{name.a.b}}` reads from the response root regardless.
+   */
   json_path: z
     .string()
     .trim()
@@ -120,12 +128,13 @@ export const ZApiConfigSchema = z.object({
     .min(100, "Timeout must be at least 100ms")
     .max(30_000, "Timeout cannot exceed 30000ms")
     .optional(),
+  ...apiExtrasShape,
 });
 
 /** `api` — an HTTP call to a service the client already runs. */
 export const ZApiDefinitionSchema = z.object({
   source: z.literal("api"),
-  api: ZApiConfigSchema,
+  api: ZApiConfigSchema.superRefine(checkApiConfig).transform(finalizeApiConfig),
 });
 
 export const ZVariableDefinitionSchema = z.discriminatedUnion(

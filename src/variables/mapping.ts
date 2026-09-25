@@ -6,16 +6,36 @@
 
 import type { ApiConfig, VariableRow } from "../db/schema/index.js";
 import type { PlaceholderEntry } from "../user-lookup/config.js";
+import { primitiveFieldsOnly, type ResponseField } from "./api-response.js";
 
 function readApiConfig(config: Record<string, unknown> | null): ApiConfig {
   const cfg = (config ?? {}) as Partial<ApiConfig>;
+  // Stored JSON is trusted only as far as its shape: anything malformed is
+  // dropped rather than allowed to reach a request builder.
+  const query = Array.isArray(cfg.query)
+    ? cfg.query.filter(
+        (q): q is { key: string; value: string } =>
+          !!q && typeof q.key === "string" && q.key.length > 0 && typeof q.value === "string"
+      )
+    : [];
+  // Rows stored before objects and arrays were excluded are dropped here, so
+  // they are never offered as placeholders again.
+  const schema = Array.isArray(cfg.response_schema)
+    ? primitiveFieldsOnly(
+        cfg.response_schema.filter(
+          (f): f is ResponseField => !!f && typeof f.path === "string" && typeof f.type === "string"
+        )
+      )
+    : [];
   return {
     method: cfg.method === "POST" ? "POST" : "GET",
     url: typeof cfg.url === "string" ? cfg.url : "",
+    ...(query.length ? { query } : {}),
     ...(cfg.headers && typeof cfg.headers === "object" ? { headers: cfg.headers } : {}),
     json_path: typeof cfg.json_path === "string" ? cfg.json_path : "",
     ...(typeof cfg.body === "string" ? { body: cfg.body } : {}),
     ...(typeof cfg.timeout_ms === "number" ? { timeout_ms: cfg.timeout_ms } : {}),
+    ...(schema.length ? { response_schema: schema } : {}),
   };
 }
 

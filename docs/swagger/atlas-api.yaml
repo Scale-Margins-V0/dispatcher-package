@@ -1222,6 +1222,20 @@ components:
           type: string
           maxLength: 2000
           description: Must start with http:// or https://; {{tokens}} interpolated URL-encoded at send time
+        query:
+          type: array
+          maxItems: 50
+          description: >
+            Appended to `url` in order (duplicates allowed). Values take {{tokens}}
+            and are URL-encoded. A value whose name looks like a credential
+            (key, token, secret, password, auth, signature) is MASKED as
+            •••••••• in every response, like a header; send the mask back to keep it.
+          items:
+            type: object
+            required: [key, value]
+            properties:
+              key: { type: string, minLength: 1, maxLength: 200 }
+              value: { type: string, maxLength: 2000 }
         headers:
           type: object
           additionalProperties:
@@ -1232,11 +1246,46 @@ components:
           type: string
           maxLength: 200
           default: ""
-          description: Dotted path into the JSON response; empty means whole body
+          description: >
+            What `{{name}}` on its own renders — a dotted path to a single value
+            in the JSON response. Must not point at an object (refused). Empty
+            means `{{name}}` is not offered as a placeholder; it would be the
+            whole response. `{{name.a.b}}` always reads from the response root.
         body:
           type: string
           maxLength: 8000
-          description: POST only
+          description: >
+            POST only. JSON unless a Content-Type header says otherwise; must be
+            valid JSON with {{tokens}} inside quotes. Recipient values are
+            JSON-escaped when inserted.
+        response_schema:
+          type: array
+          maxItems: 200
+          description: >
+            The response paths templates can use, as `{{name.<path>}}` —
+            `{{user_info.info.address.pincode}}`, `{{user_info.orders.0.id}}`.
+            Single values only: objects and arrays are never placeholders, and
+            at send time a path holding one renders the fallback, never JSON.
+            For discovery and autocomplete, not a gate: a path a template uses
+            resolves even if it is not listed. A missing value renders the fallback.
+          items:
+            type: object
+            required: [path, type]
+            properties:
+              path:
+                type: string
+                description: Dot-separated keys (letters, digits, _) or array indexes; at most 8 deep; cannot start with an index
+              type: { type: string, enum: [string, number, boolean, "null"], description: '"null" = the sample had null there; real type unknown' }
+              example: { type: string, maxLength: 200, description: Short example, when derived from a sample }
+        response_sample:
+          type: string
+          writeOnly: true
+          maxLength: 262144
+          description: >
+            Write-only. One sample JSON object; its single-value paths, types and
+            short examples are merged into `response_schema` (listed entries win
+            on the same path) and the sample itself is discarded, never stored.
+            Objects and arrays in it are walked through, not listed.
         timeout_ms:
           type: integer
           minimum: 100
@@ -1288,6 +1337,20 @@ components:
           $ref: "#/components/schemas/VariableSource"
         definition:
           $ref: "#/components/schemas/VariableDefinition"
+        placeholders:
+          type: array
+          items: { type: string }
+          description: >
+            Every token a template can use for this variable — always a single
+            value. For an api variable: `name` only when `json_path` is set,
+            plus `name.<path>` for each `response_schema` path.
+        system:
+          type: boolean
+          description: Defined in dispatcher code — never editable or deletable; no timestamps
+        description:
+          type: string
+          nullable: true
+          description: One line, system variables only
         fallback:
           type: string
           nullable: true
@@ -1299,12 +1362,12 @@ components:
         enabled:
           type: boolean
           description: A disabled variable keeps its definition but stops resolving
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time, nullable: true, description: null for system variables }
+        updated_at: { type: string, format: date-time, nullable: true, description: null for system variables }
         updated_by:
           type: string
           nullable: true
-          description: '"atlas:" plus the first 8 characters of the key that wrote it'
+          description: '"atlas:" plus the first 8 characters of the key that wrote it; "system" for system variables'
 
     CreateVariableRequest:
       type: object

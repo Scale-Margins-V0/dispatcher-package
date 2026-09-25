@@ -77,7 +77,13 @@ export async function processDispatch(
 
   // Resolve async (query/api) variables once for the whole recipient set, before
   // the sync personalize pass. Sync sources (field/computed/constant) skip this.
-  const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx);
+  // The content goes in too, so `{{api_var.some.path}}` resolves even when the
+  // path was never declared on the variable.
+  const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx, [
+    content.subject,
+    content.html_body,
+    content.text_body,
+  ]);
 
   // The variables this message actually references — computed once for the run,
   // because the template is the same for every recipient. This is the

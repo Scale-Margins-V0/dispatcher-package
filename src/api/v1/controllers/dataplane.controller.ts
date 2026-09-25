@@ -58,7 +58,8 @@ import { loadEnvYaml } from "../../../env-yaml.js";
 import { registry } from "../../../providers/senders.js";
 import { renderPlaceholderPreview } from "../../../personalize.js";
 import { rowToPlaceholderEntry } from "../../../variables/mapping.js";
-import { redactConfig, unmaskHeaders } from "../../../variables/redaction.js";
+import { redactConfig, unmaskHeaders, unmaskQuery } from "../../../variables/redaction.js";
+import { apiPlaceholders, type ResponseField } from "../../../variables/api-response.js";
 import { refreshPlaceholders } from "../../../variables/service.js";
 import { isSystemVariable, SYSTEM_VARIABLES } from "../../../variables/system.js";
 import { lookupFields } from "../../../variables/lookup-fields.js";
@@ -339,11 +340,24 @@ function serializeDefinition(row: VariableRow): Record<string, unknown> {
   }
 }
 
+/**
+ * Every token a template can use for this variable. For an api variable that
+ * is `name` plus `name.<path>` for each declared response path — what the
+ * platform offers for autocomplete. Other sources are just `name`.
+ */
+function placeholdersOf(row: VariableRow): string[] {
+  if (row.source !== "api") return [row.name];
+  const config = row.config as { response_schema?: ResponseField[]; json_path?: string } | null;
+  const schema = config?.response_schema;
+  return apiPlaceholders(row.name, Array.isArray(schema) ? schema : undefined, config?.json_path ?? "");
+}
+
 function serializeVariable(row: VariableRow) {
   return {
     name: row.name,
     source: row.source,
     definition: serializeDefinition(row),
+    placeholders: placeholdersOf(row),
     fallback: row.fallback,
     sample: row.sample,
     enabled: row.enabled,
@@ -371,6 +385,7 @@ function serializeSystemVariable(name: string): ReturnType<typeof serializeVaria
     name,
     source: entry.source,
     definition,
+    placeholders: [name],
     fallback: entry.fallback ?? null,
     sample: renderPlaceholderPreview(entry),
     enabled: true,
@@ -609,6 +624,19 @@ export async function createVariableHandler(
       return;
     }
   }
+  if (definition.source === "api" && definition.api.query) {
+    const i = definition.api.query.findIndex((row) => row.value === "••••••••");
+    if (i >= 0) {
+      apiError(res, "invalid_request", "Request failed validation", [
+        {
+          path: `definition.api.query.${i}.value`,
+          message:
+            "Send the real parameter value when creating a variable — there is nothing to preserve yet",
+        },
+      ]);
+      return;
+    }
+  }
 
   const row = await createVariable({
     name,
@@ -692,6 +720,7 @@ export async function updateVariableHandler(
             api: {
               ...definition.api,
               headers: unmaskHeaders(definition.api.headers, existing),
+              query: unmaskQuery(definition.api.query, existing),
             },
           }
         : definition;

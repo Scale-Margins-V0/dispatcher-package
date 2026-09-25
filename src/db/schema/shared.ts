@@ -14,10 +14,18 @@ export type QueryConfig = { sql: string };
 export type ApiConfig = {
   method: "GET" | "POST";
   url: string;
+  /** Appended to the URL; values take {{tokens}} and are URL-encoded. */
+  query?: Array<{ key: string; value: string }>;
   headers?: Record<string, string>;
   json_path: string;
   body?: string;
   timeout_ms?: number;
+  /** Addressable response paths — see src/variables/api-response.ts. */
+  response_schema?: Array<{
+    path: string;
+    type: "string" | "number" | "boolean" | "object" | "array" | "null";
+    example?: string;
+  }>;
 };
 export type VariableConfig = ConstantConfig | QueryConfig | ApiConfig;
 

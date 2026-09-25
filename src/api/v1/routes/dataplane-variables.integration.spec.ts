@@ -562,3 +562,96 @@ describe("GET /lookup/fields — what a field variable can point at", () => {
   });
 });
 
+
+describe("api variables — query params, JSON body, response shape", () => {
+  const def = (api: Record<string, unknown>) => ({
+    name: "user_info",
+    definition: { source: "api", api: { method: "GET", url: "https://crm.example/users", ...api } },
+    fallback: "friend",
+  });
+
+  it("turns a pasted sample into paths, offers them as placeholders, and never stores the sample", async () => {
+    const sample = JSON.stringify({ info: { firstname: "Ada", address: { pincode: "560001" } } });
+    const res = await api()
+      .post(BASE)
+      .set(auth)
+      .send(def({ query: [{ key: "user_id", value: "{{user_id}}" }], response_sample: sample }));
+
+    expect(res.status).toBe(201);
+    expect(res.body.variable.definition.api.query).toEqual([{ key: "user_id", value: "{{user_id}}" }]);
+    // Single values only — `info` and `info.address` are objects and are not offered.
+    expect(res.body.variable.definition.api.response_schema).toEqual([
+      { path: "info.firstname", type: "string", example: "Ada" },
+      { path: "info.address.pincode", type: "string", example: "560001" },
+    ]);
+    // No default path set, so bare {{user_info}} (the whole object) is not offered.
+    expect(res.body.variable.placeholders).toEqual([
+      "user_info.info.firstname",
+      "user_info.info.address.pincode",
+    ]);
+    const stored = (await listVariables()).find((r) => r.name === "user_info");
+    expect(JSON.stringify(stored?.config)).not.toContain("response_sample");
+  });
+
+  it("accepts an explicitly listed schema", async () => {
+    const res = await api()
+      .post(BASE)
+      .set(auth)
+      .send(def({ json_path: "profile.city", response_schema: [{ path: "profile.city", type: "string" }] }));
+    expect(res.status).toBe(201);
+    expect(res.body.variable.placeholders).toEqual(["user_info", "user_info.profile.city"]);
+  });
+
+  it.each([
+    ["an unaddressable path", { response_schema: [{ path: "first-name", type: "string" }] }, "definition.api.response_schema.0.path"],
+    ["a duplicate path", { response_schema: [{ path: "a", type: "string" }, { path: "a", type: "number" }] }, "definition.api.response_schema.1.path"],
+    ["a sample that is not JSON", { response_sample: "{nope" }, "definition.api.response_sample"],
+    ["a sample that is an array", { response_sample: "[1,2]" }, "definition.api.response_sample"],
+    ["a body that is not JSON", { method: "POST", body: '{"id": {{user_id}}}' }, "definition.api.body"],
+    ["an empty query name", { query: [{ key: " ", value: "x" }] }, "definition.api.query.0.key"],
+    ["an object-typed field", { response_schema: [{ path: "info", type: "object" }] }, "definition.api.response_schema.0.type"],
+    [
+      "a default path that points at an object",
+      { json_path: "info", response_sample: '{"info": {"firstname": "Ada"}}' },
+      "definition.api.json_path",
+    ],
+  ])("rejects %s with a field-level error", async (_label, api_, path) => {
+    const res = await api().post(BASE).set(auth).send(def(api_));
+    expect(res.status).toBe(400);
+    expect(res.body.details.map((d: { path: string }) => d.path)).toContain(path);
+  });
+
+  it("accepts a non-JSON body when the Content-Type says so", async () => {
+    const res = await api()
+      .post(BASE)
+      .set(auth)
+      .send(def({ method: "POST", headers: { "Content-Type": "text/plain" }, body: "id={{user_id}}" }));
+    expect(res.status).toBe(201);
+  });
+
+  it("masks a secret-looking query value on the way out and keeps it across an edit", async () => {
+    await api()
+      .post(BASE)
+      .set(auth)
+      .send(def({ query: [{ key: "api_key", value: "s3cret" }, { key: "user_id", value: "{{user_id}}" }] }));
+
+    const read = await api().get(`${BASE}/user_info`).set(auth);
+    expect(read.body.variable.definition.api.query).toEqual([
+      { key: "api_key", value: HEADER_MASK },
+      { key: "user_id", value: "{{user_id}}" },
+    ]);
+
+    await api().patch(`${BASE}/user_info`).set(auth).send({ definition: read.body.variable.definition });
+    const stored = (await listVariables()).find((r) => r.name === "user_info");
+    expect((stored?.config as { query: unknown }).query).toEqual([
+      { key: "api_key", value: "s3cret" },
+      { key: "user_id", value: "{{user_id}}" },
+    ]);
+  });
+
+  it("refuses a masked query value on create — there is nothing to keep", async () => {
+    const res = await api().post(BASE).set(auth).send(def({ query: [{ key: "token", value: HEADER_MASK }] }));
+    expect(res.status).toBe(400);
+    expect(res.body.details[0].path).toBe("definition.api.query.0.value");
+  });
+});

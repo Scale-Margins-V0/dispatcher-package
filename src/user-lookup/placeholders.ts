@@ -12,10 +12,23 @@ import { z } from "zod";
 const apiConfigSchema = z.object({
   method: z.enum(["GET", "POST"]).default("GET"),
   url: z.string(),
+  /** Appended to the URL; values take {{tokens}} and are URL-encoded. */
+  query: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
   headers: z.record(z.string(), z.string()).optional(),
+  /** What `{{name}}` alone renders. `{{name.a.b}}` always reads from the root. */
   json_path: z.string(),
   body: z.string().optional(),
   timeout_ms: z.number().int().positive().optional(),
+  /** The response's addressable paths — for discovery, never a gate. See api-response.ts. */
+  response_schema: z
+    .array(
+      z.object({
+        path: z.string(),
+        type: z.enum(["string", "number", "boolean", "object", "array", "null"]),
+        example: z.string().optional(),
+      })
+    )
+    .optional(),
 });
 
 export const placeholderEntrySchema = z.discriminatedUnion("source", [

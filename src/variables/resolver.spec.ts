@@ -221,3 +221,139 @@ describe("testVariableDefinition", () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe("resolveDynamicValues — nested api paths", () => {
+  const userInfo = (extra: Record<string, unknown> = {}) => ({
+    user_info: {
+      source: "api",
+      api: {
+        method: "GET",
+        url: "https://crm.example/users",
+        query: [{ key: "user_id", value: "{{user_id}}" }],
+        json_path: "",
+        response_schema: [
+          { path: "info.firstname", type: "string" },
+          { path: "info.address.pincode", type: "string" },
+        ],
+        ...extra,
+      },
+      fallback: "-",
+    },
+  });
+  const body = {
+    info: { firstname: "Ada", address: { pincode: "560001" }, tier: "gold" },
+    orders: [{ id: 7 }],
+  };
+  const respond = () =>
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(body), { status: 200 }));
+
+  it("fills every declared path from ONE request per recipient", async () => {
+    setDispatchConfigForTests(configWith(userInfo()));
+    const fetchMock = respond();
+    const out = await resolveDynamicValues([user("u1")], CTX);
+    expect(out.get("u1")?.values).toMatchObject({
+      "user_info.info.firstname": "Ada",
+      "user_info.info.address.pincode": "560001",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // The schema is for discovery, not a gate: the response decides what exists.
+  it("resolves a path the template uses even if it was never declared", async () => {
+    setDispatchConfigForTests(configWith(userInfo()));
+    respond();
+    const out = await resolveDynamicValues([user("u1")], CTX, ["Tier: {{user_info.info.tier}}, order {{user_info.orders.0.id}}"]);
+    expect(out.get("u1")?.values["user_info.info.tier"]).toBe("gold");
+    expect(out.get("u1")?.values["user_info.orders.0.id"]).toBe("7");
+  });
+
+  it("falls back per path, and reports which token fell back", async () => {
+    setDispatchConfigForTests(configWith(userInfo()));
+    respond();
+    const out = await resolveDynamicValues([user("u1")], CTX, ["{{user_info.info.missing}}"]);
+    expect(out.get("u1")?.values["user_info.info.missing"]).toBe("-");
+    expect(out.get("u1")?.fallbacks).toContain("user_info.info.missing");
+    expect(out.get("u1")?.fallbacks).not.toContain("user_info.info.firstname");
+  });
+
+  it("appends query rows, encoding the recipient's value", async () => {
+    setDispatchConfigForTests(configWith(userInfo()));
+    const fetchMock = respond();
+    await resolveDynamicValues([user("a&b=c")], CTX);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe("https://crm.example/users?user_id=a%26b%3Dc");
+  });
+
+  it("keeps a query string already in the URL and adds to it", async () => {
+    setDispatchConfigForTests(configWith(userInfo({ url: "https://crm.example/users?v=2" })));
+    const fetchMock = respond();
+    await resolveDynamicValues([user("u1")], CTX);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe("https://crm.example/users?v=2&user_id=u1");
+  });
+
+  // A quote in someone's data must not break — or inject into — a JSON body.
+  it("JSON-escapes tokens inside a JSON body", async () => {
+    setDispatchConfigForTests(
+      configWith(userInfo({ method: "POST", query: [], body: '{"id": "{{user_id}}"}' }))
+    );
+    const fetchMock = respond();
+    await resolveDynamicValues([user('x", "admin": true, "y": "')], CTX);
+    const sent = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
+    expect(sent).toEqual({ id: 'x", "admin": true, "y": "' });
+  });
+
+  it("never sends a body on GET, whatever is stored", async () => {
+    setDispatchConfigForTests(configWith(userInfo({ body: '{"id": "{{user_id}}"}' })));
+    const fetchMock = respond();
+    await resolveDynamicValues([user("u1")], CTX);
+    expect(fetchMock.mock.calls[0]![1]!.body).toBeUndefined();
+  });
+
+  it("falls back on every token when the request fails", async () => {
+    setDispatchConfigForTests(configWith(userInfo()));
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("nope", { status: 500 }));
+    const out = await resolveDynamicValues([user("u1")], CTX);
+    expect(out.get("u1")?.values).toMatchObject({
+      user_info: "-",
+      "user_info.info.firstname": "-",
+      "user_info.info.address.pincode": "-",
+    });
+  });
+
+  it("returns the derived schema from a live test", async () => {
+    respond();
+    const result = await testVariableDefinition({
+      source: "api",
+      api: { method: "GET", url: "https://crm.example/users", json_path: "info.firstname" },
+    });
+    expect(result.value).toBe("Ada");
+    expect(result.schema?.map((f) => f.path)).toContain("info.address.pincode");
+  });
+});
+
+describe("resolveDynamicValues — objects never render", () => {
+  it("falls back when a path, or the default path, holds an object or array", async () => {
+    setDispatchConfigForTests(
+      configWith({
+        user_info: {
+          source: "api",
+          api: { method: "GET", url: "https://crm.example/u", json_path: "" },
+          fallback: "-",
+        },
+      })
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ info: { city: "Pune" }, tags: ["a"], name: "Ada" }), { status: 200 })
+    );
+    const out = await resolveDynamicValues([user("u1")], CTX, [
+      "{{user_info.info}} {{user_info.tags}} {{user_info.name}}",
+    ]);
+    expect(out.get("u1")?.values).toMatchObject({
+      user_info: "-", // empty default path = the whole response, an object
+      "user_info.info": "-",
+      "user_info.tags": "-",
+      "user_info.name": "Ada",
+    });
+  });
+});
+

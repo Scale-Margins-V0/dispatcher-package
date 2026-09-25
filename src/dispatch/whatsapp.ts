@@ -70,7 +70,11 @@ export async function processWhatsAppDispatch(
   };
 
   const users = await lookupUsers(user_ids, "whatsapp");
-  const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx);
+  // Params live in several content shapes (template JSON, caption, attributes);
+  // scanning the serialized content catches `{{api_var.path}}` in any of them.
+  const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx, [
+    JSON.stringify(content ?? {}),
+  ]);
   const devRecipient = resolveDevTestRecipient() || resolveFreshchatDevTestRecipient();
 
   const program = programOf(payload);
@@ -254,7 +258,8 @@ export async function processWhatsAppDispatch(
             user,
             phone,
             personalizeCtx,
-            sendContext
+            sendContext,
+            resolved
           ),
           user,
           personalizeCtx,
@@ -267,7 +272,8 @@ export async function processWhatsAppDispatch(
             user,
             phone,
             personalizeCtx,
-            sendContext
+            sendContext,
+            resolved
           ),
           user,
           personalizeCtx,

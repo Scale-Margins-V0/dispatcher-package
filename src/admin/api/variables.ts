@@ -28,7 +28,13 @@ import type { VariableRow } from "../../db/schema/index.js";
 import { renderPlaceholderPreview, validateComputedExpression } from "../../personalize.js";
 import type { PlaceholderEntry } from "../../user-lookup/config.js";
 import { rowToPlaceholderEntry } from "../../variables/mapping.js";
-import { HEADER_MASK, redactConfig } from "../../variables/redaction.js";
+import { HEADER_MASK, redactConfig, unmaskQuery } from "../../variables/redaction.js";
+import {
+  apiExtrasShape,
+  checkApiConfig,
+  finalizeApiConfig,
+} from "../../variables/api-config-schema.js";
+import { apiPlaceholders, type ResponseField } from "../../variables/api-response.js";
 import { testVariableDefinition } from "../../variables/resolver.js";
 import { refreshPlaceholders } from "../../variables/service.js";
 import { isSourceSupported, unsupportedSourceMessage } from "../../variables/guard.js";
@@ -40,14 +46,18 @@ const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 /** Header masking is shared with the Atlas data-plane surface — one mask, one rule. */
 export { HEADER_MASK };
 
-const apiSchema = z.object({
-  method: z.enum(["GET", "POST"]).default("GET"),
-  url: z.string().min(1).max(2000),
-  headers: z.record(z.string(), z.string()).optional(),
-  json_path: z.string().max(200).optional().default(""),
-  body: z.string().max(8000).optional(),
-  timeout_ms: z.number().int().min(100).max(30000).optional(),
-});
+const apiSchema = z
+  .object({
+    method: z.enum(["GET", "POST"]).default("GET"),
+    url: z.string().min(1).max(2000),
+    headers: z.record(z.string(), z.string()).optional(),
+    json_path: z.string().max(200).optional().default(""),
+    body: z.string().max(8000).optional(),
+    timeout_ms: z.number().int().min(100).max(30000).optional(),
+    ...apiExtrasShape,
+  })
+  .superRefine(checkApiConfig)
+  .transform(finalizeApiConfig);
 
 const variablePayloadSchema = z
   .object({
@@ -106,10 +116,12 @@ function payloadToEntry(d: Payload): PlaceholderEntry {
         api: {
           method: d.api!.method,
           url: d.api!.url,
+          ...(d.api!.query?.length ? { query: d.api!.query } : {}),
           ...(d.api!.headers ? { headers: d.api!.headers } : {}),
           json_path: d.api!.json_path ?? "",
           ...(d.api!.body ? { body: d.api!.body } : {}),
           ...(d.api!.timeout_ms ? { timeout_ms: d.api!.timeout_ms } : {}),
+          ...(d.api!.response_schema?.length ? { response_schema: d.api!.response_schema } : {}),
         },
         ...fb,
       };
@@ -148,6 +160,14 @@ function serialize(row: VariableRow) {
     updated_at: row.updated_at.toISOString(),
     updated_by: row.updated_by,
     preview: renderPlaceholderPreview(rowToPlaceholderEntry(row)),
+    placeholders:
+      row.source === "api"
+        ? apiPlaceholders(
+            row.name,
+            (row.config as { response_schema?: ResponseField[] } | null)?.response_schema,
+            (row.config as { json_path?: string } | null)?.json_path ?? ""
+          )
+        : [row.name],
     system: false,
     description: null as string | null,
   };
@@ -169,6 +189,7 @@ function serializeSystem(name: string) {
     updated_at: null,
     updated_by: "system",
     preview: renderPlaceholderPreview(entry),
+    placeholders: [name],
     system: true,
     description,
   };
@@ -191,9 +212,11 @@ function authedUser(req: Request): string | null {
   return (req as { authUser?: { email?: string } }).authUser?.email ?? null;
 }
 
-/** Replace masked api header values with the existing stored ones. */
+/** Replace masked api header and query values with the existing stored ones. */
 function mergeMaskedHeaders(data: Payload, existing: VariableRow | null): void {
-  if (data.source !== "api" || !data.api?.headers) return;
+  if (data.source !== "api" || !data.api) return;
+  if (data.api.query) data.api.query = unmaskQuery(data.api.query, existing);
+  if (!data.api.headers) return;
   const prev = (existing?.config as { headers?: Record<string, string> } | null)?.headers ?? {};
   for (const [k, v] of Object.entries(data.api.headers)) {
     if (v === HEADER_MASK) data.api.headers[k] = prev[k] ?? "";
