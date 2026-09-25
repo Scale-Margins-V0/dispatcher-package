@@ -132,7 +132,8 @@ support ticket we would otherwise get later:
 1. No `[FATAL]` lines.
 2. Migrations ran — a fresh SQLite file is created without error.
 3. `Dispatcher started` appears with the port and provider.
-4. **No `FROM_EMAIL is not set` warning.** If you see it, the image is fine but
+4. **No sender warning** (`No email sender is configured`, or a sender whose
+   `from` `cannot be verified`). If you see one, the image is fine but
    the run is misconfigured — every send from that deployment will be rejected by the provider. We have hit this in production; it cost a day of debugging because the warning only reached the terminal.
 
 ---
@@ -501,7 +502,7 @@ locally" is a human responsibility, not an enforced one.
 | Build context is hundreds of MB                          | No `.dockerignore`                                       | §2.1                                               |
 | `Dispatcher state-DB migrations not found for dialect …` | `drizzle/` missing from the image                        | Restore `COPY drizzle/ ./drizzle/`                 |
 | `[FATAL] Missing required env vars`                      | `SCALEMARGIN_*_SECRET` unset                             | They are mandatory; the process exits by design    |
-| Container healthy, every send rejected                   | `FROM_EMAIL` unset → `noreply@example.com`, unverifiable | Set `FROM_EMAIL` to a verified sender              |
+| Container healthy, every send rejected                   | The sender's `from` is unverifiable (legacy env: `FROM_EMAIL` unset → `noreply@example.com`) | Set a verified `from:` on the sender |
 | Campaign reports success, wrong recipients               | No `user_lookup:` reached the container → mock lookup    | §7                                                 |
 | `pnpm install --frozen-lockfile` fails in build          | `pnpm-lock.yaml` out of sync with `package.json`         | Run `pnpm install` locally and commit the lockfile |
 | `/admin` returns 503                                     | **Expected.** The console is not shipped                 | Nothing to fix. Use `/api/v1/data-plane/*`         |
@@ -515,7 +516,7 @@ Local, before you tag — CI does not check any of the first four (§9):
 - [ ] `pnpm test` green, `npx tsc --noEmit` clean
 - [ ] Version bumped in `package.json`; changeset added; `CHANGELOG.md` updated (it becomes the release body)
 - [ ] `.dockerignore` present, context is kilobytes (§2.1)
-- [ ] Local smoke test: `/health`, `/api/v1/internal/ready`, no `[FATAL]`, no `FROM_EMAIL` warning
+- [ ] Local smoke test: `/health`, `/api/v1/internal/ready`, no `[FATAL]`, no sender warning
 - [ ] Version tag not already published (§6)
 
 Then:

@@ -23,6 +23,13 @@ type CallbackEntry = { organization_id: string; analytics_callback_url: string }
 
 const store = new Map<string, CallbackEntry>();
 
+/**
+ * The analytics URL ScaleMargin sent on the most recent dispatch. Events with
+ * no campaign (WhatsApp delivery receipts) have no per-campaign URL to use, so
+ * they go where the platform last told us — never to a hard-coded host.
+ */
+let latestCallbackUrl: string | undefined;
+
 export function registerCampaignCallback(
   campaignId: string,
   organizationId: string,
@@ -32,6 +39,7 @@ export function registerCampaignCallback(
     organization_id: organizationId,
     analytics_callback_url: analyticsCallbackUrl,
   });
+  if (analyticsCallbackUrl?.trim()) latestCallbackUrl = analyticsCallbackUrl.trim();
   if (isDbInitialized()) {
     void upsertCampaignCallback(campaignId, organizationId, analyticsCallbackUrl).catch(
       (error) =>
@@ -78,6 +86,11 @@ export async function getCampaignCallbackDurable(
 export async function warmCampaignCallbackCache(days = 30): Promise<number> {
   if (!isDbInitialized()) return 0;
   const rows = await listRecentCampaignCallbacks(days);
+  // Newest first (last_used_at desc): after a restart, the latest URL is known
+  // again before the first dispatch arrives.
+  if (!latestCallbackUrl && rows[0]?.analytics_callback_url?.trim()) {
+    latestCallbackUrl = rows[0].analytics_callback_url.trim();
+  }
   for (const row of rows) {
     if (!store.has(row.campaign_id)) {
       store.set(row.campaign_id, {
@@ -89,7 +102,13 @@ export async function warmCampaignCallbackCache(days = 30): Promise<number> {
   return rows.length;
 }
 
+/** The analytics URL from the most recent dispatch (or, after a restart, the most recently used one). */
+export function latestAnalyticsCallbackUrl(): string | undefined {
+  return latestCallbackUrl;
+}
+
 /** Vitest / integration tests */
 export function resetCampaignCallbackRegistryForTests(): void {
   store.clear();
+  latestCallbackUrl = undefined;
 }

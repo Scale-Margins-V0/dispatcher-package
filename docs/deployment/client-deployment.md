@@ -23,7 +23,7 @@ twenty minutes end to end.
 | Outbound access to `ghcr.io`               | To pull the image. No account or credentials needed — see §3  |
 
 The dispatcher must be able to reach your customer database, your email
-provider, and `api.scalemargin.com`. It does **not** need to accept inbound
+provider, and ScaleMargin (`app.scalemargins.tech`). It does **not** need to accept inbound
 traffic from the internet unless you want provider webhooks (delivery and open
 tracking) or want to manage it from the ScaleMargin platform — see §9.
 
@@ -203,10 +203,17 @@ user_lookup:
   mode: database
   # …
 
-# Sending, for a single account. See §7 for several.
-email:
-  provider: ses
-  from: campaigns@your-company.com
+# Who sends. One entry per account, each with its own verified `from:`.
+# See §7 for weights, failover and WhatsApp.
+senders:
+  - id: primary-ses
+    channel: email
+    provider: ses
+    from: campaigns@your-company.com # MUST be verified with SES
+    ses:
+      region: ap-south-1
+      access_key_id_env: AWS_ACCESS_KEY_ID
+      secret_access_key_env: AWS_SECRET_ACCESS_KEY
 
 # Anything not modelled above, set verbatim. This is where provider keys live
 # now that there is no `.env`.
@@ -226,7 +233,7 @@ One rule decides where a setting goes:
 - **`dispatcher:`** — how the dispatcher itself runs. How it is reached, who may
   reach it, its own database, admin auth, retention, logging, telemetry.
 - **Everything else is top-level** — what it does. `scalemargin:`,
-  `user_lookup:`, `email:` / `routing:` / `senders:`, `links:`, `events:`,
+  `user_lookup:`, `routing:` / `senders:`, `links:`, `events:`,
   `storage:`, and the `env:` escape hatch.
 
 ```
@@ -239,7 +246,7 @@ dispatcher:            ← this service
   telemetry:
 scalemargin:           ← what it does
 user_lookup:
-email / routing / senders
+routing / senders
 links / events / storage
 env:
 ```
@@ -392,15 +399,13 @@ user_lookup:
     id_column: external_id # the column holding the ID ScaleMargin sends
     id_type: string # string | int | bigint | uuid
 
-  # Logical name  →  your column name.
-  # Only these columns are ever read. `email` is mandatory;
-  # `phone` is needed to send WhatsApp.
+  # Your column for each contact field. The lookup returns these and nothing
+  # else: `email` to send email, `phone` to send WhatsApp.
+  # Personalization (names, company, …) is variables: a `field` variable reads
+  # any other column of `source`, and only the columns in use are ever read.
   fields:
     email: email_address
     phone: mobile_number
-    first_name: given_name
-    last_name: family_name
-    company_name: account_name
 
   batch:
     max_ids_per_query: 1000
@@ -418,7 +423,8 @@ CREATE VIEW dispatcher_recipients AS
 ```
 
 Then set `kind: view` and `name: dispatcher_recipients`. Consent filtering
-happens in your database, where it belongs.
+happens in your database, where it belongs. **The view is also your allow-list:**
+a `field` variable can read any column the view has, and no column it lacks.
 
 **The database user** — grant `SELECT` only. The dispatcher never writes to your
 database, so a read-only user is not a restriction, it is a guarantee.
@@ -457,31 +463,30 @@ user_lookup:
     timeout_ms: 3000
     retries: 2 # 5xx and timeouts only; 4xx is never retried
 
-  # The logical names we will ask for, in `fields` on every request.
+  # Contact details only — email and phone. Any other key is ignored, with a
+  # warning at boot. The right-hand side is YOUR name for it; we ask for and
+  # read back that name. An email send asks only for email, a WhatsApp send
+  # only for phone.
   fields:
     email: email
     phone: phone
-    first_name: first_name
 
   batch:
     max_ids_per_query: 500
     dedupe: true
 ```
 
-We send:
+We send (for an email campaign; a WhatsApp one sends `"channel": "whatsapp"`
+and `phone` instead of `email`):
 
 ```json
-{ "user_ids": ["usr_1", "usr_2"], "fields": ["email", "phone", "first_name"] }
+{ "user_ids": ["usr_1", "usr_2"], "channel": "email", "fields": ["email"] }
 ```
 
 You return:
 
 ```json
-{
-  "users": [
-    { "user_id": "usr_1", "email": "ada@example.com", "first_name": "Ada" }
-  ]
-}
+{ "users": [{ "user_id": "usr_1", "email": "ada@example.com" }] }
 ```
 
 Omit anyone you cannot resolve — a missing ID skips that recipient and the rest
@@ -493,12 +498,13 @@ is the page to hand to whoever builds the endpoint.
 There is no `source:` block, because there is no table to point at, and no
 `connection:`, because there is no database to connect to.
 
-> **One capability is lost in network mode.** Variables with `source: query` run
-> SQL against your database. With no connection they can never produce a value,
-> so the dispatcher refuses to create them and the ScaleMargin platform hides
-> the option. Any that already exist are kept but sit inactive, using their
-> fallback, until you switch back to `database` mode. Every other variable type
-> — `field`, `computed`, `constant`, `api` — works identically in both modes.
+> **Two variable types are unavailable in network mode.** `field` reads a column
+> of your database and `query` runs SQL against it; with no connection neither
+> can produce a value, so the dispatcher refuses to create them and the
+> ScaleMargin platform hides both options. Any that already exist are kept but
+> sit inactive, rendering their fallback, until you switch back to `database`
+> mode. Personalize with `api`, `computed` and `constant` variables instead —
+> `GET /api/v1/data-plane/lookup/fields` tells a client what is available.
 
 ### 6.3 What to put in `connection.host`
 
@@ -538,13 +544,13 @@ database and are edited from the ScaleMargin platform. Anything still in
 
 ---
 
-## 7. `.env.yaml` — senders and deployment settings (optional)
+## 7. `.env.yaml` — senders and deployment settings
 
-Same file as §6, second half. Skip §7.1–7.4 if you send from a single address —
-everything above already works with one provider and one `FROM_EMAIL`. §7.5 is
-independent of senders and useful on its own.
+Same file as §6, second half. **Every account that sends is a `senders:`
+entry** — §5 shows the smallest file, one entry. Skip §7.1–7.4 if one account
+is all you need. §7.5 is independent of senders and useful on its own.
 
-Add a `senders:` block when you want any of:
+Add more entries, and a `routing:` block, when you want any of:
 
 - **Several sending accounts**, with traffic split between them
 - **Automatic failover** — if one account starts rejecting messages, the next takes over
@@ -682,8 +688,11 @@ docker compose logs dispatcher | grep -i "env.yaml"
 | What you see | Meaning |
 | --- | --- |
 | `Loaded .env.yaml multi-sender configuration` | Working |
-| `No .env.yaml found — using single-sender back-compat configuration from environment` | Not picked up. The dispatcher **still sends**, using the single account from `email:` |
-| `references missing env var 'X'` | An `_env` field names a variable that does not exist — add it to the `env:` map or the container's `environment:` |
+| `No .env.yaml found — using single-sender back-compat configuration from environment` | Not picked up — usually the mount. The dispatcher falls back to the legacy `EMAIL_PROVIDER` / `FROM_EMAIL` environment variables |
+| `Email sender 'X' needs a \`from:\` address` | That sender has no From address of its own. Add `from:` — there is no global fallback |
+| `email: removed — declare the account under \`senders:\`` | The file still has the old top-level `email:` block. Move it into a `senders:` entry, as the message shows |
+| `SendGrid sender 'X' has no API key — sendgrid.api_key_env names Y, which is not set` (and the same for SES, Gupshup, Freshchat) | A sender's credential is missing. **Credentials come only from the sender** — its inline value, or the variable its `_env` names — never from a provider-wide variable such as `SENDGRID_API_KEY`. Set the field the message names, or add the named variable to the `env:` map or the container's `environment:` |
+| `Gupshup sender 'X' has no usable credentials. Either API key: … Or enterprise: …` | A Gupshup sender needs `api_key` + `src_name`, **or** `user_id` + `password` (`mode:` is informational). Media and caption-only messages always need the second pair |
 
 The middle line is the one to watch for. A `.env.yaml` that fails to load stops
 nothing — sending carries on with one account, and you only notice when the
@@ -708,7 +717,13 @@ curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
       "weight": 3,
       "enabled": true,
       "organizations": ["*"],
-      "breaker_state": "closed"
+      "breaker_state": "closed",
+      "credentials": {
+        "ok": true,
+        "configured": { "AWS_ACCESS_KEY_ID": true, "AWS_SECRET_ACCESS_KEY": true },
+        "webhook_verification": true,
+        "notes": []
+      }
     }
   ]
 }
@@ -716,8 +731,12 @@ curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
 
 `breaker_state` is `closed` when healthy, `open` when the account has been
 parked after repeated failures, and `half_open` while it is being tried again.
-No credentials appear in this response, so it is safe to paste into a support
-thread.
+
+`credentials` says whether the sender's own credentials resolve. `configured`
+names each one the way you configured it — the variable an `_env` field points
+at, or the sender field (`sendgrid.api_key`) when written inline — and never
+its value. When `ok` is `false`, `problem` says exactly what to set. Nothing in
+this response is a secret, so it is safe to paste into a support thread.
 
 ### 7.5 Deployment settings in `.env.yaml` (optional)
 
@@ -731,7 +750,7 @@ dispatcher:
   public_url: https://dispatcher.your-company.com
   atlas_key: "the-key-you-shared-with-us" # or: atlas_key_env: DISPATCHER_ATLAS_KEY
   atlas_cors_origins:
-    - https://atlas.scalemargin.com
+    - https://app.scalemargins.tech
 ```
 
 <!-- prettier-ignore -->
@@ -765,9 +784,9 @@ old environment variable value straight in.
 docker compose restart dispatcher
 ```
 
-If the file has a mistake, the dispatcher logs the problem and falls back to
-single-sender — it does not refuse to start. Always re-check the log line in
-§7.4 after a change.
+If the file has a mistake, the dispatcher refuses to start and names it
+(`[FATAL] Multi-sender .env.yaml invalid: …`) — it never guesses a sender.
+Re-check the log line in §7.4 after a change.
 
 ---
 
@@ -804,8 +823,8 @@ docker compose logs dispatcher | grep -i "UserLookup"
 # 4. NOT in mock mode  — this must print nothing
 docker compose logs dispatcher | grep -i "MOCK user lookup"
 
-# 5. Sender is configured — this must also print nothing
-docker compose logs dispatcher | grep -i "FROM_EMAIL is not set"
+# 5. Senders are usable — this must also print nothing
+docker compose logs dispatcher | grep -iE "No email sender is configured|cannot be verified"
 ```
 
 ```bash
@@ -895,7 +914,7 @@ Set `DISPATCHER_ATLAS_CORS_ORIGINS` only if ScaleMargin tells you their console
 calls your dispatcher directly from the browser rather than from their backend:
 
 ```bash
-DISPATCHER_ATLAS_CORS_ORIGINS=https://atlas.scalemargin.com,https://staging.atlas.example
+DISPATCHER_ATLAS_CORS_ORIGINS=https://app.scalemargins.tech,https://stg.scalemargins.tech
 ```
 
 Comma-separated, absolute origins, scheme included. The dispatcher warns at boot
@@ -972,7 +991,7 @@ docker compose down -v         # stop and DELETE all campaign history. Careful.
 | Pull hangs or times out                                            | Egress to `ghcr.io` is filtered                                                         | Allowlist `ghcr.io` and `pkg-containers.githubusercontent.com` — §3                                                    |
 | `manifest unknown`                                                 | That version tag does not exist                                                         | Use the exact tag from our release note; do not invent version numbers                                                 |
 | `exec format error`                                                | Image architecture mismatch                                                             | Tell us your platform — we will publish a matching build                                                               |
-| Sends fail with `403 Forbidden` or `Email address is not verified` | `FROM_EMAIL` not verified in your provider                                              | Verify that exact address, or use one that is                                                                          |
+| Sends fail with `403 Forbidden` or `Email address is not verified` | The sender's `from:` is not verified with its provider                                             | Verify that exact address, or use one that is                                                                          |
 | Campaigns report success but reach nobody real                     | No `user_lookup` block reached the container → mock mode                                | Step 7 in §8. Usually the `.env.yaml` mount, or a stray directory Docker created in its place                          |
 | `getaddrinfo ENOTFOUND` for your database                          | `connection.host` unreachable from the container                                        | §6.3 — usually `host.docker.internal`                                                                                  |
 | `Resolved 0/N users` on every send                                 | `id_column` or `id_type` mismatch — or, in network mode, your API returned no `user_id` match | Confirm the column holds the ID ScaleMargin sends; in network mode compare `user_id` values against what we sent  |
@@ -1042,7 +1061,7 @@ dispatcher:
   # ── Who may reach it ───────────────────────────────────────────────────
   atlas_key: "32-char-random" # or: atlas_key_env: DISPATCHER_ATLAS_KEY
   atlas_cors_origins: # omit entirely for server-to-server only
-    - https://atlas.scalemargin.com
+    - https://app.scalemargins.tech
   # logs_api_token: "…"       # overrides the console-managed logs token
   # logs_api_token_env: DISPATCHER_LOGS_API_TOKEN
 
@@ -1079,6 +1098,7 @@ dispatcher:
     # campaign_event_days: 90
     # campaign_event_max_rows: 500000
     # outbox_max_attempts: 10
+    # metrics_days: 7            # per-minute campaign metrics; max 30
 
   # ── Logging and telemetry ──────────────────────────────────────────────
   # logging:
@@ -1092,7 +1112,8 @@ scalemargin:
   analytics_secret: "…"
   # dispatch_secret_env: SCALEMARGIN_DISPATCH_SECRET
   # analytics_secret_env: SCALEMARGIN_ANALYTICS_SECRET
-  # analytics_callback_url: https://api.scalemargin.com/analytics
+  # Recommended — WhatsApp delivery receipts have no campaign, so they go here.
+  analytics_callback_url: https://app.scalemargins.tech/api/webhooks/campaign-analytics
 
 # ═══ user_lookup: — where recipient data comes from. PICK ONE MODE (§6) ═══
 user_lookup:
@@ -1113,20 +1134,13 @@ user_lookup:
   fields:
     email: email_address
     phone: mobile_number
-    first_name: given_name
-    last_name: family_name
   batch:
     max_ids_per_query: 1000
     dedupe: true
 
-# ═══ email: — sending, one-account shorthand ══════════════════════════════
-email:
-  provider: ses # ses | sendgrid
-  from: campaigns@your-company.com
-  reply_to: support@your-company.com
-
-# ═══ routing: + senders: — several accounts, weights, failover (§7) ═══════
-# `senders:` wins over `email:` above when both are present.
+# ═══ routing: + senders: — who sends: one account or several (§7) ════════
+# Each email sender needs its own verified `from:`. (The old top-level
+# `email:` shorthand is gone and is rejected at boot.)
 routing:
   failover:
     max_attempts: 2
@@ -1163,11 +1177,9 @@ links:
 # events:
 #   batch_size: 100
 #   batch_interval_ms: 5000
-#   buffer_dir: ./data/events
 #   sendgrid_inbound_events: "*"
 #   providers_enabled: [ses, sendgrid]
 #   debug: false
-#   config_path: ./config/events.yaml
 
 # ═══ storage: — campaign images ═══════════════════════════════════════════
 # storage:
@@ -1218,9 +1230,12 @@ scalemargin:
 user_lookup:
   mode: mock # fabricates recipients; mails nobody real
 
-email:
-  provider: ses
-  from: dev@example.com
+senders:
+  - id: dev-ses
+    channel: email
+    provider: ses
+    from: dev@your-company.com
+    ses: { region: ap-south-1 } # credentials from the host's AWS profile / IAM role
 ```
 
 #### B. Staging — real data, real sending, loose retention
@@ -1233,7 +1248,7 @@ dispatcher:
   public_url: https://dispatcher.staging.your-company.com
   atlas_key_env: DISPATCHER_ATLAS_KEY # injected by the platform
   atlas_cors_origins:
-    - https://staging.atlas.scalemargin.com
+    - https://stg.scalemargins.tech
 
   database:
     dialect: postgres
@@ -1267,11 +1282,13 @@ user_lookup:
     { kind: view, name: dispatcher_recipients, id_column: external_id }
   fields:
     email: email_address
-    first_name: given_name
 
-email:
-  provider: sendgrid
-  from: staging@your-company.com
+senders:
+  - id: staging-sendgrid
+    channel: email
+    provider: sendgrid
+    from: staging@your-company.com
+    sendgrid: { api_key_env: SENDGRID_API_KEY }
 
 links:
   unsubscribe_url_base: https://dispatcher.staging.your-company.com
@@ -1293,7 +1310,7 @@ dispatcher:
   public_url: https://dispatcher.your-company.com
   atlas_key_env: DISPATCHER_ATLAS_KEY
   atlas_cors_origins:
-    - https://atlas.scalemargin.com
+    - https://app.scalemargins.tech
 
   database:
     dialect: postgres
@@ -1417,14 +1434,19 @@ user_lookup:
   fields:
     email: email
     phone: phone
-    first_name: first_name
   batch:
     max_ids_per_query: 500
     dedupe: true
 
-email:
-  provider: ses
-  from: campaigns@your-company.com
+senders:
+  - id: primary-ses
+    channel: email
+    provider: ses
+    from: campaigns@your-company.com # MUST be verified with SES
+    ses:
+      region: ap-south-1
+      access_key_id_env: AWS_ACCESS_KEY_ID
+      secret_access_key_env: AWS_SECRET_ACCESS_KEY
 
 links:
   unsubscribe_url_base: https://dispatcher.your-company.com

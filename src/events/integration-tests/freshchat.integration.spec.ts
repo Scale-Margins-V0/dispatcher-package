@@ -41,6 +41,8 @@ events:
       secret_env: FRESHCHAT_WEBHOOK_SECRET
 `;
 
+const RECEIPTS_URL = "https://app.scalemargins.tech/api/webhooks/campaign-analytics";
+
 describe("POST /api/scalemargin/freshchat-events (integration)", () => {
   let app: import("express").Express;
   const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -57,6 +59,9 @@ describe("POST /api/scalemargin/freshchat-events (integration)", () => {
     process.env.SCALEMARGIN_DISPATCH_SECRET = "d";
     process.env.SCALEMARGIN_ANALYTICS_SECRET = "analytics-secret";
     process.env.FRESHCHAT_WEBHOOK_SECRET = secret;
+    // Receipts carry no campaign: they need a configured analytics URL (there
+    // is no built-in default — see resolveWhatsAppReceiptsUrl).
+    process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL = RECEIPTS_URL;
     process.env.EVENT_FORWARD_MODE = "sync";
     process.env.NODE_ENV = "test";
 
@@ -75,6 +80,7 @@ describe("POST /api/scalemargin/freshchat-events (integration)", () => {
     shutdownEventPipeline();
     resetEventPipelineForTests();
     delete process.env.FRESHCHAT_WEBHOOK_SECRET;
+    delete process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL;
     delete process.env.EVENT_FORWARD_MODE;
     delete process.env.SCALEMARGIN_ANALYTICS_SECRET;
   });
@@ -98,7 +104,7 @@ describe("POST /api/scalemargin/freshchat-events (integration)", () => {
 
     expect(fetchMock).toHaveBeenCalled();
     const call = fetchMock.mock.calls.find((c) =>
-      String(c[0]).includes("campaign-analytics")
+      String(c[0]) === RECEIPTS_URL
     );
     expect(call).toBeDefined();
 
@@ -130,7 +136,7 @@ describe("POST /api/scalemargin/freshchat-events (integration)", () => {
     expect(res.body.receipts).toBe(1);
 
     const call = fetchMock.mock.calls.find((c) =>
-      String(c[0]).includes("campaign-analytics")
+      String(c[0]) === RECEIPTS_URL
     );
     expect(call).toBeDefined();
     const init = call?.[1] as RequestInit | undefined;
@@ -170,7 +176,7 @@ describe("POST /api/scalemargin/freshchat-events (integration)", () => {
     expect(res.body.receipts).toBe(1);
 
     const call = fetchMock.mock.calls.find((c) =>
-      String(c[0]).includes("campaign-analytics")
+      String(c[0]) === RECEIPTS_URL
     );
     expect(call).toBeDefined();
     const init = call?.[1] as RequestInit | undefined;

@@ -15,7 +15,8 @@
  */
 
 import { componentLogger } from "../../logging/logger.js";
-import { signPayload } from "../forwarder.js";
+import { latestAnalyticsCallbackUrl } from "../campaign-callback-registry.js";
+import { signPayload, validateCallbackUrl } from "../forwarder.js";
 import type { GupshupReceipt } from "./adapter.js";
 
 const log = componentLogger("events.gupshup");
@@ -23,23 +24,27 @@ const log = componentLogger("events.gupshup");
 const MAX_RETRIES = 3;
 
 /**
- * Backend analytics endpoint used when no dispatch has registered a URL yet (cold start,
- * before the first WhatsApp send). Receipts can arrive before any dispatch, so fall back
- * to the known backend rather than dropping them.
- */
-const DEFAULT_RECEIPTS_URL =
-  "https://dev.scalemargins.tech/api/webhooks/campaign-analytics";
-
-/**
- * Receipts have no campaign, so they cannot use a per-send analytics_callback_url.
- * The backend exposes one fixed endpoint for all analytics (`/api/webhooks/campaign-analytics`).
+ * Receipts have no campaign, so they cannot use a per-send analytics URL.
  * Resolution order:
- *   1. SCALEMARGIN_ANALYTICS_CALLBACK_URL (platform analytics URL), if set.
- *   2. DEFAULT_RECEIPTS_URL fallback.
+ *   1. `scalemargin.analytics_callback_url` (SCALEMARGIN_ANALYTICS_CALLBACK_URL) —
+ *      set it, and receipts are never at the mercy of dispatch order.
+ *   2. The analytics URL ScaleMargin sent on the most recent dispatch — restored
+ *      from the state DB at boot, so a restart does not lose it.
+ * Otherwise undefined: the caller drops the receipts with a warning. There is
+ * deliberately no built-in default — a hard-coded host once sent a
+ * production client's receipts to the dev backend.
  */
 export function resolveWhatsAppReceiptsUrl(): string | undefined {
-  return process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL?.trim() || DEFAULT_RECEIPTS_URL;
+  const configured = process.env.SCALEMARGIN_ANALYTICS_CALLBACK_URL?.trim();
+  if (configured && validateCallbackUrl(configured)) return configured;
+  const latest = latestAnalyticsCallbackUrl();
+  return latest && validateCallbackUrl(latest) ? latest : undefined;
 }
+
+/** Why receipts are being dropped, and the one setting that fixes it. */
+export const NO_RECEIPTS_URL_HINT =
+  "no ScaleMargin analytics URL is known — set scalemargin.analytics_callback_url " +
+  "(e.g. https://app.scalemargins.tech/api/webhooks/campaign-analytics), or it is learned from the next dispatch";
 
 export async function forwardGupshupReceipts(
   receipts: GupshupReceipt[],
@@ -50,7 +55,7 @@ export async function forwardGupshupReceipts(
   const url = resolveWhatsAppReceiptsUrl();
   if (!url) {
     log.warn(
-      `[GupshupReceipts] No backend analytics URL known yet — no WhatsApp message has been dispatched through this process since startup — dropping ${receipts.length} receipt(s)`
+      `[GupshupReceipts] Dropping ${receipts.length} receipt(s): ${NO_RECEIPTS_URL_HINT}`
     );
     return { success: false, error: "no receipts URL configured" };
   }

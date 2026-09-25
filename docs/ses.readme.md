@@ -38,14 +38,13 @@ flowchart LR
 
 ## Environment variables
 
-These are environment variable names. Set them in `.env.yaml` — most have a typed key (for example `scalemargin.dispatch_secret`, `email.from`), and anything without one goes under the `env:` map. A real environment variable (Docker `environment:`, a Kubernetes Secret) also works, and always wins over the file. See [`.env.yaml.example`](../.env.yaml.example).
+These are environment variable names. Set them in `.env.yaml` — most have a typed key (for example `scalemargin.dispatch_secret`), and anything without one goes under the `env:` map. A real environment variable (Docker `environment:`, a Kubernetes Secret) also works, and always wins over the file. See [`.env.yaml.example`](../.env.yaml.example).
 
 | Variable | Purpose |
 |----------|---------|
-| `EMAIL_PROVIDER` | Set to **`ses`** for SES sends. |
+| `senders:` entry | `channel: email`, `provider: ses`, and a `from:` that is a verified SES identity. |
 | `AWS_REGION` | SES region (e.g. `us-east-1`) — must match where identities and configuration set live. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | IAM user keys (local dev) or omit on AWS compute with an **instance/task role** that allows `ses:SendEmail`. |
-| `FROM_EMAIL` | Verified **domain** or **email** identity in SES. |
 | `SES_EVENT_CONFIG_SET` | **Name** of the SES **Configuration set** that owns your event destination (must match console exactly). |
 | `SCALEMARGIN_DISPATCH_SECRET` | Verifies `POST /api/scalemargin/dispatch`. |
 | `SCALEMARGIN_ANALYTICS_SECRET` | Signs outbound analytics POSTs. |
@@ -68,7 +67,7 @@ Event pipeline: generated temp `events.yaml` enables **SES** and disables SendGr
 
 ### 2. Verified identity (sender + sandbox recipients)
 
-- **SES → Verified identities → Create identity** — verify your **domain** (recommended) or a single **email** for `FROM_EMAIL`.
+- **SES → Verified identities → Create identity** — verify your **domain** (recommended) or a single **email** for the sender's `from:`.
 - If your account is in the **SES sandbox**, for each address in `EVENT_TEST_RECIPIENTS` go to **Verified identities** and verify those emails too (SES only delivers to verified addresses in sandbox).
 
 ### 3. Configuration set (name = `SES_EVENT_CONFIG_SET`)
@@ -115,7 +114,7 @@ Event pipeline: generated temp `events.yaml` enables **SES** and disables SendGr
 ## Run the automated SES smoke test
 
 ```bash
-# In .env: SCALEMARGIN_* , FROM_EMAIL, SES_EVENT_CONFIG_SET, AWS_REGION, credentials,
+# In the environment: SCALEMARGIN_* , FROM_EMAIL (legacy single sender), SES_EVENT_CONFIG_SET, AWS_REGION, credentials,
 # EVENT_TEST_RECIPIENTS, EVENT_TEST_PUBLIC_BASE_URL=https://<ngrok>...
 
 ngrok http 3100   # or your PORT

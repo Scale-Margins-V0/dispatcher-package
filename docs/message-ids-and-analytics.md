@@ -90,28 +90,6 @@ Set the webhook URL in each provider's console:
 | SendGrid  | `POST /api/scalemargin/sendgrid-events`                           | ECDSA, `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`                               |
 | SES       | `POST /api/scalemargin/ses-notifications`                         | SNS signature                                                            |
 
-A Freshchat status webhook, as the dispatcher receives it:
-
-```json
-{
-  "event_type": "outbound_message_event",
-  "event_time": 1790229587236,
-  "account_id": "…",
-  "data": { "request_id": "req_abc123", "status": "READ" }
-}
-```
-
-How Freshchat statuses map to events:
-
-| Freshchat                                          | Event        |
-| -------------------------------------------------- | ------------ |
-| `ACCEPTED` `SUBMITTED` `QUEUED` `ENQUEUED` `SENT`  | `dispatched` |
-| `DELIVERED`                                        | `delivered`  |
-| `READ` `SEEN`                                      | `read`       |
-| `FAILED` `UNDELIVERED` `REJECTED`                  | `bounced`    |
-| `CLICKED`                                          | `clicked`    |
-| anything else                                      | dropped      |
-
 What the dispatcher replies to the provider:
 
 | Status | Body                                               | When                               |
@@ -122,7 +100,224 @@ What the dispatcher replies to the provider:
 | `400`  | `{ "error": "invalid webhook payload" }`           | Body could not be parsed           |
 | `404`  | `{ "error": "not found" }`                         | SendGrid or SES disabled           |
 
-### 2.2 Outbound: dispatcher → ScaleMargin
+### 2.2 Pushing an event by hand
+
+Everything below is exactly what each endpoint accepts. Use it to replay an event, test locally, or push a status from your own system.
+
+**Pushable by hand:** Freshchat, Gupshup and the unsubscribe link.
+
+**Not pushable by hand:**
+- **SendGrid:** each request must carry an ECDSA signature made with SendGrid's private key.
+- **SES:** each request must carry an SNS signature backed by an AWS certificate.
+
+For those two, replay from the provider's own console.
+
+**Two ways an event is matched to a recipient.** Every body below takes one of these two forms:
+
+| Form | What you send | What the dispatcher forwards to ScaleMargin |
+| --- | --- | --- |
+| **Receipt** | Only the provider message id and a status | A receipt (2.3 B). ScaleMargin matches it to the recipient by message id |
+| **Correlated** | The message id and status, plus a `tag` holding `campaign_id`, `user_id` and `organization_id` | A full event (2.3 A) |
+
+Correlated works for Freshchat and Gupshup alike.
+
+---
+
+#### Freshchat
+
+```http
+POST /api/scalemargin/freshchat-events
+Content-Type: application/json
+Authorization: Bearer <FRESHCHAT_WEBHOOK_SECRET>
+```
+
+Authentication works one of three ways:
+
+| Setup | Header to send |
+| --- | --- |
+| Bearer token | `Authorization: Bearer <FRESHCHAT_WEBHOOK_SECRET>` |
+| HMAC | `X-Freshchat-Signature: sha256=<hex HMAC-SHA256 of the raw body, keyed with the secret>` |
+| No secret configured | No header; the endpoint is open |
+
+`/api/scalemargin/freshchat-notifications` is an alias for the same endpoint.
+
+**Receipt**, in Freshchat's own webhook shape:
+
+```json
+{
+  "event_type": "outbound_message_event",
+  "event_time": 1790229587236,
+  "data": {
+    "request_id": "req_abc123",
+    "status": "READ"
+  }
+}
+```
+
+- `event_time` is in epoch **milliseconds**. If it's missing, the dispatcher uses the time it received the event.
+- A flat body also works: `{ "request_id": "req_abc123", "status": "READ", "timestamp": "2026-09-24T10:17:40Z" }`.
+- On a failure, add `"failure_reason"` and `"failure_code"` inside `data`.
+- To send several events at once, send an array of these objects.
+
+**Correlated:** add a `tag` to the same body:
+
+```json
+{
+  "request_id": "req_abc123",
+  "status": "DELIVERED",
+  "tag": { "campaign_id": "cmp_123", "user_id": "u_42", "organization_id": "org_9" }
+}
+```
+
+| `status` (any case)                                | Becomes      |
+| -------------------------------------------------- | ------------ |
+| `ACCEPTED` `SUBMITTED` `QUEUED` `ENQUEUED` `SENT`  | `dispatched` |
+| `DELIVERED`                                        | `delivered`  |
+| `READ` `SEEN`                                      | `read`       |
+| `FAILED` `UNDELIVERED` `REJECTED`                  | `bounced`    |
+| `CLICKED`                                          | `clicked`    |
+| anything else                                      | ignored      |
+
+**Response:** `200 { "received": true, "count": 0, "receipts": 1 }`.
+- `count` is how many correlated events were forwarded.
+- `receipts` is how many receipts were forwarded.
+
+---
+
+#### Gupshup
+
+```http
+POST /api/scalemargin/gupshup-events
+Content-Type: application/json
+X-Gupshup-Signature: <hex HMAC-SHA256 of the raw body, keyed with the webhook secret>
+```
+
+or, for Gupshup's own delivery callbacks (they cannot sign a body), the secret
+as a token on the callback URL:
+
+```http
+POST /api/scalemargin/gupshup-events?token=<the webhook secret>
+```
+
+Either proof is accepted. The secret is the Gupshup sender's `webhook_secret`
+(or `GUPSHUP_WEBHOOK_SECRET`). With no secret set the endpoint is open — boot
+warns — and only receipts echoing a valid `smsign_` stamp are forwarded.
+
+To close it: generate a secret (`openssl rand -hex 32`), set it as
+`webhook_secret` on the Gupshup sender, and set Gupshup's delivery-report
+callback URL to `https://<dispatcher>/api/scalemargin/gupshup-events?token=<secret>`
+— **both, then restart**. Setting only the secret rejects every receipt until
+the callback URL carries the token. The token is in the URL, so keep proxy
+access logs that record query strings private; the dispatcher never logs it.
+
+**Receipt**, in Gupshup Enterprise's delivery-report shape. It's always a JSON array:
+
+```json
+[
+  {
+    "externalId": "4012345678901234567",
+    "eventType": "DELIVERED",
+    "eventTs": 1790229587236,
+    "extra": "smsign_<32 hex>"
+  }
+]
+```
+
+- `extra` is **required**. A receipt without an `smsign_` value is dropped: the response is still `200`, with `"receipts": 0`.
+- `smsign_` is the first 32 hex characters of `HMAC-SHA256(analytics_secret, "campaign_id|user_id|organization_id")`. The dispatcher attaches it to every Gupshup send, and Gupshup echoes it back.
+- `eventTs` is in epoch milliseconds.
+- On a failure, add `"cause"` and `"errorCode"`.
+
+**Correlated** (no `smsign_` needed):
+
+```json
+{
+  "msgId": "4012345678901234567",
+  "eventType": "delivered",
+  "timestamp": "2026-09-24T10:17:40Z",
+  "tag": "{\"campaign_id\":\"cmp_123\",\"user_id\":\"u_42\",\"organization_id\":\"org_9\"}"
+}
+```
+
+`tag` can be a JSON string, as Gupshup sends it, or a plain object.
+
+| `eventType` (any case)  | Becomes      |
+| ----------------------- | ------------ |
+| `enqueued` `sent`       | `dispatched` |
+| `delivered`             | `delivered`  |
+| `read`                  | `opened`     |
+| `clicked`               | `clicked`    |
+| `failed`                | `failed`     |
+| anything else           | ignored      |
+
+**Response:** same as Freshchat.
+
+---
+
+#### Unsubscribe link
+
+This is the form behind the link in every email. It has no authentication, because the recipient's browser posts it.
+
+```http
+POST /api/unsubscribe
+Content-Type: application/x-www-form-urlencoded
+
+uid=u_42&campaign_id=cmp_123&organization_id=org_9&reason=too_frequent
+```
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `uid` | yes | The user id |
+| `campaign_id`, `organization_id` | to forward | Without both, the unsubscribe is saved in the dispatcher's own database but never forwarded to ScaleMargin |
+| `reason` | yes | A reason id from `links.unsubscribe_reasons` |
+| `reason_other` | no | Free text, used when the reason is `other` |
+
+The event goes to `links.unsubscribe_analytics_url` as `unsubscribed`, with `provider: "link_click"`.
+
+**Response:**
+
+| Status | When |
+| --- | --- |
+| `302` | Recorded, and `links.unsubscribe_redirect_url` is set: the browser is sent there |
+| `200` | Recorded, and no redirect URL is set: a confirmation page is shown |
+| `400` | `uid` or `reason` is missing |
+
+---
+
+#### SendGrid and SES: what they send
+
+These are shown for reference only; you can't forge them.
+
+| | SendGrid | SES |
+| --- | --- | --- |
+| Endpoint | `POST /api/scalemargin/sendgrid-events` | `POST /api/scalemargin/ses-notifications` |
+| Auth | `X-Twilio-Email-Event-Webhook-Signature` + `…-Timestamp` (ECDSA) | SNS envelope, signed by AWS |
+| Body | JSON array of events | SNS envelope; the SES event is inside the `Message` string |
+| Recipient comes from | `custom_args.{campaign_id,user_id,organization_id}` | `mail.tags.{campaign_id,user_id,organization_id}` |
+| Rejected | `401 invalid signature` | `401 invalid SNS signature`, `400 Invalid JSON` |
+
+Status mapping:
+- **SendGrid:**
+  - `processed` → `dispatched`
+  - `delivered` → `delivered`
+  - `open` → `opened`
+  - `click` → `clicked`
+  - `bounce` and `dropped` → `bounced`
+  - `deferred` → `deferred`
+  - `spamreport` → `complained`
+  - `unsubscribe` and `group_unsubscribe` → `unsubscribed`
+- **SES:**
+  - `Send` → `dispatched`
+  - `Delivery` → `delivered`
+  - `Open` → `opened`
+  - `Click` → `clicked`
+  - `Bounce` and `Reject` → `bounced`
+  - `Complaint` → `complained`
+  - `Subscription` → `unsubscribed`
+
+The SES endpoint also accepts SNS `SubscriptionConfirmation` messages and confirms them automatically, but only if the `SubscribeURL` is on an `amazonaws.com` host.
+
+### 2.3 Outbound: dispatcher → ScaleMargin
 
 Every request is a signed JSON `POST`:
 
@@ -164,7 +359,7 @@ The HMAC key is `scalemargin.analytics_secret`. The two payload shapes are below
 ```
 
 - `event` is one of: `dispatched` `sent` `delivered` `read` `opened` `clicked` `bounced` `deferred` `expired` `failed` `complained` `unsubscribed` `preference_update`.
-- `idempotency_key` is only present when `events.delivery_mode` is `at_least_once`, which is the default. Deduplicate on it.
+- `idempotency_key` is only present when `events.delivery_mode` is `at_least_once`, which is the default. Deduplicate on it. Unsubscribe-link events never carry one.
 - `metadata` has personal data stripped out before it is sent.
 
 **B. WhatsApp receipts.** Freshchat and Gupshup delivery receipts carry no campaign or user id. They arrive keyed only by the provider's id:
@@ -185,7 +380,9 @@ The HMAC key is `scalemargin.analytics_secret`. The two payload shapes are below
 }
 ```
 
-`cause` and `error_code` only appear on failures. The server matches `external_id` against `metadata.provider_message_id` from the earlier `dispatched` event. The dispatcher side has the same join: `provider_message_ids.user_id`.
+`cause` and `error_code` only appear on failures.
+
+Freshchat receipts carry `"provider": "freshchat"`. Gupshup receipts have no `provider` field; they carry `sign` instead, which your server can recompute to confirm the message was ours. The server matches `external_id` against `metadata.provider_message_id` from the earlier `dispatched` event. The dispatcher side has the same join: `provider_message_ids.user_id`.
 
 **Where the requests are sent**
 
@@ -222,12 +419,3 @@ function verify(rawBody: Buffer, header: string, secret: string): boolean {
 ```
 
 Always compute the HMAC over the **raw** request body, never over re-serialized JSON.
-
----
-
-## Known gaps
-
-- **No `FRESHCHAT_WEBHOOK_SECRET` means no authentication.** Without the secret, the Freshchat endpoint accepts any caller. Set the secret in production.
-- **Receipts are not durable.** They skip the outbox. If ScaleMargin is down for more than about a second, those receipts are lost. The `provider_message_ids` table still lets you poll Freshchat for them.
-- **The receipt default URL points at dev.** If `scalemargin.analytics_callback_url` is not set, a production dispatcher sends receipts to `dev.scalemargins.tech`.
-- **The timestamp is not signed.** `X-ScaleMargin-Timestamp` is not part of the HMAC, so it gives no replay protection. Deduplicate on `idempotency_key`.

@@ -128,6 +128,7 @@ resolves through it (`src/events/persist.ts`).
   dispatch_ids?: { [user_id]: string },
   content: { subject?, html_body?, text_body?, caption?, media_url?, has_cta? },
   personalization_fields?: string[],
+  call_metadata?: { id, values: { [key]: string } },  // {{key.v}} for api variables attaching schema `id`
   images?: [{ placeholder, url, raw_url, content_type, alt_text?, base64_data? }],
   metadata: {
     organization_id, analytics_callback_url,
@@ -147,12 +148,12 @@ registerCampaignCallback()           campaign_id → callback URL (SES needs thi
 lookupUsers(user_ids)                → Map<user_id, UserRecord>
 resolveDynamicValues()               async query/api variables, once per recipient set
 processImages() + rewriteImageUrls() base64/remote → hosted URLs, swap {{img}} in HTML
-getProvider()                        ← singleton, EMAIL_PROVIDER env
 for each user_id:
     personalize(subject/html/text)
-    build EmailMessage { to, from, subject, html, text?, context }
+    resolveSenderChainForRecipient()  ← from `senders:`, weighted per recipient
+    build EmailMessage { to, from (sender's), subject, html, text?, context }
 for each message (SEQUENTIAL):
-    provider.send()
+    sendWithFailover(message, chain)
     on failure → telemetry + recordRecipientFailure()
     emitEvent(dispatched | failed)
 return { sent, failed }
@@ -167,8 +168,9 @@ Notes that bite:
 - `DEV_RECIPIENT_EMAIL` rewrites every recipient to one address and `break`s
   after the first message, recording the campaign in `dev_sent_campaigns` so a
   redelivery of the same campaign is skipped entirely.
-- `from` is a single process-wide constant: `FROM_EMAIL`, read once at
-  `src/index.ts:145` and passed as an argument into `processDispatch`.
+- `from` is the routed sender's own `from:` — required on every enabled email
+  sender (boot fails without it). `sendWithFailover` re-stamps it per attempt,
+  so a failover sends as the account that actually sent.
 
 ### 4.5 WhatsApp path (`src/dispatch/whatsapp.ts`)
 
@@ -183,6 +185,30 @@ Same skeleton, different provider (`GupshupWhatsAppProvider`), plus:
   backend re-derives the identity from `externalId`.
 - a "success" with no provider message id is downgraded to `failed`
   (`noProviderMessageId`) because delivery receipts key on that id.
+
+### 4.6 Performance metrics (`src/metrics/`)
+
+Both paths record per-minute rollups into the state DB's `dispatch_metrics`,
+keyed by program + step (§4.2), kind and subject:
+
+| kind | one sample is | subject |
+|---|---|---|
+| `lookup` | the user lookup of a batch (`items` ids, `skipped` not found) | database / network / mock |
+| `api_call` / `query_var` | one HTTP request / SQL query; plus a counters-only row per batch: recipients served (`items`), `fallback`, `skipped` (required call metadata missing) | variable |
+| `message_resolve` | one message: dispatch start → ready (`failed` = no user / no sender / no phone) | — |
+| `provider_send` | one provider call incl. failover | provider |
+| `message_e2e` | one sent message: dispatch start → provider accepted | — |
+| `dispatch` | one run | channel |
+
+- `collector.ts` aggregates in memory and **inserts** once a minute (and on
+  SIGTERM); reads `SUM` the rows, so split minutes and replicas add up. It
+  never throws into a send and caps its buffer.
+- Latency is a fixed 11-bucket histogram (`histogram.ts`), so p50/p95/p99 are
+  valid over any window. Counts, timings and names only — no user data.
+- Read: `GET /api/v1/data-plane/campaigns/:programId/metrics?range=1h|6h|24h|3d|7d`
+  (`report.ts` shapes it; Atlas → Dispatcher → Runs → campaign → Metrics).
+- Pruned by the hourly sweep after `dispatcher.retention.metrics_days` (default 7, max 30).
+- Demo data: `pnpm seed:metrics <programId> [--reset]` (dev only).
 
 ---
 
@@ -209,8 +235,7 @@ user_lookup:
   backend: sqlite
   connection: { file: ./data/dispatch.sqlite }
   source: { kind: table, name: users, id_column: user_id, id_type: string }
-  fields:                 # logical name → SQL column / JSON key
-    first_name: first_name
+  fields:                 # contact fields only → your column
     email: email
     phone: phone_no
   batch: { max_ids_per_query: 1000, dedupe: true }
@@ -220,12 +245,19 @@ user_lookup:
 user_lookup:
   mode: network
   network: { url: https://…/lookup, token: …, timeout_ms: 3000, retries: 2 }
-  fields: { email: email, phone: phone }      # the names we ask for
+  fields: { email: email, phone: phone }      # contact only; the names we ask for
 ```
 
 - SQL backends build a parameterized `WHERE id IN (...)` in chunks
   (`src/user-lookup/sql-build.ts`); `id_type` controls casting.
-- `NetworkAdapter` (`adapters/network.ts`) POSTs `{ user_ids, fields }` and reads
+- The lookup returns **contact details only** (`email`, `phone`), per channel
+  (`src/user-lookup/channel.ts`). Personalization is variables; in database
+  mode a `field` variable reads an extra column of the source view, and the SQL
+  adapter selects only the columns enabled variables reference
+  (`src/user-lookup/field-refs.ts`). System variables — `email`, `phone`,
+  `unsubscribe_url`, `preferences_url` — live in code (`src/variables/system.ts`)
+  and cannot be edited or deleted.
+- `NetworkAdapter` (`adapters/network.ts`) POSTs `{ user_ids, channel, fields }` and reads
   `{ users: [...] }`. Ids are compared **as strings**, so a JSON `42` matches
   `"42"` — a widening that cannot drop a recipient. 4xx never retries (the
   credential is wrong; repeating cannot help); 5xx and timeouts back off. A
@@ -284,30 +316,28 @@ the single most confusing thing in the repo:
 
 | | **Outbound (sending)** | **Inbound (event webhooks)** |
 | --- | --- | --- |
-| Configured in | **env only** (`.env.yaml` once multi-sender lands) | `config/events.yaml` + env |
-| Email selector | `EMAIL_PROVIDER` = `ses` \| `sendgrid` | `events.providers.{sendgrid,ses,gupshup}.enabled` |
+| Configured in | `senders:` in `.env.yaml` (legacy: `EMAIL_PROVIDER` / `FROM_EMAIL` env build one sender when there are none) | `config/events.yaml` + env |
+| Email selector | Every enabled `channel: email` sender, weighted per recipient | `events.providers.{sendgrid,ses,gupshup}.enabled` |
 | Credentials | `AWS_*` / `SENDGRID_API_KEY` / `GUPSHUP_*` | verification keys: `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`, SNS certs, `GUPSHUP_WEBHOOK_SECRET` |
-| Code | `src/providers/index.ts` | `src/events/config.ts`, `src/events/*/adapter.ts` |
+| Code | `src/providers/senders.ts` | `src/events/config.ts`, `src/events/*/adapter.ts` |
 
 You can (and often do) **send** through SES while having SendGrid inbound
 disabled, or accept Gupshup events while never sending WhatsApp.
 
-### 7.2 Outbound: the provider registry
+### 7.2 Outbound: the sender registry
 
-`src/providers/index.ts` is 50 lines:
+`src/providers/senders.ts` builds one provider instance per enabled `senders:`
+entry. There is no process-wide "the provider":
 
-```ts
-const PROVIDERS = { ses: () => new SESProvider(), sendgrid: () => new SendGridProvider() };
-let _instance = null;
-export function getProvider() {
-  if (_instance) return _instance;
-  _instance = PROVIDERS[process.env.EMAIL_PROVIDER || "ses"]();
-  return _instance;
-}
-```
-
-- **One provider per process, chosen by env, memoized forever.** There is no
-  reset, no per-campaign choice, no fallback.
+- **Recipient routing** — `resolveSenderChainForRecipient` weighs every
+  matching sender (rendezvous hash on the user id), honouring a pinned
+  `sender_id` / `from_email`; `sendWithFailover` walks the chain with a
+  circuit breaker per sender.
+- **"The" account, outside routing** — `primarySender(channel)`:
+  `routing.default_sender.<channel>`, else the first enabled sender of that
+  channel. Used by the console invitation email, `/health` and diagnostics.
+- **Run labels** — `dispatchProviderLabel`: the pinned sender, else the
+  provider when the channel has one, else `multi`.
 - Every provider implements `EmailProvider { name, send(), sendBulk() }`
   (`src/providers/types.ts`). `sendBulk` is a sequential loop in both
   implementations and is not used by the dispatch path.
@@ -412,7 +442,9 @@ Per-provider specifics:
   `explainSendGridCorrelationDrop()` because "Test Integration" payloads from
   the dashboard carry no `custom_args` and are the #1 support question.
 - **Gupshup** (`/api/scalemargin/gupshup-events`): always logs the raw payload
-  first. HMAC verification only if `GUPSHUP_WEBHOOK_SECRET` is set — otherwise
+  first. With a secret (a sender's `webhook_secret`, or `GUPSHUP_WEBHOOK_SECRET`)
+  it needs either an `X-Gupshup-Signature` HMAC or `?token=<secret>` on the
+  callback URL — Gupshup's own callbacks can only do the latter. Without one
   **the webhook is open**, and boot warns about it. Correlation-free delivery
   receipts take a separate path (`forwardGupshupReceipts`) and are rejected
   unless they echo an `smsign_` stamp.
@@ -516,14 +548,12 @@ schema, secret handling, and the Docker bind mount it needs.
 
 ## 11. Known sharp edges (pre-existing)
 
-1. `getProvider()` memoizes one provider for the process lifetime and cannot be
-   reset — tests mock the module instead.
-2. `processor.ts:175` labels emitted events by reading `EMAIL_PROVIDER` from env
-   rather than asking the provider that actually sent. Harmless with one
-   provider, wrong the moment there is more than one.
-3. Sends are sequential and unthrottled; there is no rate limiter and no retry.
-4. Everything after the 202 is invisible to the caller.
-5. SES without a configuration set = zero events, no error.
-6. SendGrid inbound verifies against exactly one public key.
-7. Breaker/health state, dev-send dedupe and the outbox all assume a single
+1. `routing.default_sender` is validated at boot but recipient routing does
+   not use it — traffic spreads over every matching sender by `weight`. It
+   only picks the primary account (§7.2).
+2. Sends are sequential and unthrottled; there is no rate limiter and no retry.
+3. Everything after the 202 is invisible to the caller.
+4. SES without a configuration set = zero events, no error.
+5. SendGrid inbound verifies against exactly one public key.
+6. Breaker/health state, dev-send dedupe and the outbox all assume a single
    replica.

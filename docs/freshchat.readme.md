@@ -119,7 +119,7 @@ When dispatching WhatsApp campaigns with Freshchat, ScaleMargin sends:
   "metadata": {
     "sender_id": "freshchat-primary",
     "organization_id": "org_abc",
-    "analytics_callback_url": "https://api.scalemargin.com/api/webhooks/analytics"
+    "analytics_callback_url": "https://app.scalemargins.tech/api/webhooks/campaign-analytics"
   }
 }
 ```

@@ -83,8 +83,7 @@ so every existing `process.env.X` reader keeps working.
 | `scalemargin:` | `dispatch_secret`, `analytics_secret` | **Required.** HMAC for inbound dispatch vs outbound analytics |
 | `dispatcher:` | `port`, `public_url`, `atlas_key`, … | This service itself — see below |
 | `dispatcher.retention.message_id_ttl` | e.g. `"5d 2h"` | **Required**, no default |
-| `email:` | `provider`, `from` | Single-sender shorthand. `provider` is `ses` or `sendgrid` |
-| `senders:` | Several accounts | Weights and failover |
+| `senders:` | Every sending account — one or several | Each email sender needs its own verified `from:`; weights and failover via `routing:` |
 | `env:` | Provider keys — `SENDGRID_API_KEY`, `AWS_ACCESS_KEY_ID`, … | Anything not modelled as a typed block |
 
    Everything about how the dispatcher itself runs is nested under
@@ -264,8 +263,8 @@ secure-cookie behavior use the correct host.
 **Members & invitations (Settings pages).** The console is **invite-only** — no
 public self-registration. Under **Settings** an owner/admin can manage members
 and roles (`owner`/`admin`/`member`), invite teammates by email (each invite
-produces a **copyable link**, also emailed automatically when `EMAIL_PROVIDER`
-is configured), and change their own password. A brand-new invitee opens the
+produces a **copyable link**, also emailed automatically — from the primary email
+sender — when one is configured), and change their own password. A brand-new invitee opens the
 invite link, sets a name and password, and is signed straight into the console.
 
 The dashboard also includes runtime/configuration status, recent dispatches,

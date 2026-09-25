@@ -8,7 +8,7 @@ This guide covers **outbound mail** (Mail Send API) and **inbound Event Webhooks
 
 | Flow | Route / behavior |
 |------|------------------|
-| **Send mail** | Dispatch handler calls `SendGridProvider` when `EMAIL_PROVIDER=sendgrid`. Outbound messages include **`custom_args`** (`campaign_id`, `user_id`, `organization_id`, `analytics_callback_url`) so webhooks can correlate. |
+| **Send mail** | Dispatch handler calls `SendGridProvider` for recipients routed to a `senders:` entry with `provider: sendgrid`. Outbound messages include **`custom_args`** (`campaign_id`, `user_id`, `organization_id`, `analytics_callback_url`) so webhooks can correlate. |
 | **Receive events** | `POST /api/scalemargin/sendgrid-events` — ECDSA signature verification on the **raw body**, then parsing, PII stripping, and HMAC-signed analytics POSTs to ScaleMargin’s `analytics_callback_url`. |
 | **Unsubscribe link** | `GET`/`POST` `/api/unsubscribe` — reason survey then confirm (no `/scalemargin/` in the URL). See [Unsubscribe and links](#unsubscribe-and-links). |
 
@@ -18,13 +18,12 @@ Code touchpoints: `src/providers/sendgrid.ts`, `src/events/adapters/sendgrid.ts`
 
 ## Environment variables
 
-These are environment variable names. Set them in `.env.yaml` — most have a typed key (for example `scalemargin.dispatch_secret`, `email.from`), and anything without one goes under the `env:` map. A real environment variable (Docker `environment:`, a Kubernetes Secret) also works, and always wins over the file. See [`.env.yaml.example`](../.env.yaml.example).
+These are environment variable names. Set them in `.env.yaml` — most have a typed key (for example `scalemargin.dispatch_secret`), and anything without one goes under the `env:` map. A real environment variable (Docker `environment:`, a Kubernetes Secret) also works, and always wins over the file. See [`.env.yaml.example`](../.env.yaml.example).
 
 | Variable | When | Purpose |
 |----------|------|---------|
-| `EMAIL_PROVIDER` | Required for SendGrid mail | Must be `sendgrid`. |
-| `SENDGRID_API_KEY` | Sending mail | Mail Send API key (restrict scopes in production). |
-| `FROM_EMAIL` | Sending mail | Must be a **verified** sender identity in SendGrid. |
+| `senders:` entry | Sending mail | `channel: email`, `provider: sendgrid`, and a `from:` that is a **verified** sender identity in SendGrid. |
+| `SENDGRID_API_KEY` | Sending mail | Mail Send API key (restrict scopes in production), referenced by the sender as `sendgrid.api_key_env`. |
 | `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` | Inbound events enabled | Base64 **ECDSA public key** from SendGrid Event Webhook “Signature Verification” — must match the key shown for **that** webhook. |
 | `SCALEMARGIN_DISPATCH_SECRET` | Dispatch | Verifies `POST /api/scalemargin/dispatch`. |
 | `SCALEMARGIN_ANALYTICS_SECRET` | Analytics POSTs | Signs outbound analytics (same secret verifies dev CSV capture if used). |
@@ -51,7 +50,7 @@ Local smoke test extras: `EVENT_TEST_PUBLIC_BASE_URL`, `EVENT_TEST_CSV_PATH`, `E
 
 ### 2. Sender identity
 
-- **Settings → Sender Authentication** — verify the domain or single sender you use for `FROM_EMAIL`.
+- **Settings → Sender Authentication** — verify the domain or single sender you use as the sender's `from:`.
 - Unverified senders will cause API errors or poor deliverability.
 
 ### 3. Event Webhook (delivery + engagement)
