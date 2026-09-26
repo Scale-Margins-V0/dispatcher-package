@@ -434,11 +434,24 @@ export const providerMessageIds = mysqlTable(
     provider_message_id: id191("provider_message_id").notNull(),
     user_id: id191("user_id").notNull(),
     sent_at: ts("sent_at").notNull(),
+    // ── Delivery-status polling (Freshchat status_poller) ── all nullable:
+    // rows from providers or senders that are not polled keep them empty.
+    sender_id: id191("sender_id"),
+    status: varchar("status", { length: 32 }),
+    status_event: varchar("status_event", { length: 16 }),
+    status_at: ts("status_at"),
+    provider_ref: id191("provider_ref"),
+    next_poll_at: ts("next_poll_at"),
+    last_polled_at: ts("last_polled_at"),
+    poll_attempts: int("poll_attempts").notNull().default(0),
+    poll_error: varchar("poll_error", { length: 255 }),
   },
   (t) => [
     index("provider_message_ids_sent_at_idx").on(t.sent_at),
     index("provider_message_ids_lookup_idx").on(t.provider, t.provider_message_id),
     index("provider_message_ids_user_idx").on(t.user_id),
+    // "What is due?" — the poller's only query shape.
+    index("provider_message_ids_poll_idx").on(t.provider, t.next_poll_at),
   ]
 );
 

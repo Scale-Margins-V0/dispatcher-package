@@ -136,6 +136,12 @@ export const retentionSchema = z
     outbox_max_attempts: z.coerce.number().int().positive().optional(),
     /** Days of per-minute performance metrics to keep (default 7, max 30). */
     metrics_days: z.coerce.number().int().positive().max(30).optional(),
+    /**
+     * How long after sending a message the Freshchat status poller keeps
+     * asking about it (a duration, e.g. "3d"). Default 3d; capped at
+     * message_id_ttl, since the row is gone after that anyway.
+     */
+    freshchat_status_poll_ttl: z.string().min(1).optional(),
   })
   .strict();
 

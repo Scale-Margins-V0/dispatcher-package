@@ -136,6 +136,20 @@ export type ProviderMessageIdRow = {
   /** The recipient — the same user id ScaleMargin sent in the dispatch. */
   user_id: string;
   sent_at: Date;
+  /** The `senders:` entry that sent it — the poller calls that account's API. */
+  sender_id?: string | null;
+  /** Last raw provider status seen, e.g. `READ`. */
+  status?: string | null;
+  /** Last analytics event reported for it: dispatched | delivered | read | bounced. */
+  status_event?: string | null;
+  status_at?: Date | null;
+  /** The provider's own message id (Freshchat `message_id`), when it reports one. */
+  provider_ref?: string | null;
+  /** Null = not polled (not a polled sender, final status reached, or past freshchat_status_poll_ttl). */
+  next_poll_at?: Date | null;
+  last_polled_at?: Date | null;
+  poll_attempts?: number;
+  poll_error?: string | null;
 };
 
 export type SendLogRow = {

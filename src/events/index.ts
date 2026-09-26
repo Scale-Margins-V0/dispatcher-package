@@ -32,6 +32,7 @@ import {
   type FreshchatReceipt,
 } from "./freshchat/adapter.js";
 import { forwardFreshchatReceipts } from "./freshchat/receipt-forwarder.js";
+import { recordReportedStatuses } from "./freshchat/status-poller.js";
 import { isDbInitialized } from "../db/client.js";
 import { deliverDueBatch, enqueueEvents } from "./outbox.js";
 import { componentLogger } from "../logging/logger.js";
@@ -575,7 +576,9 @@ export function createInboundWebhookHandler(
       await forwardGupshupReceipts(gupshupReceipts, getSecret());
     }
     if (freshchatReceipts.length > 0) {
-      await forwardFreshchatReceipts(freshchatReceipts, getSecret());
+      const forwarded = await forwardFreshchatReceipts(freshchatReceipts, getSecret());
+      // Tell the status poller these are reported, so it never repeats them.
+      if (forwarded.success) await recordReportedStatuses(freshchatReceipts);
     }
 
     res.status(200).json({

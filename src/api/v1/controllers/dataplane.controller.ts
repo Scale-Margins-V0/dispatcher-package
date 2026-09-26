@@ -1121,6 +1121,14 @@ export async function listSendersHandler(req: Request, res: Response): Promise<v
         organizations: s.organizations ?? ["*"],
         breaker_state: registry.getBreakerState(s.id)?.state ?? "closed",
         credentials: serializeSenderCredentials(senderCredentials(s as SenderConfig)),
+        ...(s.provider === "freshchat"
+          ? {
+              status_poller: {
+                enabled: s.freshchat?.status_poller === true,
+                interval_seconds: s.freshchat?.status_poll_interval_seconds ?? 10,
+              },
+            }
+          : {}),
       }));
 
     res.json({

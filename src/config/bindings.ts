@@ -152,6 +152,7 @@ export const BINDINGS: Binding[] = [
     ["DISPATCHER_CAMPAIGN_EVENTS_MAX_ROWS", "campaign_event_max_rows"],
     ["DISPATCHER_OUTBOX_MAX_ATTEMPTS", "outbox_max_attempts"],
     ["DISPATCHER_METRICS_RETENTION_DAYS", "metrics_days"],
+    ["DISPATCHER_FRESHCHAT_STATUS_POLL_TTL", "freshchat_status_poll_ttl"],
   ]),
 
   ...bind((c) => c.dispatcher?.logging, [["DISPATCHER_LOG_LEVEL", "level"]]),

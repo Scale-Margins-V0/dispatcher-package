@@ -9,7 +9,7 @@ This doc covers two things:
 
 ## 1. `provider_message_ids`
 
-The dispatcher writes one row for every WhatsApp message a provider accepts. It never reads the table back. The table is there for the company running the dispatcher to query directly, for example to poll Freshchat for a message's status.
+The dispatcher writes one row for every WhatsApp message a provider accepts. You can query it directly ("who was this message sent to?"), and the Freshchat status poller (§1.1) reads it to know what to poll.
 
 | Column                | Type                          | Notes                                                                         |
 | --------------------- | ----------------------------- | ----------------------------------------------------------------------------- |
@@ -18,12 +18,22 @@ The dispatcher writes one row for every WhatsApp message a provider accepts. It 
 | `provider_message_id` | `varchar(191)`                | The provider's id. For Freshchat this is `request_id`                         |
 | `user_id`             | `varchar(191)`                | The recipient: the same user id ScaleMargin sent in the dispatch              |
 | `sent_at`             | `timestamptz`                 | When the provider accepted it                                                 |
+| `sender_id`           | `varchar`, nullable           | The `senders:` id that sent it                                                |
+| `status`              | `varchar(32)`, nullable       | Last raw provider status seen by the poller (`DELIVERED`, `READ`, …)          |
+| `status_event`        | `varchar(16)`, nullable       | Last status **reported to ScaleMargin** (`delivered`, `read`, `bounced`, …)   |
+| `status_at`           | `timestamptz`, nullable       | When `status_event` was reported                                              |
+| `provider_ref`        | `varchar`, nullable           | Freshchat's own `message_id`                                                  |
+| `next_poll_at`        | `timestamptz`, nullable       | When the poller checks next. `NULL` = not polled (poller off, final, or TTL)  |
+| `last_polled_at`      | `timestamptz`, nullable       | Last status API call                                                          |
+| `poll_attempts`       | `int`, default 0              | Status API calls made for this row                                            |
+| `poll_error`          | `varchar(255)`, nullable      | Last poll problem, e.g. `freshchat_status_poll_ttl reached`, `forward failed: …`        |
 
 | Index                             | Columns                          | For                                  |
 | --------------------------------- | -------------------------------- | ------------------------------------ |
 | `provider_message_ids_lookup_idx` | `provider, provider_message_id`  | "Who was this message sent to?"      |
 | `provider_message_ids_user_idx`   | `user_id`                        | "Which messages did this user get?"  |
 | `provider_message_ids_sent_at_idx`| `sent_at`                        | The retention sweep                  |
+| `provider_message_ids_poll_idx`   | `provider, next_poll_at`         | The status poller's "what is due?"   |
 
 **Written when:** the provider accepts the send. Rejected sends have no id, so they are skipped. Rows are inserted in one batch at the end of each dispatch. A failed insert is logged and never fails the send.
 
@@ -47,6 +57,31 @@ SELECT user_id, sent_at
 FROM provider_message_ids
 WHERE provider = 'freshchat' AND provider_message_id = 'req_abc123';
 ```
+
+### 1.1 Freshchat status poller
+
+For deployments that can't register a Freshchat webhook. Off by default, per sender:
+
+```yaml
+senders:
+  - id: freshchat-main
+    provider: freshchat
+    freshchat:
+      # …
+      status_poller: true                # default false
+      status_poll_interval_seconds: 10   # default 10, min 5, max 3600
+dispatcher:
+  retention:
+    freshchat_status_poll_ttl: "3d"                # default 3d, capped at message_id_ttl
+```
+
+- Each send from a poller-enabled sender gets `next_poll_at`. Every interval the poller calls `GET https://<org>.freshchat.com/v2/outbound-messages?request_id=<id>` (host taken from the sender's `template_api_url`) for up to 200 due rows, 4 at a time.
+- Only **forward progress** is forwarded: dispatched → delivered → read / bounced → clicked. A change goes to ScaleMargin through the same signed receipt path as the Freshchat webhook, then `status_event` is saved.
+- **Webhook and poller together:** the webhook also records what it reported, so the poller never re-sends a status the webhook already delivered.
+- **Stops polling** a row at a final status (read, failed, clicked) or once it is older than `freshchat_status_poll_ttl`.
+- **Backs off with age:** the interval ×1 for the first 15 min, ×6 up to 2 h, ×30 after that.
+- **Errors:** 429 honours `Retry-After`. 401/403 pauses that sender for 5 min with one warning. A 404 or unknown id retries on the next interval. If ScaleMargin refuses a receipt, the change isn't saved and is retried on the next poll.
+- The poller assumes **one dispatcher replica**. Two replicas can poll the same row and report one change twice.
 
 ---
 

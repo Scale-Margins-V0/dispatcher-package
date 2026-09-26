@@ -783,6 +783,12 @@ paths:
                               type: array
                               items: { type: string }
                               description: Works, with limits — e.g. an API-key-only Gupshup sender cannot send media
+                        status_poller:
+                          type: object
+                          description: Freshchat senders only — the delivery-status poller (freshchat.status_poller)
+                          properties:
+                            enabled: { type: boolean }
+                            interval_seconds: { type: integer, description: "Default 10" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/Internal" }

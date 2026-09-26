@@ -10,6 +10,7 @@ import type {
   SenderRoutingConfig,
 } from "./providers/types.js";
 import { senderCredentials } from "./providers/sender-credentials.js";
+import { statusPollTtl } from "./config/status-poll-ttl.js";
 import { userLookupSchema } from "./user-lookup/schema.js";
 import { dispatcherSchema } from "./dispatcher-schema.js";
 import {
@@ -107,6 +108,13 @@ const freshchatConfigSchema = z.object({
   from_number_env: z.string().optional(),
   webhook_secret: z.string().optional(),
   webhook_secret_env: z.string().optional(),
+  status_poller: z.boolean().optional(),
+  status_poll_interval_seconds: z
+    .number()
+    .int("status_poll_interval_seconds must be a whole number of seconds")
+    .min(5, "status_poll_interval_seconds must be at least 5 — Freshchat rate-limits its API")
+    .max(3600, "status_poll_interval_seconds must be at most 3600")
+    .optional(),
 }).strict();
 
 const senderFailoverSchema = z.object({
@@ -547,6 +555,12 @@ export function ensureEnvYamlValid(): void {
         );
       }
     }
+  }
+
+  // A status poller needs a parseable freshchat_status_poll_ttl (default 3d) — say so at
+  // boot rather than on the first tick.
+  if (cfg.senders.some((s) => s.enabled !== false && s.provider === "freshchat" && s.freshchat?.status_poller)) {
+    statusPollTtl();
   }
 
   // 5. Default senders resolution check

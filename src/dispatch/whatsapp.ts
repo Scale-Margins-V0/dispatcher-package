@@ -29,6 +29,7 @@ import { readCallMetadataPayload } from "../variables/call-metadata.js";
 import { programOf } from "../db/repos/dispatch-programs.js";
 import { SendLogRecorder } from "./send-log-recorder.js";
 import { MessageIdRecorder } from "./message-id-recorder.js";
+import { initialPollAt } from "../events/freshchat/status-poller.js";
 import { deriveTemplateRef } from "./template-ref.js";
 import type { DispatchPayload } from "./types.js";
 import { scrubPii } from "../events/scrubber.js";
@@ -346,7 +347,11 @@ export async function processWhatsAppDispatch(
       fallbacks_used: result.attempts.length > 1 ? result.attempts.length - 1 : 0,
     });
     if (result.success) {
-      messageIds.add(result.finalSender.config.provider, result.messageId, userId);
+      messageIds.add(result.finalSender.config.provider, result.messageId, userId, {
+        senderId: result.finalSender.config.id,
+        // Queued for the Freshchat status poller when that sender has it on.
+        pollAt: initialPollAt(result.finalSender.config),
+      });
     }
     sendResults.push({
       userId,

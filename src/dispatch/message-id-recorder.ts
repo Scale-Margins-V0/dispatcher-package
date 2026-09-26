@@ -38,11 +38,15 @@ export class MessageIdRecorder {
     return isDbInitialized();
   }
 
-  /** Records an accepted send. A missing or blank id is ignored. */
+  /**
+   * Records an accepted send. A missing or blank id is ignored. `pollAt` queues
+   * it for the delivery-status poller (Freshchat `status_poller`).
+   */
   add(
     provider: string,
     providerMessageId: string | null | undefined,
-    userId: string
+    userId: string,
+    opts: { senderId?: string; pollAt?: Date | null } = {}
   ): void {
     if (!this.enabled) return;
     const id = providerMessageId?.trim();
@@ -54,6 +58,8 @@ export class MessageIdRecorder {
       provider_message_id: clamp(id, ID_MAX),
       user_id: clamp(userId, ID_MAX),
       sent_at: new Date(),
+      ...(opts.senderId ? { sender_id: clamp(opts.senderId, ID_MAX) } : {}),
+      ...(opts.pollAt ? { next_poll_at: opts.pollAt } : {}),
     });
   }
 

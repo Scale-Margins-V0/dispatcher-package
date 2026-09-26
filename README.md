@@ -264,6 +264,7 @@ dispatcher:
   retention:
     message_id_ttl: "5d 2h"      # REQUIRED
     # metrics_days: 7
+    # freshchat_status_poll_ttl: "3d"
 
   # logging:
   #   level: info
@@ -278,6 +279,7 @@ dispatcher:
 | `database.*` | The dispatcher's own database. `url:` may replace the discrete fields; `dialect: sqlite` takes `file:` instead | A local SQLite file — fine for trials, not production |
 | `retention.message_id_ttl` | How long provider message IDs are kept, as a duration: `"5d 2h"`, `"12h"`, `"30d"`. Minimum `1h` | **Refuses to start** — there is no safe default |
 | `retention.metrics_days` | Days of per-minute campaign metrics (API latency, failures, throughput) to keep. Max 30 | `7` |
+| `retention.freshchat_status_poll_ttl` | How long the Freshchat status poller keeps asking about one message. Capped at `message_id_ttl` | `3d` |
 | `retention.log_days`, `campaign_event_days` | Log and event history windows | `14`, `90` |
 | `logging.level` | `trace` · `debug` · `info` · `warn` · `error` · `fatal` | `info` |
 
@@ -467,6 +469,33 @@ senders:
 
 Omit the SES keys entirely to use an IAM role — recommended on EC2, ECS and EKS. The full WhatsApp blocks ship in `.env.yaml.example`.
 
+### Freshchat status poller
+
+For Freshchat accounts whose delivery webhook you can't register. Set it per sender, inside that sender's `freshchat:` block, so with several Freshchat accounts each one polls with **its own** API key and host:
+
+```yaml
+  - id: backup-freshchat
+    channel: whatsapp
+    provider: freshchat
+    freshchat:
+      # …credentials as usual
+      status_poller: true               # default false
+      status_poll_interval_seconds: 10  # default 10, allowed 5–3600
+
+dispatcher:
+  retention:
+    freshchat_status_poll_ttl: "3d"     # default 3d, capped at message_id_ttl
+```
+
+| Key | Meaning | If unset |
+| --- | --- | --- |
+| `freshchat.status_poller` | Ask Freshchat for each sent message's status and forward every change (delivered, read, failed) to ScaleMargin, as the webhook would. Webhook and poller can both run — a status is never reported twice | `false` — off |
+| `freshchat.status_poll_interval_seconds` | How often due messages are checked. Older messages back off on their own: ×6 after 15 min, ×30 after 2 h | `10` |
+| `retention.freshchat_status_poll_ttl` | How long after sending the poller keeps asking about one message. A message stops earlier at a final status (read, failed, clicked) | `3d` |
+| `retention.message_id_ttl` | How long the message row exists at all — the poll TTL can never outlive it | Required |
+
+Each sent message is stored with its message id **and** the sender id that sent it (after failover), so the poller always calls the right account. Run **one replica** with the poller on — two would poll the same message twice.
+
 > 🔁 **Upgrading an older file?** The top-level `email:` shorthand is gone. A file that still has it fails at boot with a message showing the `senders:` entry to write instead — it is never silently ignored.
 
 ## 6.6 links:, events:, storage: — optional
@@ -537,6 +566,7 @@ dispatcher:
     campaign_event_max_rows: 500000
     outbox_max_attempts: 10
     metrics_days: 7                # max 30
+    freshchat_status_poll_ttl: "3d"  # status poller gives up after this
 
   logging:
     level: info                    # trace | debug | info | warn | error | fatal
@@ -644,6 +674,8 @@ senders:
       default_template: welcome_v1
       template_language: en
       webhook_secret: "replace-with-openssl-rand-hex-32"
+      status_poller: false              # true = poll Freshchat for statuses (no webhook needed)
+      status_poll_interval_seconds: 10  # 5–3600
 
 # ── Links inside messages ─────────────────────────────────────────────────
 links:
@@ -711,6 +743,7 @@ dispatcher:
     campaign_event_max_rows: 500000
     outbox_max_attempts: 10
     metrics_days: 7                # max 30
+    freshchat_status_poll_ttl: "3d"  # status poller gives up after this
 
   logging:
     level: info                    # trace | debug | info | warn | error | fatal
@@ -827,6 +860,8 @@ senders:
       default_template: welcome_v1
       template_language: en
       webhook_secret: "replace-with-openssl-rand-hex-32"
+      status_poller: false              # true = poll Freshchat for statuses (no webhook needed)
+      status_poll_interval_seconds: 10  # 5–3600
 
 # ── Links inside messages ─────────────────────────────────────────────────
 links:
@@ -933,6 +968,8 @@ Each provider reports what happened to a message — delivered, opened, bounced 
 2. In Freshchat, add a webhook for outbound message status: URL `https://dispatcher.your-company.com/api/scalemargin/freshchat-events` (`/freshchat-notifications` also works), method POST.
 3. Authentication: header `Authorization: Bearer <that secret>`. If Freshchat signs instead: `X-Freshchat-Signature: sha256=<hex HMAC-SHA256 of the raw body>`.
 4. Restart the dispatcher.
+
+**Can't register a Freshchat webhook?** Set `status_poller: true` inside the `freshchat:` block instead. The dispatcher then asks Freshchat for each sent message's status every `status_poll_interval_seconds` (default 10), and forwards every change (delivered, read, failed) to ScaleMargin exactly as the webhook would. It stops at a final status or after `retention.freshchat_status_poll_ttl` (default `3d`), and it backs off as a message ages: the interval ×6 after 15 minutes, ×30 after 2 hours. Webhook and poller can both run, and a status is never reported twice. Run a single replica with the poller on.
 
 ### Check each webhook
 
@@ -1060,6 +1097,9 @@ docker compose down -v     # stop and DELETE all campaign history — careful
 | ScaleMargin cannot reach the dispatcher | Not exposed, or `atlas_key` unset | Set `atlas_key` and `public_url`, put a TLS proxy in front |
 | `exec format error` | ARM host, amd64 image | Runs under emulation; ask us for a native build |
 | `EADDRINUSE` on 3100 | Something else uses the port | Change the host side: `"127.0.0.1:3200:3100"` |
+| Container exits: `status_poll_interval_seconds must be at least 5` | Interval under 5 s — Freshchat rate-limits its API | Use 5–3600; `10` is the default |
+| Log: `Freshchat status API rejected sender 'X' (401) … polling paused 5 min` | That sender's `freshchat.api_key` is wrong or lacks access | Fix the key and restart. Other Freshchat senders keep polling |
+| Freshchat statuses never reach ScaleMargin | No webhook registered and `status_poller` is off | Register the webhook (8.2) or set `status_poller: true` on the sender |
 
 Still stuck? Send us these two — neither contains customer data or credentials:
 

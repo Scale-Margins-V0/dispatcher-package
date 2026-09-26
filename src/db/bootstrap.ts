@@ -14,6 +14,7 @@ import { createDispatcherDb, isDbInitialized, getDb, setDbSingleton, type Dispat
 import { runDispatcherMigrations } from "./migrate.js";
 import { startRetentionJob } from "./retention.js";
 import { startMetricsFlush } from "../metrics/collector.js";
+import { startFreshchatStatusPoller } from "../events/freshchat/status-poller.js";
 
 export async function initDispatcherDb(): Promise<DispatcherDb> {
   if (isDbInitialized()) return getDb();
@@ -30,5 +31,6 @@ export async function initDispatcherDb(): Promise<DispatcherDb> {
   await refreshLogWebhookConfig();
   startRetentionJob();
   startMetricsFlush();
+  startFreshchatStatusPoller();
   return dbx;
 }
