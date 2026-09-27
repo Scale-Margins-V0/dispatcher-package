@@ -41,7 +41,7 @@ pnpm run seed:mysql
 pnpm run seed:postgres
 ```
 
-Then point `config/dispatch.yaml` at the same database (see [config/dispatch.example.yaml](../config/dispatch.example.yaml)) and set `USER_LOOKUP_BACKEND` accordingly.
+Then point `user_lookup:` in `.env.yaml` at the same database (see [.env.yaml.example](../.env.yaml.example)), setting `mode: database` and the matching `backend`.
 
 ## HTTP profile mock server
 
@@ -65,7 +65,7 @@ export PROFILE_API_TOKEN=my-local-secret
 pnpm run dev:local
 ```
 
-If you use plain `pnpm run dev`, set real secrets (or copy `.env.example` to `.env` and fill `SCALEMARGIN_*`).
+If you use plain `pnpm run dev`, set real secrets (or `cp .env.yaml.example .env.yaml` and fill `scalemargin:` and `dispatcher.retention.message_id_ttl`).
 
 Each profile row includes both top-level `email` and nested `contact.primaryEmail` (same value) so you can point `user_lookup.fields.email` at either path in YAML.
 

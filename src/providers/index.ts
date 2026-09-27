@@ -1,54 +1,8 @@
 /**
- * Provider Registry
- *
- * Central registry for email providers. To add a new provider:
- *   1. Create a class implementing EmailProvider in a new file
- *   2. Register it in PROVIDERS below
- *   3. Set EMAIL_PROVIDER env var to the provider name
+ * Provider exports. Which account sends is decided by the sender registry
+ * (`senders:` in .env.yaml — see ./senders.ts), never by an environment
+ * variable; there is deliberately no process-wide "the provider" here.
  */
-
-import { componentLogger } from "../logging/logger.js";
-import type { EmailProvider } from "./types.js";
-import { SESProvider } from "./ses.js";
-import { SendGridProvider } from "./sendgrid.js";
-
-const log = componentLogger("providers");
-
-export type ProviderName = "ses" | "sendgrid";
-
-const PROVIDERS: Record<ProviderName, () => EmailProvider> = {
-  ses: () => new SESProvider(),
-  sendgrid: () => new SendGridProvider(),
-};
-
-let _instance: EmailProvider | null = null;
-
-/**
- * Get the configured email provider (singleton).
- * Set EMAIL_PROVIDER env var to "ses" or "sendgrid".
- */
-export function getProvider(): EmailProvider {
-  if (_instance) return _instance;
-
-  const name = (process.env.EMAIL_PROVIDER || "ses") as ProviderName;
-  const factory = PROVIDERS[name];
-
-  if (!factory) {
-    throw new Error(
-      `Unknown email provider: "${name}". Supported: ${Object.keys(PROVIDERS).join(", ")}`
-    );
-  }
-
-  _instance = factory();
-  if (process.env.VITEST !== "true") {
-    log.info(`[Provider] Using email provider: ${_instance.name}`);
-  }
-  return _instance;
-}
-
-export function resetProviderForTests(): void {
-  _instance = null;
-}
 
 export { SESProvider } from "./ses.js";
 export { SendGridProvider } from "./sendgrid.js";

@@ -54,29 +54,57 @@
     {
       "idx": 7,
       "version": "6",
-      "when": 1784404635289,
-      "tag": "0007_optimal_human_robot",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "6",
       "when": 1786712173589,
       "tag": "0007_new_supernaut",
       "breakpoints": true
     },
     {
-      "idx": 9,
+      "idx": 8,
       "version": "6",
       "when": 1786949215849,
       "tag": "0008_chief_titanium_man",
       "breakpoints": true
     },
     {
-      "idx": 10,
+      "idx": 9,
       "version": "6",
       "when": 1787241224667,
       "tag": "0009_abandoned_otto_octavius",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790234683336,
+      "tag": "0010_pretty_santa_claus",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1790321649363,
+      "tag": "0011_ordinary_master_mold",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1790329196901,
+      "tag": "0012_breezy_lake",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1790340940912,
+      "tag": "0013_remarkable_iceman",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1790493645771,
+      "tag": "0014_swift_phalanx",
       "breakpoints": true
     }
   ]

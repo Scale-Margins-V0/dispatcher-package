@@ -8,10 +8,9 @@ admin-dist/
 .pnpm-store/
 # Keep **pnpm-lock.yaml** and **package.json** committed for reproducible installs — do not ignore them.
 
-# Env & local secrets (use .env.example as template)
+# Env & local secrets (use .env.yaml.example as template)
 .env
 .env.*
-!.env.example
 !.env.yaml.example
 
 # Local SQLite / data dir (seeded DBs)
@@ -38,3 +37,14 @@ coverage/
 Thumbs.db
 *.swp
 *~
+
+# Local dummy servers for manual testing (e.g. network-mode lookup). Not shipped.
+dummy/
+.claude/skills/gitnexus-cli/SKILL.md
+.claude/skills/gitnexus-debugging/SKILL.md
+.claude/skills/gitnexus-exploring/SKILL.md
+.claude/skills/gitnexus-guide/SKILL.md
+.claude/skills/gitnexus-impact-analysis/SKILL.md
+.claude/skills/gitnexus-refactoring/SKILL.md
+AGENTS.md
+CLAUDE.md

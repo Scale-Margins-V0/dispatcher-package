@@ -14,10 +14,20 @@ export type QueryConfig = { sql: string };
 export type ApiConfig = {
   method: "GET" | "POST";
   url: string;
+  /** Appended to the URL; values take {{tokens}} and are URL-encoded. */
+  query?: Array<{ key: string; value: string }>;
   headers?: Record<string, string>;
   json_path: string;
   body?: string;
   timeout_ms?: number;
+  /** Attached call metadata schema, by id — see src/variables/call-metadata.ts. */
+  metadata?: { id: string; required: boolean } | null;
+  /** Addressable response paths — see src/variables/api-response.ts. */
+  response_schema?: Array<{
+    path: string;
+    type: "string" | "number" | "boolean" | "object" | "array" | "null";
+    example?: string;
+  }>;
 };
 export type VariableConfig = ConstantConfig | QueryConfig | ApiConfig;
 
@@ -75,6 +85,25 @@ export type DispatchRunRow = {
   updated_at: Date;
 };
 
+/** One key of a call metadata schema. */
+export type CallMetadataKey = {
+  /** Identifier; used in an api variable's request as `{{key.k}}` / `{{key.v}}`. */
+  key: string;
+  /** A sample value — shown in the UI, never sent. */
+  placeholder?: string;
+  /** Optional validation for the value, once values are wired. */
+  regex?: string;
+};
+
+export type CallMetadataRow = {
+  id: string;
+  name: string;
+  keys: CallMetadataKey[];
+  created_at: Date;
+  updated_at: Date;
+  updated_by: string | null;
+};
+
 export type SendLogStatus = "sent" | "failed";
 
 /**
@@ -87,6 +116,42 @@ export type SendLogStatus = "sent" | "failed";
  *
  * `user_id` is the client's opaque id, never an address.
  */
+/**
+ * A provider message id, saved so the company running the dispatcher can look
+ * it up in their own database and poll the provider for status themselves.
+ *
+ * Deliberately NOT a status projection: the dispatcher records that it sent a
+ * message and what the provider called it. Whether that message was later
+ * delivered or read is the provider's answer to give, not ours to cache.
+ *
+ * Pruned on `DISPATCHER_MESSAGE_ID_TTL`, which is mandatory — see
+ * src/config/duration.ts.
+ */
+export type ProviderMessageIdRow = {
+  id: string;
+  /** `freshchat` | `gupshup` — only WhatsApp sends are recorded. */
+  provider: string;
+  /** What the provider called the message. Freshchat returns `request_id`. */
+  provider_message_id: string;
+  /** The recipient — the same user id ScaleMargin sent in the dispatch. */
+  user_id: string;
+  sent_at: Date;
+  /** The `senders:` entry that sent it — the poller calls that account's API. */
+  sender_id?: string | null;
+  /** Last raw provider status seen, e.g. `READ`. */
+  status?: string | null;
+  /** Last analytics event reported for it: dispatched | delivered | read | bounced. */
+  status_event?: string | null;
+  status_at?: Date | null;
+  /** The provider's own message id (Freshchat `message_id`), when it reports one. */
+  provider_ref?: string | null;
+  /** Null = not polled (not a polled sender, final status reached, or past freshchat_status_poll_ttl). */
+  next_poll_at?: Date | null;
+  last_polled_at?: Date | null;
+  poll_attempts?: number;
+  poll_error?: string | null;
+};
+
 export type SendLogRow = {
   id: string;
   /** The dispatch_runs row this send belonged to. */
@@ -394,3 +459,38 @@ export const META_KEYS = {
   campaignEventsBackfillDoneAt: "campaign_events_backfill_done_at",
   campaignSummaryBackfillDoneAt: "campaign_summary_backfill_done_at",
 } as const;
+
+/** What a dispatch_metrics row measures — see src/metrics/collector.ts. */
+export type MetricKind =
+  | "dispatch"
+  | "lookup"
+  | "api_call"
+  | "query_var"
+  | "message_resolve"
+  | "provider_send"
+  | "message_e2e";
+
+export type MetricCounters = {
+  count: number;
+  ok: number;
+  failed: number;
+  timeout: number;
+  skipped: number;
+  fallback: number;
+  items: number;
+  sum_ms: number;
+  min_ms: number | null;
+  max_ms: number | null;
+  peak_per_sec: number;
+  /** Histogram b0..b10, bounds in src/metrics/histogram.ts. */
+  buckets: number[];
+};
+
+export type DispatchMetricRow = MetricCounters & {
+  id: string;
+  minute: number;
+  program_id: string;
+  step_id: string;
+  kind: MetricKind;
+  subject: string;
+};

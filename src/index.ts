@@ -6,15 +6,15 @@
  * configured provider (AWS SES or SendGrid), and reports analytics back.
  *
  * SETUP:
- *   1. Set environment variables (see .env.example), or `pnpm run dev:local` for insecure local placeholders
+ *   1. Set environment variables (see .env.yaml.example), or `pnpm run dev:local` for insecure local placeholders
  *   2. Optional: add config/dispatch.yaml for user lookup + placeholders (see config/dispatch.example.yaml)
  *   3. Deploy to your cloud (AWS Lambda, Cloud Run, Docker, etc.)
  *   4. Configure the webhook URL in ScaleMargin Atlas
  *
  * ENV VARS:
  *   PORT                          - Server port (default: 3100)
- *   EMAIL_PROVIDER                - "ses" or "sendgrid"
- *   FROM_EMAIL                    - Sender email address
+ *   Sending accounts are `senders:` in .env.yaml (see .env.yaml.example). With
+ *   no `senders:`, EMAIL_PROVIDER / FROM_EMAIL build one legacy sender.
  *   SCALEMARGIN_DISPATCH_SECRET   - HMAC secret for verifying inbound dispatches
  *   SCALEMARGIN_ANALYTICS_SECRET  - HMAC secret for signing outbound analytics
  *
@@ -46,7 +46,7 @@ import {
 } from "./db/repos/dispatch-programs.js";
 import { refreshCampaignSummarySafe } from "./db/repos/campaign-summary.js";
 import { initializeEventPipeline } from "./events/index.js";
-import { loadRepoDotEnv } from "./load-repo-dotenv.js";
+import { hydrateEnvFromYaml } from "./config/hydrate.js";
 import { LogComponent } from "./logging/conventions.js";
 import { bindCampaignId } from "./logging/context.js";
 import { componentLogger } from "./logging/logger.js";
@@ -55,8 +55,22 @@ import { registerInboundWebhookRoutes } from "./routes/inbound-webhooks.js";
 import { registerOnsiteRoutes } from "./onsite/routes.js";
 import { startServer } from "./server-start.js";
 
+// Copy `.env.yaml` settings into process.env BEFORE any module reads them.
+// There is no `.env` file any more; this is the only hydration step. Real
+// environment variables — Docker `environment:`, a Kubernetes Secret, a shell
+// export — are never overwritten. See src/config/hydrate.ts.
 if (process.env.VITEST !== "true") {
-  loadRepoDotEnv(join(dirname(fileURLToPath(import.meta.url)), ".."));
+  try {
+    hydrateEnvFromYaml();
+  } catch (error) {
+    // A bad key or value in .env.yaml: name each one, not a zod stack trace.
+    const issues = (error as { issues?: Array<{ path: PropertyKey[]; message: string }> }).issues;
+    const detail = issues
+      ? issues.map((i) => `  - ${i.path.join(".") || "(file)"}: ${i.message}`).join("\n")
+      : `  ${error instanceof Error ? error.message : String(error)}`;
+    console.error(`[FATAL] .env.yaml is invalid:\n${detail}`);
+    process.exit(1);
+  }
 }
 import { createEventTestCsvCaptureHandler } from "./devtools/event-test-csv-capture.js";
 import { verifyAnalyticsHmacSignature } from "./middleware/analytics-hmac-verify.js";
@@ -75,7 +89,15 @@ import { telemetry } from "./telemetry/posthog.js";
 import { lookupUsers } from "./user-lookup.js";
 import { ensureDispatchConfigLoaded } from "./user-lookup/config.js";
 import { ensureEnvYamlValid } from "./env-yaml.js";
-import { resolveSenderPin } from "./providers/senders.js";
+import {
+  dispatchProviderLabel,
+  emailSenderWarnings,
+  primarySender,
+  resolveSenderPin,
+} from "./providers/senders.js";
+import { dispatcherPort } from "./dispatcher-settings.js";
+import { assertMessageIdTtlConfigured } from "./config/message-id-ttl.js";
+import { formatDuration } from "./config/duration.js";
 
 // ---------------------------------------------------------------------------
 // Startup validation — fail fast on missing config
@@ -115,8 +137,31 @@ if (missing.length > 0) {
   // log sink batches — a logger call would never reach the database before the
   // process is gone. Everything that does not exit uses componentLogger.
   console.error(`[FATAL] Missing required env vars: ${missing.join(", ")}`);
-  console.error("See .env.example for all required variables.");
+  console.error("See .env.yaml.example for every setting.");
   process.exit(1);
+}
+
+// Provider message-id retention. Mandatory and defaultless on purpose — see
+// src/config/message-id-ttl.ts. Validated HERE, at boot, because the retention
+// sweep swallows its errors: a bad value discovered there would mean ids were
+// silently never pruned.
+let messageIdTtl: number;
+try {
+  messageIdTtl = assertMessageIdTtlConfigured();
+} catch (error) {
+  telemetry.capture("dispatcher_startup_config_failed", {
+    component: "message_id_ttl",
+  });
+  console.error(
+    `[FATAL] ${error instanceof Error ? error.message : String(error)}`
+  );
+  process.exit(1);
+}
+if (process.env.VITEST !== "true") {
+  componentLogger(LogComponent.config).info(
+    { message_id_ttl: formatDuration(messageIdTtl) },
+    `Provider message ids are kept for ${formatDuration(messageIdTtl)}, then pruned hourly`
+  );
 }
 
 try {
@@ -161,10 +206,7 @@ app.disable("x-powered-by");
 // Express emit Secure admin cookies when that proxy reports HTTPS.
 app.set("trust proxy", 1);
 app.use(requestIdMiddleware);
-const PORT = parseInt(process.env.PORT || "3100", 10);
-/** Placeholder sender. No provider can verify it — example.com is IANA-reserved. */
-const DEFAULT_FROM_EMAIL = "noreply@example.com";
-const FROM_EMAIL = process.env.FROM_EMAIL || DEFAULT_FROM_EMAIL;
+const PORT = dispatcherPort();
 
 registerAdminRoutes(app);
 registerLogsApiRoutes(app);
@@ -177,12 +219,8 @@ registerApiV1Routes(app);
 // console.warn it only ever appeared in the terminal that started the process —
 // which is how a dispatcher can sit for weeks sending from an unverifiable
 // address while every send fails with an unexplained provider rejection.
-if (FROM_EMAIL === DEFAULT_FROM_EMAIL && process.env.VITEST !== "true") {
-  componentLogger("server").warn(
-    `FROM_EMAIL is not set — sending as ${DEFAULT_FROM_EMAIL}. ` +
-      "That address cannot be verified with any provider (example.com is reserved), " +
-      "so every send will be rejected. Set FROM_EMAIL to a verified sender.",
-  );
+if (process.env.VITEST !== "true") {
+  for (const warning of emailSenderWarnings()) componentLogger("server").warn(warning);
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +262,7 @@ app.post("/api/preferences", createPreferencesPostHandler());
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
-    provider: process.env.EMAIL_PROVIDER || "ses",
+    provider: primarySender("email")?.config.provider ?? "none",
     image_storage: process.env.IMAGE_STORAGE_PROVIDER || "none",
     event_test_csv_capture: Boolean(process.env.EVENT_TEST_CSV_PATH),
   });
@@ -385,17 +423,18 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
       : 0,
     has_images: Boolean(payload.images?.length),
   });
+  // One label for the run's three activity rows (accepted/completed/failed).
+  const providerLabel = dispatchProviderLabel(
+    String(payload.channel ?? "email"),
+    payload.metadata?.sender_id
+  );
   recordDispatchActivity({
     id: activityId,
     campaign_id: String(payload.campaign_id ?? "unknown"),
     ...programOf(payload),
     organization_id: payload.metadata?.organization_id,
     channel: String(payload.channel ?? "unknown"),
-    provider:
-      payload.metadata?.sender_id ||
-      (payload.channel === "whatsapp"
-        ? (process.env.WHATSAPP_PROVIDER || "whatsapp")
-        : (process.env.EMAIL_PROVIDER || "ses")),
+    provider: providerLabel,
     status: "accepted",
     recipient_count: Array.isArray(payload.user_ids)
       ? payload.user_ids.length
@@ -410,7 +449,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
   });
 
   // Process asynchronously
-  processDispatch(payload, FROM_EMAIL, activityId)
+  processDispatch(payload, activityId)
     .then((result) => {
       recordDispatchActivity({
         id: activityId,
@@ -418,11 +457,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
         ...programOf(payload),
         organization_id: payload.metadata?.organization_id,
         channel: String(payload.channel ?? "unknown"),
-        provider:
-          payload.metadata?.sender_id ||
-          (payload.channel === "whatsapp"
-            ? (process.env.WHATSAPP_PROVIDER || "whatsapp")
-            : (process.env.EMAIL_PROVIDER || "ses")),
+        provider: providerLabel,
         status: "completed",
         recipient_count: Array.isArray(payload.user_ids)
           ? payload.user_ids.length
@@ -443,11 +478,7 @@ app.post("/api/scalemargin/dispatch", verifyHmacSignature, async (req, res) => {
         ...programOf(payload),
         organization_id: payload.metadata?.organization_id,
         channel: String(payload.channel ?? "unknown"),
-        provider:
-          payload.metadata?.sender_id ||
-          (payload.channel === "whatsapp"
-            ? (process.env.WHATSAPP_PROVIDER || "whatsapp")
-            : (process.env.EMAIL_PROVIDER || "ses")),
+        provider: providerLabel,
         status: "failed",
         recipient_count: Array.isArray(payload.user_ids)
           ? payload.user_ids.length

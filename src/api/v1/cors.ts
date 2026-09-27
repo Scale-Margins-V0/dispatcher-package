@@ -1,6 +1,7 @@
 /**
- * CORS for the external (Atlas) router, configured by environment:
+ * CORS for the external (Atlas) router. Either
  *
+ *     dispatcher: { atlas_cors_origins: [https://atlas.scalemargin.com] }
  *     DISPATCHER_ATLAS_CORS_ORIGINS=https://atlas.scalemargin.com,https://staging.atlas.example
  *
  * Unset (the default) means no CORS headers are sent at all — a browser cannot
@@ -14,6 +15,7 @@
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from "express";
+import { resolveCorsOrigins, settingName } from "../../dispatcher-settings.js";
 
 export const CORS_ORIGINS_ENV = "DISPATCHER_ATLAS_CORS_ORIGINS";
 
@@ -39,10 +41,10 @@ function normalizeOrigin(raw: string): string | null {
 }
 
 export function allowedOrigins(): string[] {
-  const raw = process.env[CORS_ORIGINS_ENV]?.trim();
-  if (!raw) return [];
+  const configured = resolveCorsOrigins();
+  if (!configured) return [];
   const out: string[] = [];
-  for (const entry of raw.split(",")) {
+  for (const entry of configured.entries) {
     const origin = normalizeOrigin(entry);
     if (origin && !out.includes(origin)) out.push(origin);
   }
@@ -55,26 +57,26 @@ export function isCorsEnabled(): boolean {
 
 /** Boot-time advisory. Null when the configuration is unremarkable. */
 export function corsWarning(): string | null {
-  const raw = process.env[CORS_ORIGINS_ENV]?.trim();
-  if (!raw) return null;
+  const configured = resolveCorsOrigins();
+  // Unset, or an explicit empty list. Both mean "no CORS", which is the safe
+  // default and needs no comment.
+  if (!configured || configured.entries.length === 0) return null;
 
+  const name = settingName("atlas_cors_origins", configured.source);
   const origins = allowedOrigins();
   if (origins.includes("*")) {
     return (
-      `${CORS_ORIGINS_ENV} is "*" — any website may call the Atlas API from a browser. ` +
+      `${name} is "*" — any website may call the Atlas API from a browser. ` +
       "The key it needs cannot be revoked without a restart; list explicit origins instead."
     );
   }
-  const skipped = raw
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry && normalizeOrigin(entry) === null);
+  const skipped = configured.entries.filter((entry) => normalizeOrigin(entry) === null);
   if (skipped.length > 0) {
-    return `${CORS_ORIGINS_ENV} has ${skipped.length} unparseable entr${skipped.length === 1 ? "y" : "ies"} (ignored) — use absolute origins like https://atlas.example.com`;
+    return `${name} has ${skipped.length} unparseable entr${skipped.length === 1 ? "y" : "ies"} (ignored) — use absolute origins like https://atlas.example.com`;
   }
   const insecure = origins.filter((origin) => origin.startsWith("http://") && !origin.startsWith("http://localhost"));
   if (insecure.length > 0) {
-    return `${CORS_ORIGINS_ENV} contains a plaintext origin (${insecure[0]}) — the API key would travel over http.`;
+    return `${name} contains a plaintext origin (${insecure[0]}) — the API key would travel over http.`;
   }
   return null;
 }

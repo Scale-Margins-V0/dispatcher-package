@@ -287,11 +287,28 @@ export function assertEventsConfigEnv(cfg: EventsConfig): void {
   }
   if (cfg.providers.gupshup.enabled) {
     const s = gupshupSecretEnvName(cfg);
-    if (!process.env[s]?.trim()) {
+    // Same sources the verifier accepts (events/index.ts getAllGupshupWebhookSecrets):
+    // the events-level variable, or any Gupshup sender's own webhook_secret.
+    let senderHasSecret = false;
+    try {
+      senderHasSecret = loadEnvYaml().senders.some(
+        (x) =>
+          x.provider === "gupshup" &&
+          Boolean(
+            x.gupshup?.webhook_secret?.trim() ||
+              (x.gupshup?.webhook_secret_env && process.env[x.gupshup.webhook_secret_env]?.trim())
+          )
+      );
+    } catch {
+      /* ignore */
+    }
+    if (!process.env[s]?.trim() && !senderHasSecret) {
       componentLogger(LogComponent.config).warn(
         { provider: "gupshup", secret_env: s, error_category: "unauthenticated_webhook" },
-        "Gupshup inbound webhook is OPEN — the signing secret is unset, so " +
-          "POST /api/scalemargin/gupshup-events accepts unauthenticated payloads"
+        "Gupshup inbound webhook is OPEN — no signing secret is set, so " +
+          "POST /api/scalemargin/gupshup-events accepts unauthenticated payloads. " +
+          "Set webhook_secret on the Gupshup sender, then point Gupshup's delivery callback at " +
+          "/api/scalemargin/gupshup-events?token=<that secret>."
       );
     }
   }

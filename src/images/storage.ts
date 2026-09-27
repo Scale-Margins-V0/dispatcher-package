@@ -3,6 +3,7 @@ import { Storage as GCSStorage } from "@google-cloud/storage";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { componentLogger } from "../logging/logger.js";
+import { dispatcherPort } from "../dispatcher-settings.js";
 
 const log = componentLogger("images.storage");
 
@@ -127,7 +128,7 @@ export class LocalImageStorage implements ImageStorageProvider {
     this.dir = process.env.IMAGE_LOCAL_DIR || "./public/images";
     this.baseUrl =
       process.env.IMAGE_LOCAL_BASE_URL ||
-      `http://localhost:${process.env.PORT || 3100}/images`;
+      `http://localhost:${dispatcherPort()}/images`;
 
     if (!existsSync(this.dir)) {
       mkdirSync(this.dir, { recursive: true });

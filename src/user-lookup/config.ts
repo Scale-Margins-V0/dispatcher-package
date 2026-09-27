@@ -10,7 +10,14 @@ import { z } from "zod";
 import { componentLogger } from "../logging/logger.js";
 import { LogComponent } from "../logging/conventions.js";
 import { getPlaceholderSnapshot } from "../variables/service.js";
+import { SYSTEM_PLACEHOLDERS } from "../variables/system.js";
 import type { IdType } from "./mapper.js";
+import { DEFAULT_PLACEHOLDERS, placeholderEntrySchema } from "./placeholders.js";
+import type { PlaceholderEntry } from "./placeholders.js";
+import { dispatchConfigFromEnvYaml } from "./from-env-yaml.js";
+import { loadEnvYaml } from "../env-yaml.js";
+import type { LookupConnection, NetworkLookupYaml } from "./schema.js";
+import { missingConnectionFields, resolveConnection } from "./connection.js";
 
 /** Vitest sets `VITEST=true`; avoid noisy stderr for expected test paths. */
 function isVitest(): boolean {
@@ -22,43 +29,6 @@ const log = componentLogger(LogComponent.config);
 const backendEnum = z.enum(["mysql", "postgres", "sqlite", "http", "mock"]);
 
 const idTypeEnum = z.enum(["string", "int", "bigint", "uuid"]);
-
-const apiConfigSchema = z.object({
-  method: z.enum(["GET", "POST"]).default("GET"),
-  url: z.string(),
-  headers: z.record(z.string(), z.string()).optional(),
-  json_path: z.string(),
-  body: z.string().optional(),
-  timeout_ms: z.number().int().positive().optional(),
-});
-
-const placeholderEntrySchema = z.discriminatedUnion("source", [
-  z.object({
-    source: z.literal("field"),
-    field: z.string(),
-    fallback: z.string().optional(),
-  }),
-  z.object({
-    source: z.literal("computed"),
-    expr: z.string(),
-    fallback: z.string().optional(),
-  }),
-  z.object({
-    source: z.literal("constant"),
-    value: z.string(),
-    fallback: z.string().optional(),
-  }),
-  z.object({
-    source: z.literal("query"),
-    sql: z.string(),
-    fallback: z.string().optional(),
-  }),
-  z.object({
-    source: z.literal("api"),
-    api: apiConfigSchema,
-    fallback: z.string().optional(),
-  }),
-]);
 
 const userLookupSchema = z
   .object({
@@ -148,30 +118,23 @@ export const dispatchConfigSchema = z.object({
   placeholders: z.record(z.string(), placeholderEntrySchema),
 });
 
-export type DispatchConfig = z.infer<typeof dispatchConfigSchema>;
-export type PlaceholderEntry = z.infer<typeof placeholderEntrySchema>;
-
-export const DEFAULT_PLACEHOLDERS: Record<string, PlaceholderEntry> = {
-  first_name: { source: "field", field: "first_name", fallback: "there" },
-  last_name: { source: "field", field: "last_name", fallback: "" },
-  full_name: {
-    source: "computed",
-    expr: "first_name + ' ' + last_name",
-    fallback: "there",
-  },
-  company_name: { source: "field", field: "company_name", fallback: "" },
-  email: { source: "field", field: "email", fallback: "" },
-  unsubscribe_url: {
-    source: "computed",
-    expr: "env.UNSUBSCRIBE_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
-    fallback: "#",
-  },
-  preferences_url: {
-    source: "computed",
-    expr: "env.PREFERENCES_URL_BASE + '?uid=' + user_id + '&campaign_id=' + campaign_id + '&organization_id=' + organization_id",
-    fallback: "#",
-  },
+export type DispatchConfig = z.infer<typeof dispatchConfigSchema> & {
+  user_lookup: {
+    /** Inline customer-DB credentials from .env.yaml. Absent → fall back to DB_*. */
+    connection?: LookupConnection;
+    /** Network-mode endpoint from .env.yaml. */
+    network?: NetworkLookupYaml["network"];
+  };
 };
+
+// Re-exported so the four modules importing these from here keep working.
+export {
+  DEFAULT_PLACEHOLDERS,
+  placeholderEntrySchema,
+  VARIABLE_SOURCES,
+  SQL_ONLY_VARIABLE_SOURCES,
+} from "./placeholders.js";
+export type { PlaceholderEntry } from "./placeholders.js";
 
 export const DEFAULT_DISPATCH_CONFIG: DispatchConfig = {
   user_lookup: {
@@ -194,6 +157,7 @@ let cachedPath: string | null = null;
 export function resetDispatchConfigForTests(): void {
   cached = null;
   cachedPath = null;
+  deprecationWarned = false;
 }
 
 /** Test helper: inject a parsed config without reading disk. */
@@ -231,34 +195,64 @@ function applyBackendEnvOverride(config: DispatchConfig): DispatchConfig {
   };
 }
 
-/**
- * Load and validate dispatch config. Missing file → default mock + warn.
- * Invalid YAML when file exists → throws ZodError or YAMLException.
- */
-export function loadDispatchConfigFromDisk(): DispatchConfig {
+/** Warned once per process, not once per dispatch. */
+let deprecationWarned = false;
+
+function warnDispatchYamlDeprecated(path: string): void {
+  if (deprecationWarned) return;
+  deprecationWarned = true;
+  log.warn(
+    { path, error_category: "deprecated_config" },
+    "Reading user lookup from config/dispatch.yaml — move it under `user_lookup:` in " +
+      ".env.yaml. Support for this file will be removed in a future release"
+  );
+}
+
+function fromDispatchYaml(): DispatchConfig | null {
   const path = configPathFromEnv();
   cachedPath = path;
+  if (!existsSync(path)) return null;
 
-  if (!existsSync(path)) {
+  const validated = parseDispatchConfig(parseDispatchYaml(readFileSync(path, "utf8")));
+  warnDispatchYamlDeprecated(path);
+  return validated;
+}
+
+function fromEnvYaml(): DispatchConfig | null {
+  const lookup = loadEnvYaml().user_lookup;
+  return lookup ? dispatchConfigFromEnvYaml(lookup) : null;
+}
+
+/**
+ * Precedence is per file, never per key: a merged half-migration is harder to
+ * debug than either whole config.
+ *
+ *   .env.yaml `user_lookup:`  →  config/dispatch.yaml  →  mock
+ */
+export function loadDispatchConfig(): DispatchConfig {
+  const resolved = fromEnvYaml() ?? fromDispatchYaml();
+
+  if (!resolved) {
     log.warn(
-      { path, error_category: "missing_config" },
-      "No dispatch config found — falling back to the built-in MOCK user lookup, " +
+      { path: cachedPath, error_category: "missing_config" },
+      // Keep the phrase "MOCK user lookup" — every runbook greps for it.
+      "No user lookup configured — falling back to the built-in MOCK user lookup, " +
         "which resolves fabricated recipients and never reads a real database"
     );
     cached = DEFAULT_DISPATCH_CONFIG;
     return applyBackendEnvOverride(cached);
   }
 
-  const raw = readFileSync(path, "utf8");
-  const parsed = parseDispatchYaml(raw);
-  const validated = parseDispatchConfig(parsed);
-  cached = validated;
+  cached = resolved;
   return applyBackendEnvOverride(cached);
 }
 
+/** @deprecated Use loadDispatchConfig(). Kept so existing call sites compile. */
+export const loadDispatchConfigFromDisk = loadDispatchConfig;
+
 export function getDispatchConfig(): DispatchConfig {
   if (!cached) {
-    return loadDispatchConfigFromDisk();
+    return loadDispatchConfig();
   }
   return applyBackendEnvOverride(cached);
 }
@@ -266,68 +260,44 @@ export function getDispatchConfig(): DispatchConfig {
 /** Re-parse after tests mutate env. */
 export function reloadDispatchConfigForTests(): DispatchConfig {
   cached = null;
-  return loadDispatchConfigFromDisk();
+  deprecationWarned = false;
+  return loadDispatchConfig();
 }
 
 function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return v;
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  return value;
 }
 
 /**
  * Validates env for the active backend. Call once at process startup after secrets check.
  */
 export function ensureDispatchConfigLoaded(): void {
-  if (process.env.VITEST === "true" && !process.env.DB_HOST) {
-    return;
-  }
-  const cfg = loadDispatchConfigFromDisk();
-  const b = cfg.user_lookup.backend;
+  if (isVitest() && !process.env.DB_HOST) return;
 
-  if (b === "mysql" || b === "postgres") {
-    requireEnv("DB_HOST");
-    requireEnv("DB_NAME");
-    requireEnv("DB_USER");
-    const allowEmpty = process.env.DB_ALLOW_EMPTY_PASSWORD === "true";
-    if (
-      process.env.DB_PASSWORD === undefined &&
-      !allowEmpty
-    ) {
+  const cfg = loadDispatchConfig();
+  const backend = cfg.user_lookup.backend;
+
+  if (backend === "mysql" || backend === "postgres" || backend === "sqlite") {
+    const resolved = resolveConnection(backend, cfg.user_lookup.connection);
+    const missing = missingConnectionFields(backend, resolved, cfg.user_lookup.connection);
+    if (missing.length > 0) {
       throw new Error(
-        "DB_PASSWORD is required for SQL backends (set DB_ALLOW_EMPTY_PASSWORD=true for empty password)"
+        `Customer database is not fully configured — missing: ${missing.join(", ")}`
       );
     }
-  }
-
-  if (b === "sqlite") {
-    const file =
-      cfg.user_lookup.sqlite?.file ||
-      process.env.DB_FILE ||
-      ":memory:";
-    if (
-      file !== ":memory:" &&
-      !existsSync(file) &&
-      process.env.VITEST !== "true"
-    ) {
+    const sqliteFile = getSqliteFile(cfg);
+    if (backend === "sqlite" && sqliteFile !== ":memory:" && !existsSync(sqliteFile) && !isVitest()) {
       log.warn(
-        { path: file, error_category: "missing_database" },
+        { path: sqliteFile, error_category: "missing_database" },
         "Configured SQLite lookup database does not exist yet — it will be created on first write"
       );
     }
   }
 
-  if (b === "http") {
-    const http = cfg.user_lookup.http!;
-    if (http.auth.type === "bearer" && http.auth.token_env) {
-      if (!process.env[http.auth.token_env]) {
-        throw new Error(
-          `HTTP bearer auth requires ${http.auth.token_env} to be set in the environment`
-        );
-      }
-    }
+  if (backend === "http") {
+    requireNetworkToken(cfg);
   }
 
   if (!cfg.user_lookup.fields.email) {
@@ -339,15 +309,46 @@ export function ensureDispatchConfigLoaded(): void {
   }
 }
 
+/**
+ * Network mode: the token may be inline or named by `token_env`. A named
+ * variable that is not set is a boot failure, not a runtime 401.
+ */
+function requireNetworkToken(cfg: DispatchConfig): void {
+  const network = cfg.user_lookup.network;
+  if (!network) {
+    // dispatch.yaml's http backend carries its own auth block; it validates itself.
+    const http = cfg.user_lookup.http;
+    if (http?.auth.type === "bearer" && http.auth.token_env) {
+      requireEnv(http.auth.token_env);
+    }
+    return;
+  }
+  if (network.token) return;
+  if (network.token_env) requireEnv(network.token_env);
+}
+
+let registryBase: Record<string, PlaceholderEntry> | null = null;
+let registryMerged: Record<string, PlaceholderEntry> = {};
+
 export function getPlaceholderRegistry(): Record<string, PlaceholderEntry> {
   // Once the state DB is bootstrapped, its variables table is the source of
   // truth (editable at runtime via the admin API). YAML/defaults remain the
   // fallback for processes that never init the DB (unit tests, tooling).
-  return getPlaceholderSnapshot() ?? getDispatchConfig().placeholders;
+  const base = getPlaceholderSnapshot() ?? getDispatchConfig().placeholders;
+  // System variables win over any same-named row: they cannot be redefined.
+  // Memoized on the base object — this runs once per recipient.
+  if (base !== registryBase) {
+    registryBase = base;
+    registryMerged = { ...base, ...SYSTEM_PLACEHOLDERS };
+  }
+  return registryMerged;
 }
 
 export function getSqliteFile(config: DispatchConfig): string {
   return (
+    // .env.yaml `user_lookup.connection.file`, then dispatch.yaml's
+    // `user_lookup.sqlite.file`, then the env fallback.
+    config.user_lookup.connection?.file ||
     config.user_lookup.sqlite?.file ||
     process.env.DB_FILE ||
     ":memory:"

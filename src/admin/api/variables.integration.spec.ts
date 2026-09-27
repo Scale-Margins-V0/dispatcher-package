@@ -69,7 +69,12 @@ describe("/admin/api/variables", () => {
 
     const listed = await agent.get("/admin/api/variables");
     expect(listed.status).toBe(200);
+    // System variables first — always present, never stored.
     expect(listed.body.variables.map((v: { name: string }) => v.name)).toEqual([
+      "email",
+      "phone",
+      "unsubscribe_url",
+      "preferences_url",
       "nickname",
     ]);
 
@@ -122,7 +127,24 @@ describe("/admin/api/variables", () => {
     expect(res.body).toEqual({ ok: true, preview: "Ada Lovelace" });
 
     const listed = await agent.get("/admin/api/variables");
-    expect(listed.body.variables).toEqual([]);
+    expect(listed.body.variables.filter((v: { system: boolean }) => !v.system)).toEqual([]);
+  });
+
+  it("system variables are listed flagged, and cannot be changed or deleted", async () => {
+    const agent = await loginAgent();
+    const listed = await agent.get("/admin/api/variables");
+    const system = listed.body.variables.filter((v: { system: boolean }) => v.system);
+    expect(system.map((v: { name: string }) => v.name)).toEqual(["email", "phone", "unsubscribe_url", "preferences_url"]);
+
+    const put = await agent
+      .put("/admin/api/variables/email")
+      .send({ name: "email", source: "constant", value: "x" });
+    expect(put.status).toBe(403);
+    expect((await agent.delete("/admin/api/variables/unsubscribe_url")).status).toBe(403);
+    const create = await agent
+      .post("/admin/api/variables")
+      .send({ name: "phone", source: "constant", value: "x" });
+    expect(create.status).toBe(409);
   });
 
   it("edits apply to personalize() immediately — no restart", async () => {

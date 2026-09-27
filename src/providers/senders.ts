@@ -6,6 +6,7 @@ import { GupshupWhatsAppProvider, gupshupConfigFromSender } from "./gupshup-what
 import { FreshchatWhatsAppProvider, freshchatConfigFromSender } from "./freshchat-whatsapp.js";
 import { SendGridProvider } from "./sendgrid.js";
 import { SESProvider } from "./ses.js";
+import { resolveField, senderCredentials } from "./sender-credentials.js";
 import type {
   EmailMessage,
   EmailProvider,
@@ -27,6 +28,20 @@ interface BreakerState {
   lastFailureAt: number;
   failureThreshold: number;
   cooldownMs: number;
+}
+
+/** A provider that refuses every send with one explanation. */
+function unconfiguredProvider(name: string, problem: string): EmailProvider {
+  return {
+    name,
+    send: async () => ({ success: false, error: problem }),
+    sendBulk: async (messages: EmailMessage[]) => ({
+      total: messages.length,
+      sent: 0,
+      failed: messages.length,
+      results: messages.map((m) => ({ to: m.to, success: false, error: problem })),
+    }),
+  };
 }
 
 class SenderRegistry {
@@ -67,11 +82,13 @@ class SenderRegistry {
   private instantiateProvider(cfg: SenderConfig): EmailProvider | GupshupWhatsAppProvider | FreshchatWhatsAppProvider {
     if (cfg.channel === "email") {
       if (cfg.provider === "sendgrid") {
-        const apiKey =
-          cfg.sendgrid?.api_key?.trim() ||
-          (cfg.sendgrid?.api_key_env ? process.env[cfg.sendgrid.api_key_env]?.trim() : undefined) ||
-          process.env.SENDGRID_API_KEY;
-        return new SendGridProvider(apiKey);
+        // The sender's own key only. Boot validation guarantees it resolves; if
+        // it somehow does not, this sender fails its sends by name rather than
+        // borrowing SENDGRID_API_KEY — or throwing and taking every sender down.
+        const apiKey = resolveField("sendgrid", "api_key", cfg.sendgrid?.api_key, cfg.sendgrid?.api_key_env).value;
+        return apiKey
+          ? new SendGridProvider(apiKey)
+          : unconfiguredProvider("sendgrid", senderCredentials(cfg).problem ?? `SendGrid sender '${cfg.id}' has no API key`);
       }
       // SES provider
       const region = cfg.ses?.region || process.env.AWS_REGION || "ap-south-1";
@@ -334,6 +351,66 @@ export function classifyError(error: unknown, channel: string): ErrorClassificat
 /**
  * Check if a sender matches an organization
  */
+/**
+ * The channel's primary sender: `routing.default_sender.<channel>` when set
+ * (boot validation guarantees it exists and is enabled), else the first
+ * enabled sender of that channel in file order. `undefined` = the channel has
+ * no sender at all.
+ *
+ * What non-routing code asks when it needs "the" account for a channel — the
+ * console invitation email, the health label, diagnostics. Recipient routing
+ * does NOT use this: it weighs every matching sender (resolveSenderChainForRecipient).
+ */
+export function primarySender(channel: SenderChannel): Sender | undefined {
+  registry.init();
+  const configured = loadEnvYaml().routing?.default_sender?.[channel];
+  const pinned = configured ? registry.getSender(configured) : undefined;
+  if (pinned && pinned.config.channel === channel) return pinned;
+  return registry.getAllSenders().find((s) => s.config.channel === channel);
+}
+
+/**
+ * The `provider` label recorded on a dispatch run before any recipient is
+ * routed: the pinned sender id, else the provider when the channel has exactly
+ * one sender, else "multi" (routing picks per recipient — the send log names
+ * the actual sender). Never guesses a provider the deployment does not have.
+ */
+export function dispatchProviderLabel(channel: string, pinnedSenderId?: string): string {
+  if (pinnedSenderId?.trim()) return pinnedSenderId.trim();
+  registry.init();
+  const candidates = registry
+    .getAllSenders()
+    .filter((s) => s.config.channel === String(channel || "email").toLowerCase());
+  if (candidates.length === 0) return "none";
+  const providers = new Set(candidates.map((s) => s.config.provider));
+  return providers.size === 1 ? candidates[0]!.config.provider : "multi";
+}
+
+/**
+ * Boot-time warnings about the email sender setup — each one a send that
+ * would otherwise fail later with an unexplained provider rejection.
+ */
+export function emailSenderWarnings(): string[] {
+  registry.init();
+  const email = registry.getAllSenders().filter((s) => s.config.channel === "email");
+  if (email.length === 0) {
+    return [
+      "No email sender is configured — email dispatches will be refused (no_sender_for_organization). Add one under `senders:` in .env.yaml.",
+    ];
+  }
+  const warnings: string[] = [];
+  for (const s of email) {
+    const from = s.config.from?.trim().toLowerCase() ?? "";
+    // example.com is IANA-reserved: no provider can verify it, so every send is rejected.
+    if (from.endsWith("@example.com") || from.endsWith("@example.com>")) {
+      warnings.push(
+        `Email sender '${s.config.id}' sends as ${s.config.from} — example.com cannot be verified with any provider, so every send will be rejected. Set a verified \`from\` on this sender.`
+      );
+    }
+  }
+  return warnings;
+}
+
 export function senderMatchesOrg(sender: SenderConfig, orgId: string): boolean {
   if (!sender.organizations || sender.organizations.length === 0) {
     return true;

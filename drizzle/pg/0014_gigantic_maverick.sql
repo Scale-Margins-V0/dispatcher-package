@@ -1,4 +1,8 @@
-CREATE TABLE "onsite_activations" (
+-- Onsite activation tables, first shipped on the acme branch as migration 0007.
+-- Renumbered to run after 0013 so databases that already applied 0010-0013
+-- still get them (drizzle skips a migration older than the newest applied one),
+-- and made re-runnable because acme's database already has these tables.
+CREATE TABLE IF NOT EXISTS "onsite_activations" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"touch_id" varchar(36) NOT NULL,
 	"decision_id" varchar(191) NOT NULL,
@@ -24,7 +28,7 @@ CREATE TABLE "onsite_activations" (
 	"created_at" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "onsite_decisions" (
+CREATE TABLE IF NOT EXISTS "onsite_decisions" (
 	"decision_id" varchar(191) PRIMARY KEY NOT NULL,
 	"campaign_id" varchar(191) NOT NULL,
 	"program_id" varchar(191) DEFAULT '' NOT NULL,
@@ -37,7 +41,7 @@ CREATE TABLE "onsite_decisions" (
 	"updated_at" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "onsite_receipts" (
+CREATE TABLE IF NOT EXISTS "onsite_receipts" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"receipt_id" varchar(191) NOT NULL,
 	"activation_id" varchar(36) NOT NULL,
@@ -51,7 +55,7 @@ CREATE TABLE "onsite_receipts" (
 	"received_at" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "onsite_sessions" (
+CREATE TABLE IF NOT EXISTS "onsite_sessions" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"activation_id" varchar(36) NOT NULL,
 	"decision_id" varchar(191) NOT NULL,
@@ -68,15 +72,15 @@ CREATE TABLE "onsite_sessions" (
 	"last_seen_at" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX "onsite_activations_token_uq" ON "onsite_activations" USING btree ("token_hash");--> statement-breakpoint
-CREATE INDEX "onsite_activations_decision_idx" ON "onsite_activations" USING btree ("decision_id");--> statement-breakpoint
-CREATE INDEX "onsite_activations_campaign_idx" ON "onsite_activations" USING btree ("campaign_id");--> statement-breakpoint
-CREATE INDEX "onsite_activations_user_idx" ON "onsite_activations" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "onsite_activations_expires_idx" ON "onsite_activations" USING btree ("expires_at");--> statement-breakpoint
-CREATE INDEX "onsite_decisions_campaign_idx" ON "onsite_decisions" USING btree ("campaign_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "onsite_receipts_receipt_uq" ON "onsite_receipts" USING btree ("receipt_id");--> statement-breakpoint
-CREATE INDEX "onsite_receipts_activation_idx" ON "onsite_receipts" USING btree ("activation_id");--> statement-breakpoint
-CREATE INDEX "onsite_receipts_campaign_received_idx" ON "onsite_receipts" USING btree ("campaign_id","received_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "onsite_sessions_token_uq" ON "onsite_sessions" USING btree ("session_token_hash");--> statement-breakpoint
-CREATE INDEX "onsite_sessions_activation_idx" ON "onsite_sessions" USING btree ("activation_id");--> statement-breakpoint
-CREATE INDEX "onsite_sessions_absolute_idx" ON "onsite_sessions" USING btree ("absolute_expires_at");
+CREATE UNIQUE INDEX IF NOT EXISTS "onsite_activations_token_uq" ON "onsite_activations" USING btree ("token_hash");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "onsite_activations_decision_idx" ON "onsite_activations" USING btree ("decision_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "onsite_activations_campaign_idx" ON "onsite_activations" USING btree ("campaign_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "onsite_activations_user_idx" ON "onsite_activations" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "onsite_activations_expires_idx" ON "onsite_activations" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "onsite_decisions_campaign_idx" ON "onsite_decisions" USING btree ("campaign_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "onsite_receipts_receipt_uq" ON "onsite_receipts" USING btree ("receipt_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "onsite_receipts_activation_idx" ON "onsite_receipts" USING btree ("activation_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "onsite_receipts_campaign_received_idx" ON "onsite_receipts" USING btree ("campaign_id","received_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "onsite_sessions_token_uq" ON "onsite_sessions" USING btree ("session_token_hash");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "onsite_sessions_activation_idx" ON "onsite_sessions" USING btree ("activation_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "onsite_sessions_absolute_idx" ON "onsite_sessions" USING btree ("absolute_expires_at");

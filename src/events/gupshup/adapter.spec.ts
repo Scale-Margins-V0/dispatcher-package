@@ -48,6 +48,29 @@ describe("GupshupInboundAdapter", () => {
     ).toBe(true);
   });
 
+  // Gupshup's own delivery callbacks cannot sign a body; the callback URL
+  // carries the secret as ?token= instead.
+  it("verifySignature accepts the secret as a callback-URL token", () => {
+    const ok = adapter.verifySignature({ rawBody: Buffer.from("[]"), headers: {}, query: { token: secret } });
+    expect(ok).toBe(true);
+  });
+
+  it("verifySignature rejects a wrong, empty, missing or array token", () => {
+    const body = Buffer.from("[]");
+    for (const query of [{ token: "nope" }, { token: "" }, {}, { token: [secret] }, undefined]) {
+      expect(adapter.verifySignature({ rawBody: body, headers: {}, ...(query ? { query } : {}) })).toBe(false);
+    }
+  });
+
+  it("verifySignature: a bad HMAC header does not block a valid token", () => {
+    const ok = adapter.verifySignature({
+      rawBody: Buffer.from("[]"),
+      headers: { "x-gupshup-signature": "deadbeef" },
+      query: { token: secret },
+    });
+    expect(ok).toBe(true);
+  });
+
   it("verifySignature rejects bad HMAC", () => {
     const buf = Buffer.from("{}");
     expect(

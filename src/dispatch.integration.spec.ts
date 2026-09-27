@@ -21,13 +21,6 @@ const { sendMock } = vi.hoisted(() => ({
   sendMock: vi.fn().mockResolvedValue({ success: true, messageId: "m1" }),
 }));
 
-vi.mock("./providers/index.js", () => ({
-  getProvider: () => ({
-    name: "mock",
-    send: sendMock,
-  }),
-}));
-
 vi.mock("./providers/senders.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./providers/senders.js")>();
   return {
@@ -279,7 +272,10 @@ placeholders:
     const grace = byTo.get("grace@example.com")!;
     expect(grace.subject).toBe("US Navy — hello Grace");
     expect(grace.html).toContain("Grace Hopper");
-    expect(grace.html).toContain("+1-555-0102");
+    // An email lookup never fetches the phone number (user-lookup/channel.ts),
+    // so {{phone}} falls back to "" even though the row has one.
+    expect(grace.html).toContain("<small></small>");
+    expect(grace.html).not.toContain("+1-555-0102");
 
     const alan = byTo.get("alan@example.com")!;
     expect(alan.subject).toBe("Bletchley — hello Alan");

@@ -267,6 +267,11 @@ paths:
           URL-encoded at send time.
         * A masked header value (`••••••••`) is rejected on create — there is no
           stored secret to preserve yet. Send the real value.
+        * `source` must appear in `lookup.supported_variable_sources` from
+          `/state`. In network and mock mode there is no SQL connection, so
+          `query` is refused with `400 invalid_request` on
+          `details[].path = "definition.source"`. Read that list rather than
+          hard-coding the rule.
 
         `sample` is ignored for field/computed/constant — the dispatcher renders
         those against a fictional sample record itself. For query/api it is
@@ -341,6 +346,12 @@ paths:
           never read a bearer token can still round-trip its definition. A
           header the caller omits is dropped.
         * `enabled: false` disables resolution while keeping the definition.
+        * A replaced definition is checked against
+          `lookup.supported_variable_sources` the same way a create is, so
+          switching an existing variable to `query` in network mode is refused.
+          Variables already stored as `query` are left alone — switching lookup
+          mode never deletes them; they sit inactive on their fallback until a
+          SQL connection returns.
       tags: [Variables]
       requestBody:
         required: true
@@ -397,6 +408,131 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Unavailable" }
         "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/call-metadata:
+    get:
+      operationId: listCallMetadata
+      summary: List call metadata schemas
+      description: >
+        Named sets of keys an api variable can attach. Each schema carries
+        `used_by` — the api variables attaching it. Not paginated (tens per
+        dispatcher).
+      tags: [Call Metadata]
+      responses:
+        "200":
+          description: Every schema
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [generated_at, call_metadata]
+                properties:
+                  generated_at: { type: string, format: date-time }
+                  call_metadata:
+                    type: array
+                    items: { $ref: "#/components/schemas/CallMetadata" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      operationId: createCallMetadata
+      summary: Create a call metadata schema
+      tags: [Call Metadata]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CallMetadataInput" }
+            example:
+              name: gold_metadata
+              keys:
+                - { key: tenure, placeholder: "24", regex: "^\\d+$" }
+                - { key: age, placeholder: "36" }
+                - { key: limit }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  call_metadata: { $ref: "#/components/schemas/CallMetadata" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/data-plane/call-metadata/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$" }
+    get:
+      operationId: getCallMetadata
+      summary: Get one call metadata schema
+      tags: [Call Metadata]
+      responses:
+        "200":
+          description: The schema
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  call_metadata: { $ref: "#/components/schemas/CallMetadata" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      operationId: updateCallMetadata
+      summary: Rename and/or replace the key list
+      description: >
+        Send `name`, `keys`, or both; `keys` replaces the list whole. Renaming is
+        always safe — api variables reference the schema by id. Removing or
+        renaming a key an api variable's request still uses is **409 conflict**,
+        with one `details[]` entry (path `keys`) per variable and key.
+      tags: [Call Metadata]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                keys:
+                  type: array
+                  items: { $ref: "#/components/schemas/CallMetadataKey" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  call_metadata: { $ref: "#/components/schemas/CallMetadata" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      operationId: deleteCallMetadata
+      summary: Delete a call metadata schema
+      description: Refused with **409 conflict** while any api variable attaches it; the message names them.
+      tags: [Call Metadata]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  name: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /api/v1/data-plane/campaigns:
     get:
@@ -537,6 +673,152 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/campaigns/{programId}/metrics:
+    parameters:
+      - $ref: "#/components/parameters/programId"
+    get:
+      operationId: getCampaignMetrics
+      summary: Performance metrics for one campaign
+      description: |
+        Per-minute rollups of the send path, summed over a fixed window:
+        api / SQL variable calls (rate, errors, timeouts, latency), the user
+        lookup, per-message resolve time (dispatch start → content ready),
+        provider send latency, and end to end (dispatch start → provider
+        accepted). Counts, latencies and variable / provider names only — no
+        user data is stored.
+
+        * Percentiles are estimated from fixed latency histograms
+          (10/25/50/100/250/500ms, 1/2.5/5/10s, above), capped at the observed max.
+        * `timeline` is dense — one point per bucket, zeros included.
+          Bucket size follows the range: 1h→1m, 6h→5m, 24h→15m, 3d→1h, 7d→2h.
+        * Kept for `dispatcher.retention.metrics_days` (default 7).
+        * An unknown program is `has_data: false`, not a 404.
+      tags: [Campaigns]
+      parameters:
+        - name: range
+          in: query
+          required: false
+          schema: { type: string, enum: ["1h", "6h", "24h", "3d", "7d"], default: "24h" }
+        - name: step_id
+          in: query
+          required: false
+          description: One drip step; omitted = the whole program.
+          schema: { type: string, maxLength: 191 }
+      responses:
+        "200":
+          description: The metrics report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [metrics]
+                properties:
+                  metrics: { $ref: "#/components/schemas/CampaignMetrics" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/senders:
+    get:
+      operationId: listSenders
+      summary: The sending accounts this dispatcher loaded, and whether each can send
+      description: |
+        Enabled `senders:` from `.env.yaml`. `credentials` reports whether the
+        sender's OWN credentials resolve (its inline value, or the variable its
+        `*_env` names — never a provider-wide variable). Names only, never a
+        value: `configured` maps `sendgrid.api_key` or the referenced variable
+        name to whether it is set.
+      tags: [Observability]
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema: { type: string, enum: [email, whatsapp] }
+        - name: organization_id
+          in: query
+          required: false
+          schema: { type: string, maxLength: 191 }
+      responses:
+        "200":
+          description: Senders
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generated_at: { type: string, format: date-time }
+                  senders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        channel: { type: string, enum: [email, whatsapp] }
+                        provider: { type: string, enum: [ses, sendgrid, gupshup, freshchat] }
+                        from: { type: string, nullable: true }
+                        weight: { type: number }
+                        enabled: { type: boolean }
+                        organizations: { type: array, items: { type: string } }
+                        breaker_state: { type: string, enum: [closed, open, half-open] }
+                        credentials:
+                          type: object
+                          properties:
+                            ok: { type: boolean }
+                            problem:
+                              type: string
+                              description: "Present when ok is false — names the sender and the field to set, e.g. \"SendGrid sender 'sg' has no API key — sendgrid.api_key_env names SG_KEY, which is not set\""
+                            configured:
+                              type: object
+                              additionalProperties: { type: boolean }
+                            webhook_verification:
+                              type: boolean
+                              description: Inbound webhook verification is configured on this sender (SendGrid key, Gupshup/Freshchat secret, SES configuration set)
+                            notes:
+                              type: array
+                              items: { type: string }
+                              description: Works, with limits — e.g. an API-key-only Gupshup sender cannot send media
+                        status_poller:
+                          type: object
+                          description: Freshchat senders only — the delivery-status poller (freshchat.status_poller)
+                          properties:
+                            enabled: { type: boolean }
+                            interval_seconds: { type: integer, description: "Default 10" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/data-plane/metrics:
+    get:
+      operationId: getOverallMetrics
+      summary: Performance metrics across every campaign
+      description: |
+        The same report as `/campaigns/{programId}/metrics`, summed over all
+        programs, with `campaigns` (top 100 by messages) instead of `steps`,
+        and `program_id: null`.
+      tags: [Campaigns]
+      parameters:
+        - name: range
+          in: query
+          required: false
+          schema: { type: string, enum: ["1h", "6h", "24h", "3d", "7d"], default: "24h" }
+      responses:
+        "200":
+          description: The metrics report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [metrics]
+                properties:
+                  metrics: { $ref: "#/components/schemas/CampaignMetrics" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Unavailable" }
         "500": { $ref: "#/components/responses/Internal" }
@@ -1005,9 +1287,40 @@ components:
 
     StateResponse:
       type: object
-      required: [generated_at, status, dispatch, resolution, catalog, outbox]
+      required: [generated_at, status, lookup, dispatch, resolution, catalog, outbox]
       properties:
         generated_at: { type: string, format: date-time }
+        lookup:
+          type: object
+          required: [mode, backend, supported_variable_sources]
+          description: >
+            How this dispatcher resolves recipients. Read this before offering
+            variable source options in a UI — the write endpoints enforce
+            exactly the list below and return 422 for anything else.
+          properties:
+            mode:
+              type: string
+              enum: [database, network, mock]
+              description: >
+                database — a SQL connection to the customer database.
+                network — an HTTPS lookup endpoint the client hosts.
+                mock — nothing configured; fabricated recipients, mails nobody real.
+            backend:
+              type: string
+              enum: [mysql, postgres, sqlite]
+              nullable: true
+              description: The SQL dialect in database mode; null in network and mock mode
+            supported_variable_sources:
+              type: array
+              description: >
+                Variable sources this dispatcher can actually resolve. `query`
+                runs SQL, so it is absent unless mode is database. Read the list
+                rather than hard-coding the rule — a new source type then needs
+                no UI change.
+              items:
+                type: string
+                enum: [field, computed, constant, query, api]
+              example: [field, computed, constant, api]
         status:
           type: object
           required: [state, checks]
@@ -1180,6 +1493,20 @@ components:
           type: string
           maxLength: 2000
           description: Must start with http:// or https://; {{tokens}} interpolated URL-encoded at send time
+        query:
+          type: array
+          maxItems: 50
+          description: >
+            Appended to `url` in order (duplicates allowed). Values take {{tokens}}
+            and are URL-encoded. A value whose name looks like a credential
+            (key, token, secret, password, auth, signature) is MASKED as
+            •••••••• in every response, like a header; send the mask back to keep it.
+          items:
+            type: object
+            required: [key, value]
+            properties:
+              key: { type: string, minLength: 1, maxLength: 200 }
+              value: { type: string, maxLength: 2000 }
         headers:
           type: object
           additionalProperties:
@@ -1190,11 +1517,60 @@ components:
           type: string
           maxLength: 200
           default: ""
-          description: Dotted path into the JSON response; empty means whole body
+          description: >
+            What `{{name}}` on its own renders — a dotted path to a single value
+            in the JSON response. Must not point at an object (refused). Empty
+            means `{{name}}` is not offered as a placeholder; it would be the
+            whole response. `{{name.a.b}}` always reads from the response root.
         body:
           type: string
           maxLength: 8000
-          description: POST only
+          description: >
+            POST only. JSON unless a Content-Type header says otherwise; must be
+            valid JSON with {{tokens}} inside quotes. Recipient values are
+            JSON-escaped when inserted.
+        response_schema:
+          type: array
+          maxItems: 200
+          description: >
+            The response paths templates can use, as `{{name.<path>}}` —
+            `{{user_info.info.address.pincode}}`, `{{user_info.orders.0.id}}`.
+            Single values only: objects and arrays are never placeholders, and
+            at send time a path holding one renders the fallback, never JSON.
+            For discovery and autocomplete, not a gate: a path a template uses
+            resolves even if it is not listed. A missing value renders the fallback.
+          items:
+            type: object
+            required: [path, type]
+            properties:
+              path:
+                type: string
+                description: Dot-separated keys (letters, digits, _) or array indexes; at most 8 deep; cannot start with an index
+              type: { type: string, enum: [string, number, boolean, "null"], description: '"null" = the sample had null there; real type unknown' }
+              example: { type: string, maxLength: 200, description: Short example, when derived from a sample }
+        metadata:
+          type: object
+          nullable: true
+          description: >
+            One call metadata schema. Its keys become `{{key.k}}` (the key's
+            name) and `{{key.v}}` (its value — supplied per send; empty until
+            that is wired) in the URL, query names/values, header names/values
+            and body. Every `{{key.k|v}}` used must be a key of this schema, and
+            using one with no schema attached is refused.
+          required: [id]
+          properties:
+            id: { type: string }
+            required: { type: boolean, default: true, description: Stored; enforced once values are wired }
+            name: { type: string, nullable: true, readOnly: true, description: The schema's current name }
+        response_sample:
+          type: string
+          writeOnly: true
+          maxLength: 262144
+          description: >
+            Write-only. One sample JSON object; its single-value paths, types and
+            short examples are merged into `response_schema` (listed entries win
+            on the same path) and the sample itself is discarded, never stored.
+            Objects and arrays in it are walked through, not listed.
         timeout_ms:
           type: integer
           minimum: 100
@@ -1225,6 +1601,186 @@ components:
           query: "#/components/schemas/QueryDefinition"
           api: "#/components/schemas/ApiDefinition"
 
+    CallMetadataKey:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          maxLength: 64
+          pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+          description: >
+            Unique within the schema; `field` is reserved. An api variable
+            attaching the schema uses it as `{{key.k}}` (the key's name) and
+            `{{key.v}}` (its value) anywhere in its request.
+        placeholder:
+          type: string
+          maxLength: 500
+          description: A sample value shown in the UI — never sent. Must match `regex` when both are set.
+        regex:
+          type: string
+          maxLength: 500
+          description: Validates the value once values are supplied per send. Must compile.
+
+    CallMetadataInput:
+      type: object
+      required: [name, keys]
+      properties:
+        name: { type: string, maxLength: 191, pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$" }
+        keys:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: "#/components/schemas/CallMetadataKey" }
+
+    MetricStat:
+      type: object
+      properties:
+        count: { type: integer, description: "Calls / messages / runs, by kind" }
+        ok: { type: integer }
+        failed: { type: integer }
+        timeout: { type: integer }
+        skipped: { type: integer, description: "api/query: recipients whose call was skipped (required call metadata missing); lookup: ids not found" }
+        fallback: { type: integer, description: "Recipients / messages that got a fallback value" }
+        items: { type: integer, description: "api/query: recipients served; lookup: ids asked; dispatch: recipients" }
+        error_rate: { type: number, nullable: true, description: "(failed + timeout) / count" }
+        avg_ms: { type: integer, nullable: true }
+        p50_ms: { type: integer, nullable: true }
+        p95_ms: { type: integer, nullable: true }
+        p99_ms: { type: integer, nullable: true }
+        min_ms: { type: integer, nullable: true }
+        max_ms: { type: integer, nullable: true }
+        peak_per_sec: { type: integer, description: Busiest single second }
+        per_minute_avg: { type: number, nullable: true, description: Mean per minute over active buckets }
+        per_minute_peak: { type: number, nullable: true, description: Busiest bucket, per minute }
+
+    CampaignMetrics:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time }
+        program_id: { type: string, nullable: true, description: null in the overall view }
+        window:
+          type: object
+          properties:
+            range: { type: string }
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            resolution_minutes: { type: integer }
+        retention_days: { type: integer }
+        has_data: { type: boolean }
+        totals:
+          type: object
+          description: One MetricStat per kind
+          properties:
+            dispatch: { $ref: "#/components/schemas/MetricStat" }
+            lookup: { $ref: "#/components/schemas/MetricStat" }
+            api_call: { $ref: "#/components/schemas/MetricStat" }
+            query_var: { $ref: "#/components/schemas/MetricStat" }
+            message_resolve: { $ref: "#/components/schemas/MetricStat" }
+            provider_send: { $ref: "#/components/schemas/MetricStat" }
+            message_e2e: { $ref: "#/components/schemas/MetricStat" }
+        timeline:
+          type: array
+          description: >-
+            One point per bucket: `t` plus, for each of resolve / send / e2e /
+            api / query / lookup, `<p>_count`, `<p>_ok`, `<p>_failed`,
+            `<p>_avg_ms`, `<p>_p95_ms`; and `api_timeout`, `api_peak_per_sec`,
+            `fallbacks`.
+          items: { type: object, additionalProperties: true }
+        variables:
+          type: array
+          description: Top 100 api / query variables by calls; the top 10 carry a `series`.
+          items:
+            allOf:
+              - $ref: "#/components/schemas/MetricStat"
+              - type: object
+                properties:
+                  name: { type: string }
+                  source: { type: string, enum: [api, query] }
+                  fallback_rate: { type: number, nullable: true }
+                  series:
+                    type: array
+                    nullable: true
+                    items:
+                      type: object
+                      properties:
+                        t: { type: string, format: date-time }
+                        calls: { type: integer }
+                        failed: { type: integer }
+                        avg_ms: { type: integer, nullable: true }
+                        p95_ms: { type: integer, nullable: true }
+        providers:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/MetricStat"
+              - type: object
+                properties: { name: { type: string } }
+        lookup_modes:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/MetricStat"
+              - type: object
+                properties: { name: { type: string, description: database / network / mock } }
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              step_id: { type: string, nullable: true }
+              messages: { type: integer }
+              resolve_failed: { type: integer }
+              sent: { type: integer }
+              send_failed: { type: integer }
+              e2e_p50_ms: { type: integer, nullable: true }
+              e2e_p95_ms: { type: integer, nullable: true }
+              api_calls: { type: integer }
+              api_error_rate: { type: number, nullable: true }
+              resolve_p95_ms: { type: integer, nullable: true }
+              api_p95_ms: { type: integer, nullable: true }
+              fallback_rate: { type: number, nullable: true }
+        campaigns:
+          type: array
+          description: Overall view only — per program, busiest first (top 100). Empty for one campaign.
+          items:
+            type: object
+            properties:
+              program_id: { type: string }
+              messages: { type: integer }
+              resolve_failed: { type: integer }
+              resolve_p95_ms: { type: integer, nullable: true }
+              sent: { type: integer }
+              send_failed: { type: integer }
+              e2e_p50_ms: { type: integer, nullable: true }
+              e2e_p95_ms: { type: integer, nullable: true }
+              api_calls: { type: integer }
+              api_error_rate: { type: number, nullable: true }
+              api_p95_ms: { type: integer, nullable: true }
+              fallback_rate: { type: number, nullable: true }
+
+    CallMetadata:
+      allOf:
+        - $ref: "#/components/schemas/CallMetadataInput"
+        - type: object
+          properties:
+            id: { type: string, description: What api variables reference — stable across renames }
+            used_by:
+              type: array
+              items: { type: string }
+              description: Api variables attaching this schema
+            required_keys:
+              type: array
+              items: { type: string }
+              description: >-
+                Keys used as `{{key.v}}` by a variable attaching this schema as
+                required. A dispatch missing one (or sending a value that fails
+                the key's regex) skips that variable's API call and renders its
+                fallback.
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+            updated_by: { type: string, nullable: true }
+
     Variable:
       type: object
       required:
@@ -1246,6 +1802,20 @@ components:
           $ref: "#/components/schemas/VariableSource"
         definition:
           $ref: "#/components/schemas/VariableDefinition"
+        placeholders:
+          type: array
+          items: { type: string }
+          description: >
+            Every token a template can use for this variable — always a single
+            value. For an api variable: `name` only when `json_path` is set,
+            plus `name.<path>` for each `response_schema` path.
+        system:
+          type: boolean
+          description: Defined in dispatcher code — never editable or deletable; no timestamps
+        description:
+          type: string
+          nullable: true
+          description: One line, system variables only
         fallback:
           type: string
           nullable: true
@@ -1257,12 +1827,12 @@ components:
         enabled:
           type: boolean
           description: A disabled variable keeps its definition but stops resolving
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time, nullable: true, description: null for system variables }
+        updated_at: { type: string, format: date-time, nullable: true, description: null for system variables }
         updated_by:
           type: string
           nullable: true
-          description: '"atlas:" plus the first 8 characters of the key that wrote it'
+          description: '"atlas:" plus the first 8 characters of the key that wrote it; "system" for system variables'
 
     CreateVariableRequest:
       type: object

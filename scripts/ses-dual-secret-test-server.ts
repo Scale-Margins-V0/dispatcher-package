@@ -26,7 +26,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadRepoDotEnv } from "../src/load-repo-dotenv.js";
+import { hydrateEnvFromYaml } from "../src/config/hydrate.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..");
@@ -70,7 +70,7 @@ async function postSignedDispatch(
   });
 }
 
-loadRepoDotEnv(repoRoot);
+hydrateEnvFromYaml();
 
 const recipientsRaw = process.env.EVENT_TEST_RECIPIENTS?.trim();
 if (!recipientsRaw) {

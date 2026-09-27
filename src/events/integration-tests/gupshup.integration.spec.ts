@@ -156,6 +156,30 @@ describe("POST /api/scalemargin/gupshup-events (integration)", () => {
     expect(res.body.receipts).toBe(1);
   });
 
+  // Gupshup's own delivery callbacks cannot sign; the secret rides in the URL.
+  it("accepts the secret as ?token= on the callback URL, and 401s a wrong one", async () => {
+    const raw = JSON.stringify([
+      { channel: "WHATSAPP", externalId: "ext-token-1", eventType: "READ", eventTs: 1782450922000, extra: "smsign_88354b906ff911f19f5183d05b01c0e1" },
+    ]);
+    const ok = await request(app)
+      .post(`/api/scalemargin/gupshup-events?token=${encodeURIComponent(secret)}`)
+      .set("Content-Type", "application/json")
+      .send(raw);
+    expect(ok.status).toBe(200);
+
+    const bad = await request(app)
+      .post("/api/scalemargin/gupshup-events?token=wrong")
+      .set("Content-Type", "application/json")
+      .send(raw);
+    expect(bad.status).toBe(401);
+
+    const none = await request(app)
+      .post("/api/scalemargin/gupshup-events")
+      .set("Content-Type", "application/json")
+      .send(raw);
+    expect(none.status).toBe(401);
+  });
+
   it("rejects a GatewayAPI receipt whose extra is missing or not smsign_", async () => {
     clearCapturedLogs();
     {

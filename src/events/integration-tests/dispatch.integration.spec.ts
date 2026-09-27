@@ -24,13 +24,6 @@ const sendMock = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ success: true, messageId: "sg-msg-e2e" })
 );
 
-vi.mock("../../providers/index.js", () => ({
-  getProvider: () => ({
-    name: "sendgrid",
-    send: sendMock,
-  }),
-}));
-
 vi.mock("../../providers/senders.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../providers/senders.js")>();
   return {

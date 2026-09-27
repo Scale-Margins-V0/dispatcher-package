@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   evaluateComputedExpression,
   personalize,
+  resolvableTokens,
 } from "./personalize.js";
 import type { UserRecord } from "./user-lookup/types.js";
 import {
@@ -182,5 +183,49 @@ describe("personalize", () => {
       fields: { job_title: "VP Eng" },
     };
     expect(personalize("Role: {{job_title}}", u)).toBe("Role: VP Eng");
+  });
+});
+
+describe("nested api tokens", () => {
+  const u = { user_id: "u1", email: "a@x.com", fields: {} };
+  const withApiVar = () =>
+    setDispatchConfigForTests({
+      user_lookup: { backend: "mock", fields: {} },
+      placeholders: {
+        user_info: {
+          source: "api",
+          api: { method: "GET", url: "https://x.example", json_path: "" },
+          fallback: "friend",
+        },
+        first_name: { source: "field", field: "first_name", fallback: "there" },
+      },
+    } as never);
+
+  it("renders a resolved nested path", () => {
+    withApiVar();
+    expect(
+      personalize("Hi {{user_info.info.firstname}} ({{user_info.info.address.pincode}})", u, undefined, {
+        "user_info.info.firstname": "Ada",
+        "user_info.info.address.pincode": "560001",
+      })
+    ).toBe("Hi Ada (560001)");
+  });
+
+  it("renders the fallback for a path nobody resolved — never the raw token", () => {
+    withApiVar();
+    expect(personalize("Hi {{user_info.info.firstname}}", u)).toBe("Hi friend");
+  });
+
+  it("leaves a dotted token alone when the name is not an api variable", () => {
+    withApiVar();
+    expect(personalize("{{first_name.x}} {{unknown.y}}", u)).toBe("{{first_name.x}} {{unknown.y}}");
+  });
+
+  it("counts a nested api token as used, but not a dotted non-api one", () => {
+    withApiVar();
+    expect(resolvableTokens(["{{user_info.info.firstname}} {{first_name.x}} {{first_name}}"]).sort()).toEqual([
+      "first_name",
+      "user_info.info.firstname",
+    ]);
   });
 });

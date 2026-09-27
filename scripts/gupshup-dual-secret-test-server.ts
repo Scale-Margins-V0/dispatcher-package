@@ -35,7 +35,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadRepoDotEnv } from "../src/load-repo-dotenv.js";
+import { hydrateEnvFromYaml } from "../src/config/hydrate.js";
 import {
   buildWhatsAppMediaMessageForUser,
   buildWhatsAppMessageForUser,
@@ -73,7 +73,7 @@ async function waitForServerHealth(portNum: number, timeoutMs: number): Promise<
   throw new Error(`${base}/health did not return OK within ${timeoutMs}ms`);
 }
 
-loadRepoDotEnv(repoRoot);
+hydrateEnvFromYaml();
 
 const recipientsRaw = process.env.GUPSHUP_EVENT_TEST_RECIPIENTS?.trim();
 if (!recipientsRaw) {

@@ -9,6 +9,11 @@ import { isDbInitialized } from "../db/client.js";
 import { listVariables } from "../db/repos/variables.js";
 import { rowToPlaceholderEntry } from "./mapping.js";
 import type { PlaceholderEntry } from "../user-lookup/config.js";
+import { componentLogger } from "../logging/logger.js";
+import { inactiveSources } from "./guard.js";
+import { isSystemVariable } from "./system.js";
+
+const log = componentLogger("variables");
 
 const TTL_MS = 30_000;
 
@@ -23,11 +28,35 @@ export function getPlaceholderSnapshot(): Record<string, PlaceholderEntry> | nul
 export async function refreshPlaceholders(): Promise<void> {
   if (!isDbInitialized()) return;
   const rows = await listVariables();
+  const inactive = new Set(inactiveSources());
   const next: Record<string, PlaceholderEntry> = {};
+  let skipped = 0;
+
   for (const row of rows) {
     if (!row.enabled) continue;
+    // A row seeded under a system name by an older version: the code-defined
+    // system variable wins (see system.ts), so the row is inert.
+    if (isSystemVariable(row.name)) continue;
+    // Retained in the table, just not resolvable here — switching back to a
+    // database lookup restores them untouched. Registered as its fallback, not
+    // dropped: an unregistered name leaves a raw `{{name}}` in the message.
+    if (inactive.has(row.source as PlaceholderEntry["source"])) {
+      skipped += 1;
+      next[row.name] = { source: "constant", value: row.fallback ?? "" };
+      continue;
+    }
     next[row.name] = rowToPlaceholderEntry(row);
   }
+
+  // One aggregated line, not one per variable: a campaign with fifty of these
+  // should not produce fifty warnings.
+  if (skipped > 0) {
+    log.warn(
+      { count: skipped, sources: [...inactive], error_category: "unsupported_variable_source" },
+      `${skipped} variable(s) need your customer database and are inactive in this lookup mode — their fallbacks are used`
+    );
+  }
+
   snapshot = next;
   loadedAt = Date.now();
 }

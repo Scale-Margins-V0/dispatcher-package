@@ -13,6 +13,8 @@ import { backfillCampaignSummariesOnce } from "./campaign-summary-backfill.js";
 import { createDispatcherDb, isDbInitialized, getDb, setDbSingleton, type DispatcherDb } from "./client.js";
 import { runDispatcherMigrations } from "./migrate.js";
 import { startRetentionJob } from "./retention.js";
+import { startMetricsFlush } from "../metrics/collector.js";
+import { startFreshchatStatusPoller } from "../events/freshchat/status-poller.js";
 
 export async function initDispatcherDb(): Promise<DispatcherDb> {
   if (isDbInitialized()) return getDb();
@@ -28,5 +30,7 @@ export async function initDispatcherDb(): Promise<DispatcherDb> {
   await warmCampaignCallbackCache();
   await refreshLogWebhookConfig();
   startRetentionJob();
+  startMetricsFlush();
+  startFreshchatStatusPoller();
   return dbx;
 }

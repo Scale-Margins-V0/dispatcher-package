@@ -15,20 +15,41 @@ import {
   type IdType,
 } from "../mapper.js";
 import {
+  buildColumnProbeQuery,
   buildSelectUsersQuery,
   sqlChunkSize,
   type SqlDialect,
 } from "../sql-build.js";
+import { CONTACT_FIELD_NAMES, fieldsForChannel, type LookupChannel } from "../channel.js";
+import { referencedFieldNames } from "../field-refs.js";
+import { getPlaceholderRegistry } from "../config.js";
+import { validateSafeIdentifier } from "../mapper.js";
 import type { UserLookupAdapter, UserRecord } from "../types.js";
+import { resolveConnection, type ResolvedConnection } from "../connection.js";
 
 const log = componentLogger("user-lookup.sql");
+
+/** Columns change when someone alters the view, not per send. */
+const COLUMNS_TTL_MS = 5 * 60 * 1000;
 
 export class SqlAdapter implements UserLookupAdapter {
   private mysqlPool: MysqlPool | null = null;
   private pgPool: PgPool | null = null;
   private sqliteDb: Database.Database | null = null;
+  private resolved: ResolvedConnection | null = null;
+  private columnsCache: { at: number; columns: string[] } | null = null;
+  private warnedMissing = new Set<string>();
 
   constructor(private readonly cfg: DispatchConfig) {}
+
+  /**
+   * `.env.yaml` `user_lookup.connection` when present, else `DB_*`. Resolved
+   * once per adapter so the two precedence paths cannot diverge between pools.
+   */
+  private get connection(): ResolvedConnection {
+    this.resolved ??= resolveConnection(this.dialect, this.cfg.user_lookup.connection);
+    return this.resolved;
+  }
 
   private get dialect(): SqlDialect {
     const b = this.cfg.user_lookup.backend;
@@ -38,14 +59,13 @@ export class SqlAdapter implements UserLookupAdapter {
 
   private getMysqlPool(): MysqlPool {
     if (!this.mysqlPool) {
+      const { host, port, user, password, database } = this.connection;
       this.mysqlPool = createPool({
-        host: process.env.DB_HOST || "localhost",
-        port: parseInt(process.env.DB_PORT || "3306", 10),
-        user: process.env.DB_USER || "root",
-        password:
-          process.env.DB_PASSWORD ??
-          (process.env.DB_ALLOW_EMPTY_PASSWORD === "true" ? "" : ""),
-        database: process.env.DB_NAME || "mysql",
+        host,
+        port,
+        user,
+        password,
+        database,
         waitForConnections: true,
         connectionLimit: 10,
       });
@@ -55,18 +75,14 @@ export class SqlAdapter implements UserLookupAdapter {
 
   private getPgPool(): PgPool {
     if (!this.pgPool) {
+      const { host, port, user, password, database, ssl } = this.connection;
       this.pgPool = new PgPool({
-        host: process.env.DB_HOST || "localhost",
-        port: parseInt(process.env.DB_PORT || "5432", 10),
-        user: process.env.DB_USER || "postgres",
-        password:
-          process.env.DB_PASSWORD ??
-          (process.env.DB_ALLOW_EMPTY_PASSWORD === "true" ? "" : ""),
-        database: process.env.DB_NAME || "postgres",
-        ssl:
-          process.env.DB_SSL === "true" || process.env.DB_SSL === "1"
-            ? { rejectUnauthorized: false }
-            : undefined,
+        host,
+        port,
+        user,
+        password,
+        database,
+        ssl: ssl ? { rejectUnauthorized: false } : undefined,
       });
     }
     return this.pgPool;
@@ -74,8 +90,7 @@ export class SqlAdapter implements UserLookupAdapter {
 
   private getSqliteDb(): Database.Database {
     if (!this.sqliteDb) {
-      const file = getSqliteFile(this.cfg);
-      this.sqliteDb = new Database(file);
+      this.sqliteDb = new Database(getSqliteFile(this.cfg));
     }
     return this.sqliteDb;
   }
@@ -101,6 +116,59 @@ export class SqlAdapter implements UserLookupAdapter {
     const pool = this.getPgPool();
     const res = await pool.query(text, values);
     return res.rows as Record<string, unknown>[];
+  }
+
+  /** Every column of the source view, as the database reports it. Cached briefly. */
+  async listSourceColumns(): Promise<string[]> {
+    if (this.columnsCache && Date.now() - this.columnsCache.at < COLUMNS_TTL_MS) {
+      return this.columnsCache.columns;
+    }
+    const src = this.cfg.user_lookup.source;
+    if (!src) throw new Error("user_lookup.source is required for SQL backends");
+    const text = buildColumnProbeQuery(this.dialect, src.name);
+    let columns: string[];
+    if (this.dialect === "sqlite") {
+      columns = this.getSqliteDb().prepare(text).columns().map((c) => c.name);
+    } else if (this.dialect === "mysql") {
+      const [, fields] = await this.getMysqlPool().query(text);
+      columns = (fields as Array<{ name: string }>).map((f) => f.name);
+    } else {
+      columns = (await this.getPgPool().query(text)).fields.map((f) => f.name);
+    }
+    this.columnsCache = { at: Date.now(), columns };
+    return columns;
+  }
+
+  /**
+   * The extra columns enabled variables read, as logical name → column.
+   *
+   * A name the view does not have is skipped with one warning, never selected:
+   * one unknown column would fail the whole query and resolve nobody. A
+   * leftover non-contact key in `fields:` still aliases a name to a column, so
+   * a variable written against the old mapping keeps working.
+   */
+  private async variableColumns(): Promise<Record<string, string>> {
+    const ul = this.cfg.user_lookup;
+    const refs = referencedFieldNames(getPlaceholderRegistry()).filter(
+      (name) => !CONTACT_FIELD_NAMES.has(name)
+    );
+    if (refs.length === 0) return {};
+
+    const available = new Set(await this.listSourceColumns());
+    const out: Record<string, string> = {};
+    for (const name of refs) {
+      const column = ul.fields[name] ?? name;
+      if (validateSafeIdentifier(column) && available.has(column)) {
+        out[name] = column;
+      } else if (!this.warnedMissing.has(column)) {
+        this.warnedMissing.add(column);
+        log.warn(
+          { column, source: ul.source?.name, error_category: "unknown_column" },
+          `A variable reads column "${column}", which ${ul.source?.name} does not have — its fallback is used`
+        );
+      }
+    }
+    return out;
   }
 
   /**
@@ -139,7 +207,10 @@ export class SqlAdapter implements UserLookupAdapter {
     return v === null || v === undefined ? null : String(v);
   }
 
-  async lookupUsers(userIds: string[]): Promise<Map<string, UserRecord>> {
+  async lookupUsers(
+    userIds: string[],
+    channel: LookupChannel = "email"
+  ): Promise<Map<string, UserRecord>> {
     const out = new Map<string, UserRecord>();
     if (userIds.length === 0) return out;
 
@@ -149,7 +220,11 @@ export class SqlAdapter implements UserLookupAdapter {
       throw new Error("user_lookup.source is required for SQL backends");
     }
 
-    const fieldMap = ul.fields;
+    // Contact field for this channel, plus only the columns variables read.
+    const fieldMap = {
+      ...(await this.variableColumns()),
+      ...fieldsForChannel(ul.fields, channel),
+    };
     const idType = getIdType(this.cfg);
     const dedupe = ul.batch?.dedupe !== false;
     const maxQ = ul.batch?.max_ids_per_query ?? 1000;
@@ -199,7 +274,7 @@ export class SqlAdapter implements UserLookupAdapter {
     for (const [wire, coerced] of wireToCoerced) {
       const row = byCoerced.get(coerced);
       if (!row) continue;
-      const u = mapSqlRowToUserRecord(wire, row, src.id_column, fieldMap, idType);
+      const u = mapSqlRowToUserRecord(wire, row, src.id_column, fieldMap, idType, channel);
       if (u) out.set(wire, u);
     }
 

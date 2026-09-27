@@ -77,4 +77,4 @@ Core pieces (`scrubber`, `forwarder`, `buffer`, `types`) stay unchanged if corre
 ## Related
 
 - **PII**: `docs/pii-guarantees.md`
-- **Config**: `config/events.example.yaml`, `.env.example`
+- **Config**: `config/events.example.yaml`, and the `events:` block of `.env.yaml.example`

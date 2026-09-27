@@ -15,6 +15,11 @@
 import { z } from "zod";
 import { validateComputedExpression } from "../../../personalize.js";
 import { HEADER_MASK } from "../../../variables/redaction.js";
+import {
+  apiExtrasShape,
+  checkApiConfig,
+  finalizeApiConfig,
+} from "../../../variables/api-config-schema.js";
 
 /**
  * A placeholder name is whatever the operator types between `{{ }}`: no
@@ -103,11 +108,19 @@ export const ZApiConfigSchema = z.object({
   headers: z
     .record(z.string(), z.string().max(4000))
     .refine(
-      (headers) => Object.keys(headers).every((key) => /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(key)),
-      "Header names may only contain HTTP token characters"
+      // Checked as it will be sent: a {{token}} (e.g. `X-{{tenure.k}}`) becomes
+      // an identifier, which is a valid header-name character run.
+      (headers) =>
+        Object.keys(headers).every((key) =>
+          /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(key.replace(/\{\{\s*[a-zA-Z_][a-zA-Z0-9_.]*\s*\}\}/g, "x"))
+        ),
+      "Header names may only contain HTTP token characters (and {{tokens}})"
     )
     .optional(),
-  /** Dotted path into the JSON response; empty means "use the whole body". */
+  /**
+   * What `{{name}}` alone renders: a dotted path into the JSON response; empty
+   * means the whole body. `{{name.a.b}}` reads from the response root regardless.
+   */
   json_path: z
     .string()
     .trim()
@@ -120,12 +133,13 @@ export const ZApiConfigSchema = z.object({
     .min(100, "Timeout must be at least 100ms")
     .max(30_000, "Timeout cannot exceed 30000ms")
     .optional(),
+  ...apiExtrasShape,
 });
 
 /** `api` — an HTTP call to a service the client already runs. */
 export const ZApiDefinitionSchema = z.object({
   source: z.literal("api"),
-  api: ZApiConfigSchema,
+  api: ZApiConfigSchema.superRefine(checkApiConfig).transform(finalizeApiConfig),
 });
 
 export const ZVariableDefinitionSchema = z.discriminatedUnion(
@@ -223,6 +237,11 @@ export const ZListVariablesQuerySchema = z.object({
   source: z.enum(["field", "computed", "constant", "query", "api"]).optional(),
   /** `?enabled=true` / `?enabled=false`; omitted returns both. */
   enabled: z
+    .enum(["true", "false"])
+    .transform((value) => value === "true")
+    .optional(),
+  /** `?system=true` for system variables only, `false` for user ones; omitted returns both. */
+  system: z
     .enum(["true", "false"])
     .transform((value) => value === "true")
     .optional(),
@@ -359,3 +378,18 @@ export type ZLogIdParam = z.infer<typeof ZLogIdParamSchema>;
 
 /** Re-exported so the controller and the docs quote one mask, not two. */
 export { HEADER_MASK };
+
+/*
+ * Campaign metrics
+ */
+
+export const ZCampaignMetricsQuerySchema = z.object({
+  /** Fixed windows only — each maps to a bucket size that keeps the response small. */
+  range: z.enum(["1h", "6h", "24h", "3d", "7d"]).default("24h"),
+  /** One drip step; omitted = the whole program. */
+  step_id: z.string().trim().min(1).max(191).optional(),
+});
+
+export type ZCampaignMetricsQuery = z.infer<typeof ZCampaignMetricsQuerySchema>;
+
+export const ZOverallMetricsQuerySchema = ZCampaignMetricsQuerySchema.pick({ range: true });

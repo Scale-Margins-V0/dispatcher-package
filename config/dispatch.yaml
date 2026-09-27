@@ -30,7 +30,7 @@ placeholders:
   email: { source: field, field: email, fallback: "" }
   # Requires personalize(..., { campaign_id, organization_id }) — dispatch passes them.
   # env.UNSUBSCRIBE_URL_BASE / env.PREFERENCES_URL_BASE derive from UNSUBSCRIBE_URL_BASE
-  # host + /api/unsubscribe / /api/preferences (see .env.example).
+  # host + /api/unsubscribe / /api/preferences (see .env.yaml.example).
   unsubscribe_url:
     {
       source: computed,

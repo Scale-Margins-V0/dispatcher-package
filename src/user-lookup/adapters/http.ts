@@ -12,6 +12,7 @@ import {
   mapHttpRecordToUserRecord,
   pickByPath,
 } from "../mapper.js";
+import { fieldsForChannel, type LookupChannel } from "../channel.js";
 import type { UserLookupAdapter, UserRecord } from "../types.js";
 
 const log = componentLogger("user-lookup.http");
@@ -39,7 +40,10 @@ function authHeaders(
 export class HttpAdapter implements UserLookupAdapter {
   constructor(private readonly cfg: DispatchConfig) {}
 
-  async lookupUsers(userIds: string[]): Promise<Map<string, UserRecord>> {
+  async lookupUsers(
+    userIds: string[],
+    channel: LookupChannel = "email"
+  ): Promise<Map<string, UserRecord>> {
     const out = new Map<string, UserRecord>();
     if (userIds.length === 0) return out;
 
@@ -49,7 +53,7 @@ export class HttpAdapter implements UserLookupAdapter {
       throw new Error("user_lookup.http is required for http backend");
     }
 
-    const fieldMap = ul.fields;
+    const fieldMap = fieldsForChannel(ul.fields, channel);
     const idType = getIdType(this.cfg);
     const dedupe = ul.batch?.dedupe !== false;
     const maxQ = ul.batch?.max_ids_per_query ?? 1000;
@@ -151,7 +155,8 @@ export class HttpAdapter implements UserLookupAdapter {
         rec,
         httpCfg.response.id_field,
         fieldMap,
-        idType
+        idType,
+        channel
       );
       if (u) out.set(wire, u);
       else if (process.env.VITEST !== "true") {

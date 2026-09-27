@@ -2,7 +2,7 @@
  * Idempotent seed: DROP/CREATE users + insert fixtures.
  * Usage: pnpm run seed:sqlite | seed:mysql | seed:postgres
  *
- * Connection env mirrors the dispatch handler (see .env.example).
+ * Connection env mirrors the dispatch handler (see .env.yaml.example).
  */
 
 import Database from "better-sqlite3";
@@ -11,10 +11,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPool } from "mysql2/promise";
 import { Pool } from "pg";
-import { loadRepoDotEnv } from "../../src/load-repo-dotenv.js";
+import { hydrateEnvFromYaml } from "../../src/config/hydrate.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-loadRepoDotEnv(join(__dirname, "..", ".."));
+hydrateEnvFromYaml();
 
 type FixtureRow = {
   user_id: string;

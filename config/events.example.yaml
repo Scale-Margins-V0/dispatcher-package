@@ -28,7 +28,7 @@ events:
     # Inbound POST /api/scalemargin/ses-notifications — SNS envelope; correlation via message tags
     ses:
       enabled: true
-      # Outbound: SES message tags + configuration set (see SES_EVENT_CONFIG_SET in .env.example)
+      # Outbound: SES message tags + configuration set (see ses.configuration_set on the sender in .env.yaml.example)
       configuration_set_env: SES_EVENT_CONFIG_SET
 
     # Inbound POST /api/scalemargin/gupshup-events — HMAC; WhatsApp outbound not in v1

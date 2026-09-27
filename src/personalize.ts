@@ -84,6 +84,19 @@ function resolveEnvVar(name: string): string {
   return process.env[name]?.trim() ?? "";
 }
 
+/** Names an expression reads from the lookup record — not the context tokens, env or literals. */
+const EXPR_CONTEXT_TOKENS = new Set(["user_id", "campaign_id", "organization_id", "email"]);
+
+/**
+ * The record fields a computed expression reads, by the same split the
+ * evaluator uses — so the lookup can fetch exactly those columns.
+ */
+export function computedFieldRefs(expr: string): string[] {
+  return splitTopLevelPlus(expr)
+    .map((part) => part.trim())
+    .filter((p) => IDENT.test(p) && !EXPR_CONTEXT_TOKENS.has(p));
+}
+
 /**
  * Safe placeholder expression: string concat, `user_id`, `email`, `env.NAME`, field names, 'literals'.
  */
@@ -244,12 +257,16 @@ function resolvePlaceholder(
 }
 
 /**
- * Matches exactly what personalize() substitutes — `{{name}}`, no inner spaces.
- * Deliberately stricter than the resolver's SQL/URL token regex, which tolerates
- * whitespace and dots; a template token that personalize would not replace must
- * not be counted as one that did.
+ * Matches exactly what personalize() substitutes — `{{name}}` or, for an api
+ * variable, `{{name.path.to.value}}`; no inner spaces. Deliberately stricter
+ * than the resolver's SQL/URL token regex, which tolerates whitespace; a
+ * template token that personalize would not replace must not be counted as one
+ * that did.
  */
-const CONTENT_TOKEN_RE = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g;
+const CONTENT_TOKEN_RE = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)((?:\.[A-Za-z0-9_]+)*)\}\}/g;
+
+/** `{{name.a.b}}` — the only kind that survives to the leftover sweep. */
+const NESTED_CONTENT_TOKEN_RE = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)((?:\.[A-Za-z0-9_]+)+)\}\}/g;
 
 /**
  * The registry entries a message actually references.
@@ -266,7 +283,12 @@ export function resolvableTokens(contents: Array<string | undefined>): string[] 
     if (!content) continue;
     for (const match of content.matchAll(CONTENT_TOKEN_RE)) {
       const name = match[1]!;
-      if (name in registry) found.add(name);
+      const path = match[2] ?? "";
+      const def = registry[name];
+      if (!def) continue;
+      // A dotted path is only meaningful on an api variable's JSON response.
+      if (path && def.source !== "api") continue;
+      found.add(name + path);
     }
   }
   return [...found];
@@ -294,7 +316,8 @@ export function countFallbacks(
   const registry = getPlaceholderRegistry();
   let count = 0;
   for (const name of names) {
-    const def = registry[name];
+    // `user_info.info.firstname` is counted against the `user_info` variable.
+    const def = registry[name.split(".")[0]!];
     if (!def) continue;
     if (
       asyncFallbacks?.has(name) ||
@@ -359,6 +382,14 @@ export function personalize(
       }
     }
   }
+
+  // An api variable's path nobody resolved — no `resolved` map (a preview), or
+  // a path the resolver was never asked for. It renders the variable's
+  // fallback, never a raw `{{user_info.x}}` in someone's inbox.
+  result = result.replace(NESTED_CONTENT_TOKEN_RE, (token, name: string) => {
+    const def = registry[name];
+    return def?.source === "api" ? (def.fallback ?? "") : token;
+  });
 
   return result;
 }

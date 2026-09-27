@@ -5,7 +5,10 @@ import { getTelemetryStatus } from "../telemetry/posthog.js";
 import { getDispatchConfig, getIdType, configPathFromEnv } from "../user-lookup/config.js";
 import { lookupUsers } from "../user-lookup/index.js";
 import { envYamlPath, loadEnvYaml } from "../env-yaml.js";
-import { registry } from "../providers/senders.js";
+import { primarySender, registry } from "../providers/senders.js";
+import { senderCredentials, type SenderCredentialReport } from "../providers/sender-credentials.js";
+import type { SenderConfig } from "../providers/types.js";
+import { lookupMode } from "../variables/guard.js";
 
 type StatusValue = "ok" | "degraded" | "error";
 
@@ -56,6 +59,8 @@ export interface ProviderDiagnostic {
     enabled: boolean;
     verification_configured: boolean;
   };
+  /** Per sender, what is missing — names the sender and the field to set. */
+  problems?: string[];
 }
 
 const REQUIRED_ENV = [
@@ -63,78 +68,95 @@ const REQUIRED_ENV = [
   "SCALEMARGIN_ANALYTICS_SECRET",
 ] as const;
 
-const PROVIDER_ENV: Record<string, readonly string[]> = {
-  ses: ["AWS_REGION"],
-  sendgrid: ["SENDGRID_API_KEY"],
-};
-
 function envPresence(names: readonly string[]): Record<string, boolean> {
   return Object.fromEntries(
     names.map((name) => [name, Boolean(process.env[name])])
   );
 }
 
-function credentialSet(label: string, names: readonly string[]) {
-  const variables = envPresence(names);
-  return { label, variables, satisfied: Object.values(variables).every(Boolean) };
+/** name → present, for one report: `SENDGRID_API_KEY` if the sender names that variable, else `sendgrid.api_key`. */
+function checksOf(report: SenderCredentialReport): Record<string, boolean> {
+  return Object.fromEntries(report.sets.flatMap((set) => set.checks).map((c) => [c.source, c.present]));
 }
 
-function providerState(active: boolean, sets: ProviderDiagnostic["credential_sets"]): ProviderState {
-  const configured = sets.some((set) => set.satisfied);
-  if (active && configured) return "active";
-  if (configured) return "ready";
-  return active ? "incomplete" : "not_configured";
+/** Webhook verification configured on any sender of the provider, or the events-level variable. */
+function webhookVerified(reports: SenderCredentialReport[], eventsEnvName: string | undefined): boolean {
+  return (
+    reports.some((r) => r.webhook?.present) ||
+    Boolean(eventsEnvName && process.env[eventsEnvName]?.trim())
+  );
 }
 
-function summarizeProviders(
-  emailProvider: string,
-  eventsConfig: EventsConfig
-): ProviderDiagnostic[] {
-  const sendgridSets = [credentialSet("API key", ["SENDGRID_API_KEY"])];
-  const sesSets = [
-    credentialSet("AWS access keys", ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]),
-    credentialSet("AWS region", ["AWS_REGION"]),
-  ];
-  const gupshupSets = [
-    credentialSet("API key delivery", ["GUPSHUP_API_KEY", "GUPSHUP_SRC_NAME", "GUPSHUP_SOURCE"]),
-    credentialSet("Enterprise delivery", ["GUPSHUP_USER_ID", "GUPSHUP_PASSWORD"]),
-  ];
-
-  return [
+/**
+ * One row per provider, built from the enabled `senders:` using it — never
+ * from provider-wide environment variables, which a sender does not read.
+ * `credential_sets` has one entry per sender and way to authenticate; its
+ * `variables` name what the operator configured (the variable an `_env` field
+ * points at, else the sender field) — never a value.
+ */
+function summarizeProviders(eventsConfig: EventsConfig): ProviderDiagnostic[] {
+  let senders: SenderConfig[] = [];
+  try {
+    senders = loadEnvYaml().senders.filter((x) => x.enabled !== false) as SenderConfig[];
+  } catch {
+    senders = [];
+  }
+  const rows: Array<{
+    channel: "email" | "whatsapp";
+    provider: string;
+    webhookEnabled: boolean;
+    eventsEnv: string | undefined;
+  }> = [
     {
       channel: "email",
       provider: "sendgrid",
-      active: emailProvider === "sendgrid",
-      credential_sets: sendgridSets,
-      state: providerState(emailProvider === "sendgrid", sendgridSets),
-      webhook: {
-        enabled: eventsConfig.providers.sendgrid.enabled,
-        verification_configured: Boolean(process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY?.trim()),
-      },
+      webhookEnabled: eventsConfig.providers.sendgrid.enabled,
+      eventsEnv: eventsConfig.providers.sendgrid.signing_key_env ?? "SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY",
     },
     {
       channel: "email",
       provider: "ses",
-      active: emailProvider === "ses",
-      credential_sets: sesSets,
-      state: providerState(emailProvider === "ses", sesSets),
-      webhook: {
-        enabled: eventsConfig.providers.ses.enabled,
-        verification_configured: Boolean(process.env.SES_EVENT_CONFIG_SET?.trim()),
-      },
+      webhookEnabled: eventsConfig.providers.ses.enabled,
+      eventsEnv: "SES_EVENT_CONFIG_SET",
     },
     {
       channel: "whatsapp",
       provider: "gupshup",
-      active: true,
-      credential_sets: gupshupSets,
-      state: providerState(true, gupshupSets),
-      webhook: {
-        enabled: eventsConfig.providers.gupshup.enabled,
-        verification_configured: Boolean(process.env.GUPSHUP_WEBHOOK_SECRET?.trim()),
-      },
+      webhookEnabled: eventsConfig.providers.gupshup.enabled,
+      eventsEnv: eventsConfig.providers.gupshup.secret_env ?? "GUPSHUP_WEBHOOK_SECRET",
+    },
+    {
+      channel: "whatsapp",
+      provider: "freshchat",
+      webhookEnabled: Boolean(eventsConfig.providers.freshchat?.enabled),
+      eventsEnv: eventsConfig.providers.freshchat?.secret_env ?? "FRESHCHAT_WEBHOOK_SECRET",
     },
   ];
+
+  return rows.map(({ channel, provider, webhookEnabled, eventsEnv }) => {
+    const reports = senders.filter((x) => x.provider === provider).map(senderCredentials);
+    const active = reports.length > 0;
+    const state: ProviderState = !active
+      ? "not_configured"
+      : reports.every((r) => r.satisfied)
+        ? "active"
+        : "incomplete";
+    return {
+      channel,
+      provider,
+      active,
+      state,
+      credential_sets: reports.flatMap((r) =>
+        r.sets.map((set) => ({
+          label: `${r.sender_id} · ${set.label}`,
+          variables: Object.fromEntries(set.checks.map((c) => [c.source, c.present])),
+          satisfied: set.satisfied,
+        }))
+      ),
+      problems: reports.map((r) => r.problem).filter((p): p is string => Boolean(p)),
+      webhook: { enabled: webhookEnabled, verification_configured: webhookVerified(reports, eventsEnv) },
+    };
+  });
 }
 
 export interface SenderDiagnostic {
@@ -147,38 +169,18 @@ export interface SenderDiagnostic {
   organizations?: string[];
   breaker_state: "closed" | "open" | "half-open";
   credentials_satisfied: boolean;
+  /** Configured name → resolved, e.g. { "sendgrid.api_key": true }. Never a value. */
+  credentials: Record<string, boolean>;
+  credential_problem?: string;
+  credential_notes?: string[];
+  webhook_verification: boolean;
 }
 
 function summarizeSenders(): SenderDiagnostic[] {
   try {
     const yaml = loadEnvYaml();
     return yaml.senders.map((s) => {
-      let satisfied = true;
-      if (s.provider === "sendgrid") {
-        satisfied = Boolean(
-          s.sendgrid?.api_key?.trim() ||
-            (s.sendgrid?.api_key_env && process.env[s.sendgrid.api_key_env]?.trim()) ||
-            process.env.SENDGRID_API_KEY
-        );
-      } else if (s.provider === "gupshup") {
-        const mode = s.gupshup?.mode || "api_key";
-        if (mode === "api_key") {
-          satisfied = Boolean(
-            s.gupshup?.api_key?.trim() ||
-              (s.gupshup?.api_key_env && process.env[s.gupshup.api_key_env]?.trim()) ||
-              process.env.GUPSHUP_API_KEY
-          );
-        } else {
-          satisfied = Boolean(
-            (s.gupshup?.user_id?.trim() ||
-              (s.gupshup?.user_id_env && process.env[s.gupshup.user_id_env]?.trim()) ||
-              process.env.GUPSHUP_USER_ID) &&
-              (s.gupshup?.password?.trim() ||
-                (s.gupshup?.password_env && process.env[s.gupshup.password_env]?.trim()) ||
-                process.env.GUPSHUP_PASSWORD)
-          );
-        }
-      }
+      const creds = senderCredentials(s as SenderConfig);
       return {
         id: s.id,
         channel: s.channel,
@@ -188,7 +190,11 @@ function summarizeSenders(): SenderDiagnostic[] {
         enabled: s.enabled !== false,
         organizations: s.organizations,
         breaker_state: registry.getBreakerState(s.id)?.state ?? "closed",
-        credentials_satisfied: satisfied,
+        credentials_satisfied: creds.satisfied,
+        credentials: checksOf(creds),
+        ...(creds.problem ? { credential_problem: creds.problem } : {}),
+        ...(creds.notes.length ? { credential_notes: creds.notes } : {}),
+        webhook_verification: creds.webhook?.present ?? false,
       };
     });
   } catch {
@@ -332,6 +338,7 @@ export async function buildDiagnosticsReport(
     email_provider: string;
     image_storage_provider: string;
     user_lookup_backend?: string;
+    user_lookup_mode?: string;
     user_lookup_source?: {
       kind?: string;
       name?: string;
@@ -360,8 +367,8 @@ export async function buildDiagnosticsReport(
   const dispatchConfigPath = configPathFromEnv();
   const dispatchConfig = getDispatchConfig();
   const eventsConfig = loadEventsConfig();
-  const emailProvider = process.env.EMAIL_PROVIDER || "ses";
-  const providerEnv = PROVIDER_ENV[emailProvider] ?? [];
+  const emailProvider = primarySender("email")?.config.provider ?? "none";
+  const primaryEmail = primarySender("email");
   const shouldRunUserLookup =
     request.checks?.includes("user_lookup") ||
     Array.isArray(request.sample_user_ids);
@@ -385,6 +392,7 @@ export async function buildDiagnosticsReport(
       email_provider: emailProvider,
       image_storage_provider: process.env.IMAGE_STORAGE_PROVIDER || "none",
       user_lookup_backend: dispatchConfig.user_lookup.backend,
+      user_lookup_mode: lookupMode(),
       user_lookup_source: dispatchConfig.user_lookup.source
         ? {
             kind: dispatchConfig.user_lookup.source.kind,
@@ -397,12 +405,13 @@ export async function buildDiagnosticsReport(
       placeholder_names: Object.keys(dispatchConfig.placeholders),
       events: summarizeEventsConfig(eventsConfig),
       telemetry: getTelemetryStatus(),
-      providers: summarizeProviders(emailProvider, eventsConfig),
+      providers: summarizeProviders(eventsConfig),
       senders: summarizeSenders(),
     },
     env: {
       required: envPresence(REQUIRED_ENV),
-      provider: envPresence(providerEnv),
+      // The primary email sender's credentials, by the names it is configured with.
+      provider: primaryEmail ? checksOf(senderCredentials(primaryEmail.config)) : {},
     },
     ...(userLookup ? { checks: { user_lookup: userLookup } } : {}),
   };

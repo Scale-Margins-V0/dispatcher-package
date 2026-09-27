@@ -53,6 +53,12 @@ export interface EventEnvelope {
 export interface SignatureRequest {
   rawBody: Buffer;
   headers: Record<string, string | string[] | undefined>;
+  /**
+   * The parsed query string. Only Gupshup reads it: its delivery callbacks
+   * cannot sign a body, so a `?token=` on the callback URL is how they prove
+   * who they are.
+   */
+  query?: Record<string, unknown>;
 }
 
 export interface InboundEventAdapter {

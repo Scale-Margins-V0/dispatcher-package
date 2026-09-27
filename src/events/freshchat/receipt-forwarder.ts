@@ -6,7 +6,7 @@
 import { componentLogger } from "../../logging/logger.js";
 import { signPayload } from "../forwarder.js";
 import type { FreshchatReceipt } from "./adapter.js";
-import { resolveWhatsAppReceiptsUrl } from "../gupshup/receipt-forwarder.js";
+import { NO_RECEIPTS_URL_HINT, resolveWhatsAppReceiptsUrl } from "../gupshup/receipt-forwarder.js";
 
 const log = componentLogger("events.freshchat");
 
@@ -21,7 +21,7 @@ export async function forwardFreshchatReceipts(
   const url = resolveWhatsAppReceiptsUrl();
   if (!url) {
     log.warn(
-      `[FreshchatReceipts] No backend analytics URL known yet — dropping ${receipts.length} receipt(s)`
+      `[FreshchatReceipts] Dropping ${receipts.length} receipt(s): ${NO_RECEIPTS_URL_HINT}`
     );
     return { success: false, error: "no receipts URL configured" };
   }

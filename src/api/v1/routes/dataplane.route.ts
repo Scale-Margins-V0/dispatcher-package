@@ -19,7 +19,9 @@ import express, { Router } from "express";
 import { componentLogger } from "../../../logging/logger.js";
 import { LogComponent } from "../../../logging/conventions.js";
 import { requireApiKey } from "../auth.js";
+import * as CallMetadataController from "../controllers/call-metadata.controller.js";
 import * as DataPlaneController from "../controllers/dataplane.controller.js";
+import * as MetricsController from "../controllers/metrics.controller.js";
 import { corsMiddleware } from "../cors.js";
 import { apiError, asyncApi } from "../errors.js";
 
@@ -135,6 +137,13 @@ router
   .route("/campaigns/:programId/sends")
   .get(asyncApi(DataPlaneController.listCampaignSendsHandler));
 
+router
+  .route("/campaigns/:programId/metrics")
+  .get(asyncApi(MetricsController.getCampaignMetricsHandler));
+
+/** Every campaign together — the Runs page's metrics. */
+router.route("/metrics").get(asyncApi(MetricsController.getOverallMetricsHandler));
+
 /*
  * Logs — the dispatcher's own structured log. Free-form text is PII-scrubbed
  * on the way out; see the controller.
@@ -148,6 +157,24 @@ router.route("/logs/:id").get(asyncApi(DataPlaneController.getLogHandler));
  * Variables — the authoring surface. Definitions in, definitions out; a
  * resolved customer value has no route through here.
  */
+
+/*
+ * Call metadata — schemas of keys an api variable can attach ({{key.k}} / {{key.v}}).
+ */
+
+router
+  .route("/call-metadata")
+  .get(asyncApi(CallMetadataController.listCallMetadataHandler))
+  .post(asyncApi(CallMetadataController.createCallMetadataHandler));
+
+router
+  .route("/call-metadata/:name")
+  .get(asyncApi(CallMetadataController.getCallMetadataHandler))
+  .patch(asyncApi(CallMetadataController.updateCallMetadataHandler))
+  .delete(asyncApi(CallMetadataController.deleteCallMetadataHandler));
+
+// Not under /variables/: "fields" is a legal variable name.
+router.route("/lookup/fields").get(asyncApi(DataPlaneController.getLookupFieldsHandler));
 
 router
   .route("/variables")

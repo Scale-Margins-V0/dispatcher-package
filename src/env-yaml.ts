@@ -9,6 +9,47 @@ import type {
   SenderConfig,
   SenderRoutingConfig,
 } from "./providers/types.js";
+import { senderCredentials } from "./providers/sender-credentials.js";
+import { statusPollTtl } from "./config/status-poll-ttl.js";
+import { userLookupSchema } from "./user-lookup/schema.js";
+import { dispatcherSchema } from "./dispatcher-schema.js";
+import {
+  eventsSchema,
+  linksSchema,
+  rawEnvSchema,
+  scalemarginSchema,
+  storageSchema,
+} from "./config/settings-schema.js";
+
+/**
+ * A top-level key that moved under `dispatcher:`.
+ *
+ * Declared rather than left unknown on purpose. This schema is a plain
+ * `z.object`, which silently STRIPS keys it does not recognise — so a file
+ * still using the old layout would lose `admin.auth_secret` (every session
+ * invalidated on the next redeploy) or `retention.message_id_ttl` without a
+ * word. Declaring the old name as "must be absent" turns that silent drop into
+ * a boot error naming exactly where the setting went.
+ */
+const movedTo = (destination: string) =>
+  z
+    .undefined({ message: `moved — write this block under \`${destination}\` instead` })
+    .optional();
+
+/**
+ * The `email:` single-sender shorthand, removed. Declared for the same reason
+ * as movedTo(): stripped silently, a file relying on it would boot with no
+ * email sender (or the wrong From address) and say nothing. This names the
+ * replacement instead.
+ */
+const REMOVED_EMAIL_BLOCK =
+  "removed — declare the account under `senders:` instead, e.g.\n" +
+  "  senders:\n" +
+  "    - id: primary-email\n" +
+  "      channel: email\n" +
+  "      provider: sendgrid        # or ses\n" +
+  "      from: campaigns@your-company.com\n" +
+  "      sendgrid: { api_key_env: SENDGRID_API_KEY }";
 
 const log = componentLogger(LogComponent.config);
 
@@ -19,14 +60,14 @@ const sesConfigSchema = z.object({
   access_key_id_env: z.string().optional(),
   secret_access_key: z.string().optional(),
   secret_access_key_env: z.string().optional(),
-});
+}).strict();
 
 const sendgridConfigSchema = z.object({
   api_key: z.string().optional(),
   api_key_env: z.string().optional(),
   event_webhook_public_key: z.string().optional(),
   event_webhook_public_key_env: z.string().optional(),
-});
+}).strict();
 
 const gupshupConfigSchema = z.object({
   mode: z.enum(["api_key", "enterprise"]).optional(),
@@ -46,7 +87,7 @@ const gupshupConfigSchema = z.object({
   template_api_url: z.string().optional(),
   enterprise_api_url: z.string().optional(),
   media_api_url: z.string().optional(),
-});
+}).strict();
 
 const freshchatConfigSchema = z.object({
   mode: z.string().optional(),
@@ -67,16 +108,23 @@ const freshchatConfigSchema = z.object({
   from_number_env: z.string().optional(),
   webhook_secret: z.string().optional(),
   webhook_secret_env: z.string().optional(),
-});
+  status_poller: z.boolean().optional(),
+  status_poll_interval_seconds: z
+    .number()
+    .int("status_poll_interval_seconds must be a whole number of seconds")
+    .min(5, "status_poll_interval_seconds must be at least 5 — Freshchat rate-limits its API")
+    .max(3600, "status_poll_interval_seconds must be at most 3600")
+    .optional(),
+}).strict();
 
 const senderFailoverSchema = z.object({
   enabled: z.boolean().optional(),
   max_attempts: z.number().int().positive().optional(),
   on_timeout: z.boolean().optional(),
   on_identity_error: z.boolean().optional(),
-});
+}).strict();
 
-const senderSchema = z.object({
+const senderShape = {
   id: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/, "Sender id must be an alphanumeric slug"),
   channel: z.enum(["email", "whatsapp"]),
   provider: z.enum(["ses", "sendgrid", "gupshup", "freshchat"]),
@@ -90,7 +138,47 @@ const senderSchema = z.object({
   sendgrid: sendgridConfigSchema.optional(),
   gupshup: gupshupConfigSchema.optional(),
   freshchat: freshchatConfigSchema.optional(),
-});
+};
+
+/** Keys each provider block accepts — to tell a misplaced key where it belongs. */
+const PROVIDER_BLOCK_KEYS: Record<string, string[]> = {
+  ses: Object.keys(sesConfigSchema.shape),
+  sendgrid: Object.keys(sendgridConfigSchema.shape),
+  gupshup: Object.keys(gupshupConfigSchema.shape),
+  freshchat: Object.keys(freshchatConfigSchema.shape),
+};
+
+/**
+ * A sender, with unknown keys REJECTED rather than stripped. A plain z.object
+ * silently drops them — `webhook_secret` written beside `provider:` instead of
+ * inside `gupshup:` vanished, leaving the webhook open with no warning. The
+ * message says where a misplaced key belongs.
+ */
+const senderSchema = z
+  .object(senderShape)
+  .passthrough()
+  .superRefine((sender, ctx) => {
+    for (const key of Object.keys(sender)) {
+      if (key in senderShape) continue;
+      const provider = String(sender.provider);
+      const home = PROVIDER_BLOCK_KEYS[provider]?.includes(key)
+        ? provider
+        : Object.entries(PROVIDER_BLOCK_KEYS).find(([, keys]) => keys.includes(key))?.[0];
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: home
+          ? `'${key}' is not a sender key — it belongs inside the \`${home}:\` block of sender '${sender.id}'`
+          : `unknown key '${key}' on sender '${sender.id}'`,
+      });
+    }
+  })
+  .transform(
+    (sender) =>
+      Object.fromEntries(Object.entries(sender).filter(([k]) => k in senderShape)) as z.infer<
+        z.ZodObject<typeof senderShape>
+      >
+  );
 
 const routingFailoverSchema = z.object({
   max_attempts: z.number().int().positive().default(2),
@@ -101,8 +189,9 @@ const routingFailoverSchema = z.object({
       failure_threshold: z.number().int().positive().default(5),
       cooldown_ms: z.number().int().positive().default(60000),
     })
+    .strict()
     .optional(),
-});
+}).strict();
 
 const routingSchema = z.object({
   failover: routingFailoverSchema.optional(),
@@ -111,13 +200,49 @@ const routingSchema = z.object({
       email: z.string().optional(),
       whatsapp: z.string().optional(),
     })
+    .strict()
     .optional(),
-});
+}).strict();
 
 export const envYamlSchema = z.object({
   version: z.literal(1).optional(),
   routing: routingSchema.optional(),
   senders: z.array(senderSchema).default([]),
+  // Absent → the dispatcher falls back to config/dispatch.yaml, then to mock.
+  // See src/user-lookup/config.ts for the precedence.
+  user_lookup: userLookupSchema.optional(),
+  // Absent → port, public URL, Atlas key and CORS all come from the
+  // environment exactly as before. See src/dispatcher-settings.ts.
+  dispatcher: dispatcherSchema.optional(),
+
+  // Everything below replaces what used to live in `.env`. Each block is
+  // copied into process.env at boot by src/config/hydrate.ts, so the ~100
+  // existing `process.env.X` readers keep working unchanged. A real
+  // environment variable always wins over anything set here.
+  //
+  // System settings — the dispatcher's own database, admin auth, retention,
+  // logging, telemetry — live under `dispatcher:` above. What remains here is
+  // what the dispatcher DOES: platform credentials, sending, message links,
+  // events, image storage.
+  scalemargin: scalemarginSchema.optional(),
+  links: linksSchema.optional(),
+  events: eventsSchema.optional(),
+  storage: storageSchema.optional(),
+
+  // Escape hatch for anything not modelled above — including the targets of
+  // `*_env:` references elsewhere in this file, which need to exist somewhere
+  // once there is no `.env`.
+  // An emptied block (`env:` with every entry deleted) is YAML null — treat
+  // it as "no entries" rather than failing boot on the whole file.
+  env: z.preprocess((v) => (v === null ? undefined : v), rawEnvSchema.optional()),
+
+  // The old top-level layout. See movedTo() above for why these are declared.
+  state_database: movedTo("dispatcher.database"),
+  admin: movedTo("dispatcher.admin"),
+  retention: movedTo("dispatcher.retention"),
+  logging: movedTo("dispatcher.logging"),
+  telemetry: movedTo("dispatcher.telemetry"),
+  email: z.undefined({ message: REMOVED_EMAIL_BLOCK }).optional(),
 });
 
 export type EnvYaml = z.infer<typeof envYamlSchema>;
@@ -301,9 +426,19 @@ export function loadEnvYaml(): EnvYaml {
     const parsed = yaml.load(raw);
     const validated = envYamlSchema.parse(parsed);
 
-    // If senders array is empty, fall back to back-compat
+    // No senders → fall back to the single-sender configuration in .env, but
+    // keep `user_lookup` and `dispatcher`. These concerns are independent:
+    // configuring lookup or the Atlas key here while keeping one sender in
+    // .env is a perfectly ordinary setup, and discarding the whole file for it
+    // would silently ignore those blocks. Every optional top-level key added
+    // to envYamlSchema must be carried through here for the same reason.
     if (validated.senders.length === 0) {
-      cachedEnvYaml = synthesizeBackCompatEnvYaml();
+      // Spread `validated` LAST so every block it carries survives. Listing
+      // keys by hand is how `user_lookup` and `dispatcher` each got silently
+      // dropped once; `senders` is then restored from the synthesized
+      // configuration, since an empty list is the reason we are in here.
+      const backCompat = synthesizeBackCompatEnvYaml();
+      cachedEnvYaml = { ...backCompat, ...validated, senders: backCompat.senders };
       return cachedEnvYaml;
     }
 
@@ -378,19 +513,25 @@ export function ensureEnvYamlValid(): void {
       continue;
     }
 
+    // An email sender is its From address — there is no global fallback, so
+    // one without it could only send as nobody.
+    if (sender.channel === "email" && !sender.from?.includes("@")) {
+      throw new Error(
+        `[env.yaml] Email sender '${sender.id}' needs a \`from:\` address, verified with ${sender.provider}`
+      );
+    }
+
+    // Credentials come from the sender itself — its inline value, or the
+    // variable its `*_env` names. The message names the sender and exactly
+    // what to set (see providers/sender-credentials.ts).
+    const creds = senderCredentials(sender as SenderConfig);
+    if (!creds.satisfied) {
+      throw new Error(`[env.yaml] ${creds.problem}`);
+    }
+
     if (sender.provider === "ses" && sender.ses) {
       if (sender.ses.access_key_id && sender.ses.access_key_id_env) {
         log.warn(`[env.yaml] Sender '${sender.id}' specifies both access_key_id and access_key_id_env; inline wins`);
-      }
-      if (!sender.ses.access_key_id && sender.ses.access_key_id_env && !process.env[sender.ses.access_key_id_env]?.trim()) {
-        throw new Error(
-          `[env.yaml] Sender '${sender.id}' references missing env var '${sender.ses.access_key_id_env}'`
-        );
-      }
-      if (!sender.ses.secret_access_key && sender.ses.secret_access_key_env && !process.env[sender.ses.secret_access_key_env]?.trim()) {
-        throw new Error(
-          `[env.yaml] Sender '${sender.id}' references missing env var '${sender.ses.secret_access_key_env}'`
-        );
       }
       if (!sender.ses.configuration_set && process.env.VITEST !== "true") {
         log.warn(
@@ -399,48 +540,8 @@ export function ensureEnvYamlValid(): void {
       }
     }
 
-    if (sender.provider === "sendgrid") {
-      const sg = sender.sendgrid;
-      const inlineKey = sg?.api_key?.trim();
-      const envKeyName = sg?.api_key_env?.trim();
-      const envVal = envKeyName ? process.env[envKeyName]?.trim() : undefined;
-
-      if (!inlineKey && !envVal) {
-        throw new Error(
-          `[env.yaml] SendGrid sender '${sender.id}' requires an API key (api_key or valid api_key_env)`
-        );
-      }
-    }
-
-    if (sender.provider === "gupshup") {
-      const g = sender.gupshup;
-      const mode = g?.mode || "api_key";
-      if (mode === "api_key") {
-        const key = g?.api_key?.trim() || (g?.api_key_env ? process.env[g.api_key_env]?.trim() : undefined);
-        if (!key) {
-          throw new Error(
-            `[env.yaml] Gupshup API key sender '${sender.id}' requires api_key or valid api_key_env`
-          );
-        }
-      } else if (mode === "enterprise") {
-        const user = g?.user_id?.trim() || (g?.user_id_env ? process.env[g.user_id_env]?.trim() : undefined);
-        const pass = g?.password?.trim() || (g?.password_env ? process.env[g.password_env]?.trim() : undefined);
-        if (!user || !pass) {
-          throw new Error(
-            `[env.yaml] Gupshup Enterprise sender '${sender.id}' requires user_id and password`
-          );
-        }
-      }
-    }
-
     if (sender.provider === "freshchat") {
       const fc = sender.freshchat;
-      const key = fc?.api_key?.trim() || (fc?.api_key_env ? process.env[fc.api_key_env]?.trim() : undefined);
-      if (!key) {
-        throw new Error(
-          `[env.yaml] Freshchat sender '${sender.id}' requires api_key or valid api_key_env`
-        );
-      }
       const rawSource = fc?.source !== undefined ? String(fc.source) : undefined;
       const fromNumber =
         fc?.from_number?.trim() ||
@@ -454,6 +555,12 @@ export function ensureEnvYamlValid(): void {
         );
       }
     }
+  }
+
+  // A status poller needs a parseable freshchat_status_poll_ttl (default 3d) — say so at
+  // boot rather than on the first tick.
+  if (cfg.senders.some((s) => s.enabled !== false && s.provider === "freshchat" && s.freshchat?.status_poller)) {
+    statusPollTtl();
   }
 
   // 5. Default senders resolution check

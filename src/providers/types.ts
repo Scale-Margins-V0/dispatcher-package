@@ -120,6 +120,14 @@ export interface FreshchatSenderConfig {
   from_number_env?: string;
   webhook_secret?: string;
   webhook_secret_env?: string;
+  /**
+   * Poll Freshchat's status API for this sender's messages and forward status
+   * changes to ScaleMargin — for when no webhook is registered (or as a backup
+   * to one). See src/events/freshchat/status-poller.ts. Default false.
+   */
+  status_poller?: boolean;
+  /** Seconds between polls of a fresh message. Default 10; older messages back off. */
+  status_poll_interval_seconds?: number;
 }
 
 export interface SenderFailoverConfig {

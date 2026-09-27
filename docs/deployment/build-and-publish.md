@@ -8,9 +8,10 @@ per-client registry-access apparatus, which used to be the most support-heavy
 part of onboarding. Two consequences to hold onto:
 
 - **Never bake a secret into the image.** Anyone can `docker pull` it and read
-  every layer. Config arrives at runtime through `.env` and mounted files, and
-  §2.1 keeps `.env` out of the build context — that is now a public-disclosure
-  control, not just hygiene.
+  every layer. Config arrives at runtime through the mounted `.env.yaml`, and
+  §2.1 keeps it out of the build context — that is now a public-disclosure
+  control, not just hygiene. `.env.yaml` carries every credential the client
+  has, so this matters more than it did when secrets were split across files.
 - **Version history is public.** Tags, sizes and push dates are visible to
   anyone. Nothing sensitive, but worth knowing before you push a tag named after
   a client.
@@ -45,9 +46,10 @@ part of onboarding. Two consequences to hold onto:
 | Not in the image               | Why                                                                            | Consequence                                                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | `admin-dist/` (the console UI) | Deliberate — clients manage the dispatcher through Atlas, not a second console | `GET /admin` returns `503 {"error":"Dispatcher admin UI has not been built"}`; `/admin/api/*` stays mounted          |
-| `config/dispatch.yaml`         | Client-specific — which table, which columns                                   | **Without it the dispatcher silently falls back to the MOCK user lookup** and resolves fabricated recipients. See §7 |
+| `.env.yaml`                    | Client-specific — where recipient data comes from, and which accounts send     | **Without it the dispatcher silently falls back to the MOCK user lookup** and resolves fabricated recipients. See §7 |
+| `config/dispatch.yaml`         | Deprecated predecessor of `.env.yaml`'s `user_lookup:` block                   | Still read if mounted, and warns at boot. Nothing to do for a new deployment                                        |
 | `config/events.yaml`           | Optional; built-in defaults apply                                              | Fine to omit                                                                                                         |
-| `.env`                         | Secrets belong to the deployment                                               | Container will not boot without the two required vars                                                                |
+| `.env.yaml`                    | Secrets belong to the deployment — this file holds all of them                 | Container will not boot without `scalemargin:` and `dispatcher.retention.message_id_ttl`                              |
 
 ---
 
@@ -57,8 +59,8 @@ part of onboarding. Two consequences to hold onto:
 
 Already in the repo — do not delete it. Without one, `docker build` uploads the
 entire working tree as build context: `node_modules/`, `.git/`, `data/*.db`, and
-**`.env`**. That is slow, and it puts real credentials into the build context
-and the layer cache.
+**`.env.yaml`** — plus any leftover `.env` from before the migration. That is
+slow, and it puts real credentials into the build context and the layer cache.
 
 It also excludes `admin/` and `admin-dist/`, since the image builds the server
 only. If you ever build a console-bearing image, you must remove `admin`
@@ -130,7 +132,8 @@ support ticket we would otherwise get later:
 1. No `[FATAL]` lines.
 2. Migrations ran — a fresh SQLite file is created without error.
 3. `Dispatcher started` appears with the port and provider.
-4. **No `FROM_EMAIL is not set` warning.** If you see it, the image is fine but
+4. **No sender warning** (`No email sender is configured`, or a sender whose
+   `from` `cannot be verified`). If you see one, the image is fine but
    the run is misconfigured — every send from that deployment will be rejected by the provider. We have hit this in production; it cost a day of debugging because the warning only reached the terminal.
 
 ---
@@ -325,10 +328,11 @@ docker rm -f verify
 
 ## 7. The config gotcha, stated once more
 
-`config/dispatch.yaml` is **not** in the image. If the client does not mount it:
+`.env.yaml` is **not** in the image. If the client does not mount it, or mounts
+it without a `user_lookup:` block:
 
-- `loadDispatchConfigFromDisk()` logs _"No dispatch config found — falling back
-  to the built-in MOCK user lookup"_;
+- `loadDispatchConfig()` logs _"No user lookup configured — falling back to the
+  built-in MOCK user lookup"_;
 - every recipient resolves to a fabricated record;
 - sends "succeed" and the campaign looks healthy in Atlas.
 
@@ -338,9 +342,22 @@ makes it step one — but if you are debugging a deployment where the numbers lo
 right and the mail is wrong, check this first:
 
 ```bash
-docker compose exec dispatcher ls -l /app/config/dispatch.yaml
+docker compose exec dispatcher ls -l /app/.env.yaml
 docker compose logs dispatcher | grep -i "MOCK user lookup"
+
+# The direct answer — "mode": "mock" is the smoking gun:
+curl -s -H "Authorization: Bearer $DISPATCHER_ATLAS_KEY" \
+  localhost:3100/api/v1/data-plane/state | jq '.lookup'
 ```
+
+Two ways this happens in practice, both silent:
+
+- **Docker created a directory.** If `.env.yaml` did not exist on the host at
+  the first `up`, Docker made an empty directory at that path. `ls -l` above
+  shows it.
+- **`.env.yaml` loaded, but has no `user_lookup:`.** Then the loader falls back
+  to `config/dispatch.yaml`, and to mock if that is absent too. The boot log
+  says which file won.
 
 ---
 
@@ -485,8 +502,8 @@ locally" is a human responsibility, not an enforced one.
 | Build context is hundreds of MB                          | No `.dockerignore`                                       | §2.1                                               |
 | `Dispatcher state-DB migrations not found for dialect …` | `drizzle/` missing from the image                        | Restore `COPY drizzle/ ./drizzle/`                 |
 | `[FATAL] Missing required env vars`                      | `SCALEMARGIN_*_SECRET` unset                             | They are mandatory; the process exits by design    |
-| Container healthy, every send rejected                   | `FROM_EMAIL` unset → `noreply@example.com`, unverifiable | Set `FROM_EMAIL` to a verified sender              |
-| Campaign reports success, wrong recipients               | `config/dispatch.yaml` not mounted → mock lookup         | §7                                                 |
+| Container healthy, every send rejected                   | The sender's `from` is unverifiable (legacy env: `FROM_EMAIL` unset → `noreply@example.com`) | Set a verified `from:` on the sender |
+| Campaign reports success, wrong recipients               | No `user_lookup:` reached the container → mock lookup    | §7                                                 |
 | `pnpm install --frozen-lockfile` fails in build          | `pnpm-lock.yaml` out of sync with `package.json`         | Run `pnpm install` locally and commit the lockfile |
 | `/admin` returns 503                                     | **Expected.** The console is not shipped                 | Nothing to fix. Use `/api/v1/data-plane/*`         |
 
@@ -499,7 +516,7 @@ Local, before you tag — CI does not check any of the first four (§9):
 - [ ] `pnpm test` green, `npx tsc --noEmit` clean
 - [ ] Version bumped in `package.json`; changeset added; `CHANGELOG.md` updated (it becomes the release body)
 - [ ] `.dockerignore` present, context is kilobytes (§2.1)
-- [ ] Local smoke test: `/health`, `/api/v1/internal/ready`, no `[FATAL]`, no `FROM_EMAIL` warning
+- [ ] Local smoke test: `/health`, `/api/v1/internal/ready`, no `[FATAL]`, no sender warning
 - [ ] Version tag not already published (§6)
 
 Then:

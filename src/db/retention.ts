@@ -1,11 +1,21 @@
 /**
  * Hourly retention sweep over the state DB so an always-on dispatcher can't
  * grow its tables unbounded. Windows are deliberately generous; tune via env.
+ *
+ * One window is NOT generous and NOT optional: provider_message_ids is pruned
+ * on `DISPATCHER_MESSAGE_ID_TTL`, which has no default. See config/message-id-ttl.ts.
+ *
+ * The sweep runs hourly, so a row survives at most one tick past its window —
+ * a 2h setting deletes rows between 2h and 3h old, never younger than 2h.
  */
 
 import { and, desc, eq, lt, lte, or } from "drizzle-orm";
 import { getDb, isDbInitialized } from "./client.js";
 import { queryDb, tableFor } from "./dialect-helpers.js";
+import { MESSAGE_ID_TTL_SETTING, messageIdTtlMs } from "../config/message-id-ttl.js";
+import { componentLogger } from "../logging/logger.js";
+
+const log = componentLogger("db.retention");
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -13,6 +23,11 @@ const DAY_MS = 24 * HOUR_MS;
 function intEnv(name: string, fallback: number): number {
   const parsed = parseInt(process.env[name] ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** dispatcher.retention.metrics_days — 7 by default, never more than 30. */
+export function metricsRetentionDays(): number {
+  return Math.min(intEnv("DISPATCHER_METRICS_RETENTION_DAYS", 7), 30);
 }
 
 export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
@@ -95,6 +110,28 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
       );
   }
 
+  // Provider message ids. The window is mandatory and validated at boot, so a
+  // bad value here means someone changed the environment under a running
+  // process. Isolated deliberately: an unparseable TTL must not abort the rest
+  // of this function, or one missing setting would quietly stop app_logs,
+  // campaign_events and dispatch_send_logs from being pruned as well — far
+  // worse than the unbounded table it was meant to prevent.
+  //
+  // No row cap either: the operator chose a duration, and deleting inside their
+  // window because some count was reached would make the setting a lie.
+  try {
+    const messageIds = tableFor(dbx, "providerMessageIds");
+    await q
+      .delete(messageIds)
+      .where(lt(messageIds.sent_at, new Date(now.getTime() - messageIdTtlMs())));
+  } catch (error) {
+    log.warn(
+      { err: error instanceof Error ? error : new Error(String(error)) },
+      `Skipped pruning provider_message_ids — ${MESSAGE_ID_TTL_SETTING} is unusable. ` +
+        "The table will grow until this is fixed; every other table was still swept."
+    );
+  }
+
   // campaign_summary is deliberately absent from this sweep. Outliving the rows
   // it was computed from is the entire reason it exists.
 
@@ -119,6 +156,12 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
 
   const callbacks = tableFor(dbx, "campaignCallbacks");
   await q.delete(callbacks).where(lt(callbacks.last_used_at, daysAgo(30)));
+
+  // Per-minute metrics: small (rollups, not raw events) but only useful recent.
+  const metrics = tableFor(dbx, "dispatchMetrics");
+  await q
+    .delete(metrics)
+    .where(lt(metrics.minute, Math.floor(daysAgo(metricsRetentionDays()).getTime() / 60_000)));
 
   const devSent = tableFor(dbx, "devSentCampaigns");
   await q.delete(devSent).where(lt(devSent.sent_at, daysAgo(7)));

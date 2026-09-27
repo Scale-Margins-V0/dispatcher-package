@@ -28,23 +28,37 @@ import type { VariableRow } from "../../db/schema/index.js";
 import { renderPlaceholderPreview, validateComputedExpression } from "../../personalize.js";
 import type { PlaceholderEntry } from "../../user-lookup/config.js";
 import { rowToPlaceholderEntry } from "../../variables/mapping.js";
-import { HEADER_MASK, redactConfig } from "../../variables/redaction.js";
+import { HEADER_MASK, redactConfig, unmaskQuery } from "../../variables/redaction.js";
+import {
+  apiExtrasShape,
+  checkApiConfig,
+  finalizeApiConfig,
+} from "../../variables/api-config-schema.js";
+import { apiPlaceholders, type ResponseField } from "../../variables/api-response.js";
 import { testVariableDefinition } from "../../variables/resolver.js";
 import { refreshPlaceholders } from "../../variables/service.js";
+import { isSourceSupported, unsupportedSourceMessage } from "../../variables/guard.js";
+import { isSystemVariable, SYSTEM_VARIABLES } from "../../variables/system.js";
+import { lookupFields } from "../../variables/lookup-fields.js";
+import { checkVariableMetadata } from "../../variables/call-metadata.js";
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 /** Header masking is shared with the Atlas data-plane surface — one mask, one rule. */
 export { HEADER_MASK };
 
-const apiSchema = z.object({
-  method: z.enum(["GET", "POST"]).default("GET"),
-  url: z.string().min(1).max(2000),
-  headers: z.record(z.string(), z.string()).optional(),
-  json_path: z.string().max(200).optional().default(""),
-  body: z.string().max(8000).optional(),
-  timeout_ms: z.number().int().min(100).max(30000).optional(),
-});
+const apiSchema = z
+  .object({
+    method: z.enum(["GET", "POST"]).default("GET"),
+    url: z.string().min(1).max(2000),
+    headers: z.record(z.string(), z.string()).optional(),
+    json_path: z.string().max(200).optional().default(""),
+    body: z.string().max(8000).optional(),
+    timeout_ms: z.number().int().min(100).max(30000).optional(),
+    ...apiExtrasShape,
+  })
+  .superRefine(checkApiConfig)
+  .transform(finalizeApiConfig);
 
 const variablePayloadSchema = z
   .object({
@@ -103,10 +117,13 @@ function payloadToEntry(d: Payload): PlaceholderEntry {
         api: {
           method: d.api!.method,
           url: d.api!.url,
+          ...(d.api!.query?.length ? { query: d.api!.query } : {}),
           ...(d.api!.headers ? { headers: d.api!.headers } : {}),
           json_path: d.api!.json_path ?? "",
           ...(d.api!.body ? { body: d.api!.body } : {}),
           ...(d.api!.timeout_ms ? { timeout_ms: d.api!.timeout_ms } : {}),
+          ...(d.api!.response_schema?.length ? { response_schema: d.api!.response_schema } : {}),
+          ...(d.api!.metadata ? { metadata: d.api!.metadata } : {}),
         },
         ...fb,
       };
@@ -145,16 +162,63 @@ function serialize(row: VariableRow) {
     updated_at: row.updated_at.toISOString(),
     updated_by: row.updated_by,
     preview: renderPlaceholderPreview(rowToPlaceholderEntry(row)),
+    placeholders:
+      row.source === "api"
+        ? apiPlaceholders(
+            row.name,
+            (row.config as { response_schema?: ResponseField[] } | null)?.response_schema,
+            (row.config as { json_path?: string } | null)?.json_path ?? ""
+          )
+        : [row.name],
+    system: false,
+    description: null as string | null,
   };
+}
+
+/** Same shape as a stored variable, flagged; never stored, so no timestamps. */
+function serializeSystem(name: string) {
+  const { entry, description } = SYSTEM_VARIABLES[name]!;
+  const { field, expr, config } = entryToRowFields(entry);
+  return {
+    name,
+    source: entry.source,
+    field,
+    expr,
+    fallback: entry.fallback ?? null,
+    config,
+    enabled: true,
+    created_at: null,
+    updated_at: null,
+    updated_by: "system",
+    preview: renderPlaceholderPreview(entry),
+    placeholders: [name],
+    system: true,
+    description,
+  };
+}
+
+/** System variables cannot be changed, renamed, disabled or deleted. */
+function rejectSystem(res: Response, name: string, action: string): boolean {
+  if (!isSystemVariable(name)) return false;
+  res.status(403).json({ error: `"${name}" is a system variable and cannot be ${action}` });
+  return true;
+}
+
+function rejectSystemName(res: Response, name: string): boolean {
+  if (!isSystemVariable(name)) return false;
+  res.status(409).json({ error: `"${name}" is a system variable — choose another name` });
+  return true;
 }
 
 function authedUser(req: Request): string | null {
   return (req as { authUser?: { email?: string } }).authUser?.email ?? null;
 }
 
-/** Replace masked api header values with the existing stored ones. */
+/** Replace masked api header and query values with the existing stored ones. */
 function mergeMaskedHeaders(data: Payload, existing: VariableRow | null): void {
-  if (data.source !== "api" || !data.api?.headers) return;
+  if (data.source !== "api" || !data.api) return;
+  if (data.api.query) data.api.query = unmaskQuery(data.api.query, existing);
+  if (!data.api.headers) return;
   const prev = (existing?.config as { headers?: Record<string, string> } | null)?.headers ?? {};
   for (const [k, v] of Object.entries(data.api.headers)) {
     if (v === HEADER_MASK) data.api.headers[k] = prev[k] ?? "";
@@ -182,6 +246,26 @@ function badRequest(res: Response, error: z.ZodError): void {
   });
 }
 
+/** Mirrors the data-plane guard: one rule, enforced on every write surface. */
+function rejectUnsupportedSource(res: Response, source: PlaceholderEntry["source"]): boolean {
+  if (isSourceSupported(source)) return false;
+  res.status(422).json({
+    error: "unsupported_variable_source",
+    message: unsupportedSourceMessage(source),
+    field: "source",
+  });
+  return true;
+}
+
+/** Unknown call metadata schema, or a {{key.k|v}} not in it → 400. True = answered. */
+async function rejectBadMetadata(res: Response, data: Payload): Promise<boolean> {
+  if (data.source !== "api" || !data.api) return false;
+  const details = await checkVariableMetadata(data.api);
+  if (details.length === 0) return false;
+  res.status(400).json({ error: "Invalid variable payload", details });
+  return true;
+}
+
 /** Express 4 does not catch async handler rejections — wrap them. */
 export const asyncHandler =
   (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
@@ -192,11 +276,29 @@ export const asyncHandler =
 export const registerVariableRoutes = (app: Express): void => {
   const json = express.json({ limit: "64kb" });
 
+  // What a `field` variable can point at; empty outside database mode.
+  app.get(
+    "/admin/api/lookup/fields",
+    asyncHandler(async (_req: Request, res: Response) => {
+      try {
+        res.json({ generated_at: new Date().toISOString(), ...(await lookupFields()) });
+      } catch {
+        res.status(503).json({ error: "Could not read the columns of your customer database" });
+      }
+    })
+  );
+
   app.get(
     "/admin/api/variables",
     asyncHandler(async (_req: Request, res: Response) => {
       const rows = await listVariables();
-      res.json({ generated_at: new Date().toISOString(), variables: rows.map(serialize) });
+      res.json({
+        generated_at: new Date().toISOString(),
+        variables: [
+          ...Object.keys(SYSTEM_VARIABLES).map(serializeSystem),
+          ...rows.filter((row) => !isSystemVariable(row.name)).map(serialize),
+        ],
+      });
     })
   );
 
@@ -206,10 +308,13 @@ export const registerVariableRoutes = (app: Express): void => {
     asyncHandler(async (req: Request, res: Response) => {
       const parsed = variablePayloadSchema.safeParse(req.body);
       if (!parsed.success) return badRequest(res, parsed.error);
+      if (rejectUnsupportedSource(res, parsed.data.source)) return;
+      if (rejectSystemName(res, parsed.data.name)) return;
       if (await getVariable(parsed.data.name)) {
         res.status(409).json({ error: `Variable "${parsed.data.name}" already exists` });
         return;
       }
+      if (await rejectBadMetadata(res, parsed.data)) return;
       const row = await createVariable(toNewVariable(parsed.data, req));
       await refreshPlaceholders();
       res.status(201).json({ variable: serialize(row) });
@@ -223,16 +328,20 @@ export const registerVariableRoutes = (app: Express): void => {
       const parsed = variablePayloadSchema.safeParse(req.body);
       if (!parsed.success) return badRequest(res, parsed.error);
       const currentName = String(req.params.name);
+      if (rejectSystem(res, currentName, "changed")) return;
+      if (parsed.data.name !== currentName && rejectSystemName(res, parsed.data.name)) return;
       const existing = await getVariable(currentName);
       if (!existing) {
         res.status(404).json({ error: `Variable "${currentName}" not found` });
         return;
       }
+      if (rejectUnsupportedSource(res, parsed.data.source)) return;
       if (parsed.data.name !== currentName && (await getVariable(parsed.data.name))) {
         res.status(409).json({ error: `Variable "${parsed.data.name}" already exists` });
         return;
       }
       mergeMaskedHeaders(parsed.data, existing);
+      if (await rejectBadMetadata(res, parsed.data)) return;
       const row = await updateVariable(currentName, toNewVariable(parsed.data, req));
       await refreshPlaceholders();
       res.json({ variable: serialize(row!) });
@@ -242,6 +351,7 @@ export const registerVariableRoutes = (app: Express): void => {
   app.delete(
     "/admin/api/variables/:name",
     asyncHandler(async (req: Request, res: Response) => {
+      if (rejectSystem(res, String(req.params.name), "deleted")) return;
       const deleted = await deleteVariable(String(req.params.name));
       if (!deleted) {
         res.status(404).json({ error: `Variable "${req.params.name}" not found` });

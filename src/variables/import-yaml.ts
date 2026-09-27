@@ -9,6 +9,7 @@ import { countVariables, createVariable } from "../db/repos/variables.js";
 import { META_KEYS } from "../db/schema/index.js";
 import { getDispatchConfig } from "../user-lookup/config.js";
 import { refreshPlaceholders } from "./service.js";
+import { isSystemVariable } from "./system.js";
 
 export async function importYamlPlaceholdersOnce(): Promise<{ imported: number }> {
   if (await getMeta(META_KEYS.yamlImportDoneAt)) {
@@ -21,6 +22,8 @@ export async function importYamlPlaceholdersOnce(): Promise<{ imported: number }
   if ((await countVariables()) === 0) {
     const placeholders = getDispatchConfig().placeholders;
     for (const [name, def] of Object.entries(placeholders)) {
+      // System variables live in code (system.ts) and are never rows.
+      if (isSystemVariable(name)) continue;
       await createVariable({
         name,
         source: def.source,

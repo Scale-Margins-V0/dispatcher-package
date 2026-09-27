@@ -83,8 +83,8 @@ export class SendLogRecorder {
       latency_ms: entry.latency_ms ?? null,
       error_category: entry.error_category ? clamp(entry.error_category, ID_MAX) : null,
       // Scrubbed here too, not just at the call sites: this row is the one that
-      // survives in the database, and a future caller must not be able to leak
-      // a recipient address into it by forgetting.
+      // persists, and a future caller must not be able to leak a recipient
+      // address into it by forgetting.
       error_message: entry.error_message
         ? clamp(scrubPii(entry.error_message), ERROR_MAX)
         : null,

@@ -36,14 +36,15 @@ flowchart LR
 
 ---
 
-## Environment variables (`.env`)
+## Environment variables
+
+These are environment variable names. Set them in `.env.yaml` — most have a typed key (for example `scalemargin.dispatch_secret`), and anything without one goes under the `env:` map. A real environment variable (Docker `environment:`, a Kubernetes Secret) also works, and always wins over the file. See [`.env.yaml.example`](../.env.yaml.example).
 
 | Variable | Purpose |
 |----------|---------|
-| `EMAIL_PROVIDER` | Set to **`ses`** for SES sends. |
+| `senders:` entry | `channel: email`, `provider: ses`, and a `from:` that is a verified SES identity. |
 | `AWS_REGION` | SES region (e.g. `us-east-1`) — must match where identities and configuration set live. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | IAM user keys (local dev) or omit on AWS compute with an **instance/task role** that allows `ses:SendEmail`. |
-| `FROM_EMAIL` | Verified **domain** or **email** identity in SES. |
 | `SES_EVENT_CONFIG_SET` | **Name** of the SES **Configuration set** that owns your event destination (must match console exactly). |
 | `SCALEMARGIN_DISPATCH_SECRET` | Verifies `POST /api/scalemargin/dispatch`. |
 | `SCALEMARGIN_ANALYTICS_SECRET` | Signs outbound analytics POSTs. |
@@ -66,13 +67,13 @@ Event pipeline: generated temp `events.yaml` enables **SES** and disables SendGr
 
 ### 2. Verified identity (sender + sandbox recipients)
 
-- **SES → Verified identities → Create identity** — verify your **domain** (recommended) or a single **email** for `FROM_EMAIL`.
+- **SES → Verified identities → Create identity** — verify your **domain** (recommended) or a single **email** for the sender's `from:`.
 - If your account is in the **SES sandbox**, for each address in `EVENT_TEST_RECIPIENTS` go to **Verified identities** and verify those emails too (SES only delivers to verified addresses in sandbox).
 
 ### 3. Configuration set (name = `SES_EVENT_CONFIG_SET`)
 
 - **SES → Configuration sets → Create configuration set**.
-- **Name:** copy into `.env` as `SES_EVENT_CONFIG_SET` (e.g. `scalemargin-events-dev`).
+- **Name:** set as `configuration_set` on your SES sender in `.env.yaml` (or `SES_EVENT_CONFIG_SET` under `env:`) (e.g. `scalemargin-events-dev`).
 
 ### 4. Event destination → Amazon SNS
 
@@ -93,7 +94,7 @@ Event pipeline: generated temp `events.yaml` enables **SES** and disables SendGr
 - Open **Amazon SNS → Topics → (your topic) → Create subscription**.
 - **Protocol:** `HTTPS`
 - **Endpoint:** `https://<your-ngrok-host>/api/scalemargin/ses-notifications`  
-  (no trailing slash issues — use the exact public URL; run `ngrok http <PORT>` to match `PORT` in `.env`.)
+  (no trailing slash issues — use the exact public URL; run `ngrok http <PORT>` to match `dispatcher.port` in `.env.yaml`.)
 
 - **Confirm subscription:** SNS sends a **`SubscriptionConfirmation`** POST to your endpoint. This server validates the SNS signature and, if `SubscribeURL` is on `*.amazonaws.com`, **GETs** that URL to confirm automatically. Watch server logs for `[SES-SNS] Subscription confirmed`.
 
@@ -113,7 +114,7 @@ Event pipeline: generated temp `events.yaml` enables **SES** and disables SendGr
 ## Run the automated SES smoke test
 
 ```bash
-# In .env: SCALEMARGIN_* , FROM_EMAIL, SES_EVENT_CONFIG_SET, AWS_REGION, credentials,
+# In the environment: SCALEMARGIN_* , FROM_EMAIL (legacy single sender), SES_EVENT_CONFIG_SET, AWS_REGION, credentials,
 # EVENT_TEST_RECIPIENTS, EVENT_TEST_PUBLIC_BASE_URL=https://<ngrok>...
 
 ngrok http 3100   # or your PORT
@@ -148,7 +149,7 @@ After SNS delivers events to your tunnel, you should see new rows in the CSV (an
 |---------|----------------|
 | **MessageRejected** / “Email address not verified” | Sandbox: verify **recipient** addresses. |
 | **ConfigurationSetDoesNotExist** | `SES_EVENT_CONFIG_SET` string matches the console set name; region matches. |
-| **“The security token included in the request is invalid”** on send | Almost always **wrong access key + secret pair** or **credentials not loaded**: `pnpm dev` / `pnpm start` now load repo-root **`.env`** automatically (see `src/index.ts`). Still check **non-empty shell exports** (`echo $AWS_ACCESS_KEY_ID`) — they override `.env`. **Duplicate keys in `.env`**: last line wins. Confirm with `aws sts get-caller-identity`. |
+| **“The security token included in the request is invalid”** on send | Almost always **wrong access key + secret pair** or **credentials not loaded**: `pnpm dev` / `pnpm start` load **`.env.yaml`** at boot (`src/config/hydrate.ts`). Check **non-empty shell exports** (`echo $AWS_ACCESS_KEY_ID`) — a real environment variable always wins over the file, so a stale export silently shadows the key you just edited. Confirm with `aws sts get-caller-identity`. |
 | **401** on `/api/scalemargin/ses-notifications` | SNS signature verification failed — body must be the **raw** POST string SNS sent; do not parse/re-stringify in a proxy. |
 | No events in CSV | SNS subscription **confirmed**? Event destination uses the **same** topic you subscribed? Configuration set attached to the **messages you send**? |
 | **`dispatched` in CSV but nothing from SES (no `delivered`, etc.)** | `dispatched` is emitted **inside this app** after `SendEmail` succeeds. **`delivered` / bounces / complaints** only arrive when **SES publishes to SNS** and SNS POSTs to `/api/scalemargin/ses-notifications`. Fix the SNS subscription + event destination (same region, same configuration set name as `SES_EVENT_CONFIG_SET`). |

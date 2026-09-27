@@ -1,13 +1,19 @@
-# ScaleMargin Dispatcher — stateful deployment.
+# ScaleMargin Dispatcher — local development stack.
 #
 # Default stack: dispatcher + MySQL 8 as the dispatcher's own state database
 # (variables, activity history, logs, event outbox).
 #
-#   docker compose up --build
+#   cp .env.yaml.example .env.yaml    # then fill in scalemargin: and
+#   docker compose up --build         # dispatcher.retention.message_id_ttl
+#
+# Configuration comes from the mounted .env.yaml — there is no .env. The one
+# exception is the state-database connection below: this file PROVIDES that
+# database, so it owns the connection string, and a real environment variable
+# always wins over .env.yaml.
 #
 # Alternatives:
-#   - Attach ANY existing SQL DB instead: drop the mysql service and point
-#     DISPATCHER_DB_URL at your MySQL/Postgres (see .env.example).
+#   - Attach ANY existing SQL DB instead: drop the mysql service and the two
+#     DISPATCHER_DB_* lines below, and set dispatcher.database in .env.yaml.
 #   - Zero-dependency mode: remove DISPATCHER_DB_* entirely — the dispatcher
 #     falls back to a local SQLite file; mount ./data to keep it across
 #     container restarts (volume already configured below).
@@ -19,22 +25,22 @@ services:
     build: .
     ports:
       - "3100:3100"
-    env_file:
-      - .env
     environment:
+      # Owned here because this file provides the database. Wins over
+      # dispatcher.database in .env.yaml.
       DISPATCHER_DB_DIALECT: mysql
       DISPATCHER_DB_URL: mysql://dispatcher:dispatcher_pw@mysql:3306/dispatcher_state
       # Postgres flavor (with --profile postgres):
       # DISPATCHER_DB_DIALECT: postgres
       # DISPATCHER_DB_URL: postgres://dispatcher:dispatcher_pw@postgres:5432/dispatcher_state
-      # Admin GUI at http://localhost:3100/admin (real accounts via Better Auth).
-      # First boot seeds an owner; set these in .env to control it, else a random
-      # password is generated and revealed once in the logs + data/initial-admin-credentials.txt:
-      # DISPATCHER_ADMIN_EMAIL: admin@scalemargins.tech
-      # DISPATCHER_ADMIN_PASSWORD: change-me-min-12-chars
-      # BETTER_AUTH_SECRET: set-a-random-32-char-secret-in-prod
-      # DISPATCHER_PUBLIC_URL: http://localhost:3100   # for invite links / secure cookies
+      # Admin GUI at http://localhost:3100/admin. First boot seeds an owner —
+      # set dispatcher.admin.email / .password in .env.yaml to control it, else
+      # a random password is written once to the logs and
+      # data/initial-admin-credentials.txt.
     volumes:
+      # Create .env.yaml BEFORE the first `up`. If it is missing, Docker creates
+      # a DIRECTORY at this path and the dispatcher boots in mock mode.
+      - ./.env.yaml:/app/.env.yaml:ro
       - dispatcher-data:/app/data
     depends_on:
       mysql:

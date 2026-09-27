@@ -2,6 +2,7 @@
  * Shared helpers: safe SQL identifiers, JSON dot-paths, id coercion, SQL/HTTP → `UserRecord`.
  */
 
+import { isReachable, type LookupChannel } from "./channel.js";
 import type { UserRecord } from "./types.js";
 
 export type IdType = "string" | "int" | "bigint" | "uuid";
@@ -88,7 +89,8 @@ export function mapSqlRowToUserRecord(
   row: Record<string, unknown>,
   idColumnPhysical: string,
   fieldMap: Record<string, string>,
-  idType: IdType
+  idType: IdType,
+  channel: LookupChannel = "email"
 ): UserRecord | null {
   const rawId = row[idColumnPhysical];
   const idStr = stringFromCell(rawId);
@@ -107,14 +109,11 @@ export function mapSqlRowToUserRecord(
     fields[logical] = stringFromCell(row[physical]);
   }
 
-  const email = fields.email;
-  if (email === undefined || email.length === 0) {
-    return null;
-  }
+  if (!isReachable(fields, channel)) return null;
 
   return {
     user_id: wireUserId,
-    email,
+    email: fields.email ?? "",
     fields,
   };
 }
@@ -127,7 +126,8 @@ export function mapHttpRecordToUserRecord(
   record: unknown,
   idPath: string,
   fieldMap: Record<string, string>,
-  idType: IdType
+  idType: IdType,
+  channel: LookupChannel = "email"
 ): UserRecord | null {
   const rawId = pickByPath(record, idPath);
   const idStr = stringFromCell(rawId);
@@ -143,14 +143,11 @@ export function mapHttpRecordToUserRecord(
     fields[logical] = stringFromCell(pickByPath(record, jsonPath));
   }
 
-  const email = fields.email;
-  if (email === undefined || email.length === 0) {
-    return null;
-  }
+  if (!isReachable(fields, channel)) return null;
 
   return {
     user_id: wireUserId,
-    email,
+    email: fields.email ?? "",
     fields,
   };
 }

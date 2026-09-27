@@ -1,7 +1,7 @@
 # Keep the build context small and free of secrets.
 #
 # Without this file `docker build` uploads the whole working tree — including
-# node_modules, .git, local databases and .env — which is slow and puts real
+# node_modules, .git, local databases and .env.yaml — which is slow and puts real
 # credentials into the build context and the layer cache.
 #
 # The Dockerfile installs dependencies from package.json + pnpm-lock.yaml and
@@ -20,7 +20,6 @@ admin-dist
 # Secrets and local state
 .env
 .env.*
-!.env.example
 data
 *.sqlite
 *.db

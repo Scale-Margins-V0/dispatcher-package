@@ -1,5 +1,8 @@
 /**
  * Deterministic synthetic users (no DB/API) when `user_lookup.backend` is `mock`.
+ *
+ * Contact details only, like every lookup mode: personalization comes from
+ * variables, not the lookup.
  */
 
 import { componentLogger } from "../../logging/logger.js";
@@ -12,19 +15,13 @@ export class MockAdapter implements UserLookupAdapter {
     const result = new Map<string, UserRecord>();
     for (const id of userIds) {
       const num = parseInt(id.replace(/\D/g, ""), 10) || 0;
-      const firstName = ["Nikhil", "Priya", "Rahul", "Anita", "Vikram"][num % 5]!;
-      const lastName = ["Singh", "Sharma", "Patel", "Gupta", "Kumar"][num % 5]!;
-      const company = ["Acme Corp", "Tata Digital", "Infosys", "Reliance", "Wipro"][num % 5]!;
       const email = `user-${id}@example.com`;
       result.set(id, {
         user_id: id,
         email,
         fields: {
-          first_name: firstName,
-          last_name: lastName,
           email,
           phone: `+9198765${String(num).padStart(5, "0")}`,
-          company_name: company,
         },
       });
     }

@@ -35,6 +35,21 @@ export const variables = pgTable("variables", {
   updated_by: id191("updated_by"),
 });
 
+/**
+ * Call metadata schemas: a named set of keys (with a sample and an optional
+ * validation regex each) an `api` variable can attach, making `{{key.k}}` /
+ * `{{key.v}}` usable in its request. Definitions only — never a value.
+ */
+export const callMetadata = pgTable("call_metadata", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  name: id191("name").notNull().unique(),
+  /** [{ key, placeholder?, regex? }] */
+  keys: jsonb("keys").notNull(),
+  created_at: ts("created_at").notNull(),
+  updated_at: ts("updated_at").notNull(),
+  updated_by: id191("updated_by"),
+});
+
 export const dispatchRuns = pgTable(
   "dispatch_runs",
   {
@@ -521,5 +536,85 @@ export const campaignSummary = pgTable(
   (t) => [
     index("campaign_summary_org_idx").on(t.organization_id, t.last_event_at),
     index("campaign_summary_last_event_idx").on(t.last_event_at),
+  ]
+);
+
+// ---------------------------------------------------------------------------
+// Provider message ids. One row per accepted send, so the operator can look the
+// id up in their own database and poll the provider for status themselves.
+// Pruned by DISPATCHER_MESSAGE_ID_TTL (mandatory) in the hourly sweep.
+// ---------------------------------------------------------------------------
+export const providerMessageIds = pgTable(
+  "provider_message_ids",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    provider_message_id: id191("provider_message_id").notNull(),
+    user_id: id191("user_id").notNull(),
+    sent_at: ts("sent_at").notNull(),
+    // ── Delivery-status polling (Freshchat status_poller) ── all nullable:
+    // rows from providers or senders that are not polled keep them empty.
+    sender_id: id191("sender_id"),
+    status: varchar("status", { length: 32 }),
+    status_event: varchar("status_event", { length: 16 }),
+    status_at: ts("status_at"),
+    provider_ref: id191("provider_ref"),
+    next_poll_at: ts("next_poll_at"),
+    last_polled_at: ts("last_polled_at"),
+    poll_attempts: integer("poll_attempts").notNull().default(0),
+    poll_error: varchar("poll_error", { length: 255 }),
+  },
+  (t) => [
+    index("provider_message_ids_sent_at_idx").on(t.sent_at),
+    index("provider_message_ids_lookup_idx").on(t.provider, t.provider_message_id),
+    index("provider_message_ids_user_idx").on(t.user_id),
+    // "What is due?" — the poller's only query shape.
+    index("provider_message_ids_poll_idx").on(t.provider, t.next_poll_at),
+  ]
+);
+
+/**
+ * Per-minute performance rollups (src/metrics/collector.ts): one row per
+ * flush per (minute, program, step, kind, subject) — reads SUM them. No PII:
+ * subjects are variable / provider / lookup-mode names, never user data.
+ * Pruned after dispatcher.retention.metrics_days (default 7).
+ */
+export const dispatchMetrics = pgTable(
+  "dispatch_metrics",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    /** Epoch minutes — integer so any bucket size is `minute - minute % n` in every dialect. */
+    minute: integer("minute").notNull(),
+    program_id: id191("program_id").notNull(),
+    step_id: id191("step_id").notNull().default(""),
+    kind: varchar("kind", { length: 24 }).notNull(),
+    subject: id191("subject").notNull().default(""),
+    count: integer("count").notNull().default(0),
+    ok: integer("ok").notNull().default(0),
+    failed: integer("failed").notNull().default(0),
+    timeout: integer("timeout").notNull().default(0),
+    skipped: integer("skipped").notNull().default(0),
+    fallback: integer("fallback").notNull().default(0),
+    items: integer("items").notNull().default(0),
+    sum_ms: integer("sum_ms").notNull().default(0),
+    min_ms: integer("min_ms"),
+    max_ms: integer("max_ms"),
+    peak_per_sec: integer("peak_per_sec").notNull().default(0),
+    /** Latency histogram — bounds in src/metrics/histogram.ts. */
+    b0: integer("b0").notNull().default(0),
+    b1: integer("b1").notNull().default(0),
+    b2: integer("b2").notNull().default(0),
+    b3: integer("b3").notNull().default(0),
+    b4: integer("b4").notNull().default(0),
+    b5: integer("b5").notNull().default(0),
+    b6: integer("b6").notNull().default(0),
+    b7: integer("b7").notNull().default(0),
+    b8: integer("b8").notNull().default(0),
+    b9: integer("b9").notNull().default(0),
+    b10: integer("b10").notNull().default(0),
+  },
+  (t) => [
+    index("dispatch_metrics_program_minute_idx").on(t.program_id, t.minute),
+    index("dispatch_metrics_minute_idx").on(t.minute),
   ]
 );

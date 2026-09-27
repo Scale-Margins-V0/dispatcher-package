@@ -14,8 +14,10 @@ import {
 } from "../providers/senders.js";
 import type { EmailMessage, Sender } from "../providers/types.js";
 import { telemetry } from "../telemetry/posthog.js";
-import { lookupUsers } from "../user-lookup.js";
+import { recordMetric } from "../metrics/collector.js";
+import { timedLookupUsers } from "../metrics/lookup.js";
 import { resolveDynamicValues } from "../variables/resolver.js";
+import { readCallMetadataPayload } from "../variables/call-metadata.js";
 import { programOf } from "../db/repos/dispatch-programs.js";
 import { SendLogRecorder } from "./send-log-recorder.js";
 import { deriveTemplateRef } from "./template-ref.js";
@@ -39,7 +41,6 @@ export type DispatchOutcome = {
 
 export async function processDispatch(
   payload: DispatchPayload,
-  fromEmail: string,
   dispatchRunId?: string
 ): Promise<DispatchOutcome> {
   // Pick up variable edits made via the admin API since the last dispatch —
@@ -69,16 +70,29 @@ export async function processDispatch(
     resolvedAnalyticsUrl
   );
 
+  // Metrics are keyed like the console: program (drip sequence / campaign) + step.
+  const program = programOf(payload);
+  const dispatchStarted = performance.now();
+  const sinceStart = () => performance.now() - dispatchStarted;
+
   const personalizeCtx = {
     campaign_id,
     organization_id: metadata.organization_id,
+    call_metadata: readCallMetadataPayload(payload.call_metadata),
+    metrics: program,
   };
 
-  const users = await lookupUsers(user_ids);
+  const users = await timedLookupUsers(program, user_ids, "email");
 
   // Resolve async (query/api) variables once for the whole recipient set, before
   // the sync personalize pass. Sync sources (field/computed/constant) skip this.
-  const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx);
+  // The content goes in too, so `{{api_var.some.path}}` resolves even when the
+  // path was never declared on the variable.
+  const resolvedVars = await resolveDynamicValues([...users.values()], personalizeCtx, [
+    content.subject,
+    content.html_body,
+    content.text_body,
+  ]);
 
   // The variables this message actually references — computed once for the run,
   // because the template is the same for every recipient. This is the
@@ -103,7 +117,6 @@ export async function processDispatch(
 
   const devRecipient = process.env.DEV_RECIPIENT_EMAIL;
 
-  const program = programOf(payload);
   const sendLogs = new SendLogRecorder({
     dispatch_run_id: dispatchRunId,
     campaign_id,
@@ -133,6 +146,7 @@ export async function processDispatch(
     const user = users.get(userId);
     if (!user) {
       unresolved += 1;
+      recordMetric(program, "message_resolve", "", { failed: 1, ms: sinceStart() });
       log.debug({ user_id: userId }, "Recipient not found in user lookup — skipped");
       sendLogs.add({
         user_id: userId,
@@ -199,6 +213,7 @@ export async function processDispatch(
 
     if (chain.length === 0) {
       unresolved += 1;
+      recordMetric(program, "message_resolve", "", { failed: 1, ms: sinceStart() });
       log.warn(
         { user_id: userId, organization_id: metadata.organization_id },
         "No enabled sender found for organization on email channel"
@@ -232,12 +247,19 @@ export async function processDispatch(
       continue;
     }
 
+    recordMetric(program, "message_resolve", "", {
+      ok: 1,
+      fallback: (fallbackCounts.get(userId) ?? 0) > 0 ? 1 : 0,
+      ms: sinceStart(),
+    });
     messages.push({
       userId,
       chain,
       message: {
         to: recipientEmail,
-        from: fromEmail,
+        // The routed sender's own address; sendWithFailover re-stamps it per
+        // attempt, so a failover also sends as the account that sent it.
+        from: chain[0]!.config.from ?? "",
         subject,
         html,
         ...(text !== undefined && { text }),
@@ -289,8 +311,13 @@ export async function processDispatch(
     const sendStartedAt = performance.now();
     const result = await sendWithFailover(message, chain, "email");
     const latencyMs = Math.round(performance.now() - sendStartedAt);
+    recordMetric(program, "provider_send", result.finalSender.config.provider, {
+      ...(result.success ? { ok: 1 } : { failed: 1 }),
+      ms: latencyMs,
+    });
+    if (result.success) recordMetric(program, "message_e2e", "", { ok: 1, ms: sinceStart() });
     // Provider errors are untrusted text. SES names the recipient in
-    // "Email address is not verified. The following identities failed …",
+    // "…is not authorized to perform 'ses:SendEmail' on resource …/noreply@…",
     // so scrub before it reaches a log line or the send-log table.
     const errorMessage = result.success
       ? ""
@@ -384,6 +411,13 @@ export async function processDispatch(
   const failed = sendResults.filter((r) => !r.success).length;
 
   const fallbacksUsed = [...fallbackCounts.values()].reduce((a, b) => a + b, 0);
+  recordMetric(program, "dispatch", "email", {
+    items: user_ids.length,
+    ok: sent,
+    failed: failed + unresolved,
+    fallback: fallbacksUsed,
+    ms: sinceStart(),
+  });
   log[failed > 0 ? "warn" : "info"](
     {
       channel: "email",

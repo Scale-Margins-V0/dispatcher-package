@@ -39,12 +39,12 @@ With **`pnpm run dev:event-test`**, the child process defaults **`UNSUBSCRIBE_UR
    export EVENT_TEST_PUBLIC_BASE_URL=https://a1b2c3d4.ngrok-free.app
    ```
 
-   Then restart the server (or run `pnpm run dev:event-test` with that variable in `.env`). The printed `analytics_callback_url` must use this host so **signed analytics POSTs** hit your tunnel, not `127.0.0.1`.
+   Then restart the server (or run `pnpm run dev:event-test` with that variable under `env:` in `.env.yaml`). The printed `analytics_callback_url` must use this host so **signed analytics POSTs** hit your tunnel, not `127.0.0.1`.
 
 6. **SendGrid → Event Webhook** (Mail Settings → Event Webhook, or Messaging → Event Webhook depending on UI):
 
    - **HTTP POST URL**: `https://a1b2c3d4.ngrok-free.app/api/scalemargin/sendgrid-events`
-   - Turn on **signed** verification and paste the **ECDSA public key** that matches `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` in your `.env`.
+   - Turn on **signed** verification and paste the **ECDSA public key** that matches `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` under `env:` in your `.env.yaml`.
    - In the SendGrid UI, select which **raw event types** to send (e.g. Delivered, Bounce). Our server then applies its own **allowlist** (see below); subscribing to extra types in SendGrid is fine if you use `["*"]` or add them to `inbound_event_types`.
    - **Note:** SendGrid’s **“Test Integration”** button usually POSTs sample events **without** `custom_args`; the server logs one summary line (`Dropped N webhook event(s) — missing correlation`). That is expected. With **`pnpm run dev:event-test`**, a **real** signed dispatch is auto-posted by default so outbound mail includes `customArgs` and delivery webhooks correlate (set `EVENT_TEST_AUTO_DISPATCH=0` to skip and use the printed `curl` only).
 
@@ -58,10 +58,10 @@ With **`pnpm run dev:event-test`**, the child process defaults **`UNSUBSCRIBE_UR
 
 ## Quick start (summary)
 
-1. Put in `.env` at least: `SENDGRID_API_KEY`, `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`, `SCALEMARGIN_DISPATCH_SECRET`, `SCALEMARGIN_ANALYTICS_SECRET`, `FROM_EMAIL` (verified sender in SendGrid).
+1. Put in `.env.yaml` at least: `SENDGRID_API_KEY`, `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`, `SCALEMARGIN_DISPATCH_SECRET`, `SCALEMARGIN_ANALYTICS_SECRET`, `FROM_EMAIL` (verified sender in SendGrid).
 
-2. Set test inboxes in `.env`, for example:
-   `EVENT_TEST_RECIPIENTS=preethamsathyamurthy@gmail.com,preetham@velantris.ai`
+2. Set test inboxes under `env:` in `.env.yaml`, for example:
+   `EVENT_TEST_RECIPIENTS: preethamsathyamurthy@gmail.com,preetham@velantris.ai`
    (comma-separated; must match addresses you can receive on for this test).
 
 3. Run:
@@ -89,8 +89,8 @@ You also need **Mail Settings → Event Webhook** (or **Messaging → Event Webh
 
 1. **SendGrid** — Event Webhook: enable **Open** / **Click** so SendGrid POSTs those payloads to your tunnel.
 2. **This app** — Default `config/events.yaml` (or no `EVENT_SENDGRID_INBOUND_EVENTS`) uses a **minimal** inbound allowlist that **drops** `open` and `click` before correlation. Fix one of:
-   - **`pnpm run dev:event-test`** — child sets **`EVENT_SENDGRID_INBOUND_EVENTS=*`** unless you override it in `.env`; or
-   - **`EVENT_SENDGRID_INBOUND_EVENTS=*`** (or `open,click`) in `.env`, or
+   - **`pnpm run dev:event-test`** — child sets **`EVENT_SENDGRID_INBOUND_EVENTS=*`** unless you override it under `env:` in `.env.yaml`; or
+   - **`EVENT_SENDGRID_INBOUND_EVENTS=*`** (or `open,click`) as `events.sendgrid_inbound_events` in `.env.yaml`, or
    - **`config/events.yaml`**: `providers.sendgrid.inbound_event_types: ["*"]` or include `open` / `click`.
 
 If opens are still missing after that, check **ngrok** (`http://127.0.0.1:4040`) for POST bodies containing `"event":"open"`. No such requests → SendGrid or the client; requests present but no CSV rows → signature, correlation, or allowlist (server log will say).

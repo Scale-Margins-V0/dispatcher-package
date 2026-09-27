@@ -31,6 +31,11 @@ export function pgArrayCast(idType: IdType): string {
   }
 }
 
+/** Returns no rows, only the column list — how the view's columns are discovered. */
+export function buildColumnProbeQuery(dialect: SqlDialect, table: string): string {
+  return `select * from ${quoteIdent(dialect, table)} where 1=0`;
+}
+
 export interface SelectUsersQuery {
   text: string;
   values: unknown[];

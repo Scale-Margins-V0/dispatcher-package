@@ -5,14 +5,28 @@ import Database from "better-sqlite3";
 import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { parseDispatchConfig } from "../config.js";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  parseDispatchConfig,
+  resetDispatchConfigForTests,
+  setDispatchConfigForTests,
+} from "../config.js";
+import type { PlaceholderEntry } from "../placeholders.js";
 import { SqlAdapter } from "./sql.js";
 
 describe("SqlAdapter (sqlite, source.kind table)", () => {
   let dbPath: string;
   let adapter: SqlAdapter;
   let dir: string;
+  let cfg: ReturnType<typeof parseDispatchConfig>;
+
+  /** The variables in play — the lookup reads only the columns these reference. */
+  function withVariables(placeholders: Record<string, PlaceholderEntry>): SqlAdapter {
+    setDispatchConfigForTests({ ...cfg, placeholders });
+    return new SqlAdapter(cfg);
+  }
+
+  afterEach(() => resetDispatchConfigForTests());
 
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "sql-adapt-"));
@@ -37,7 +51,7 @@ describe("SqlAdapter (sqlite, source.kind table)", () => {
     ins.run("u3", "Rahul", "Patel", "rahul@example.com", null, null);
     db.close();
 
-    const cfg = parseDispatchConfig({
+    cfg = parseDispatchConfig({
       user_lookup: {
         backend: "sqlite",
         source: {
@@ -87,6 +101,55 @@ describe("SqlAdapter (sqlite, source.kind table)", () => {
     expect(m.get("u2")?.fields.company_name).toBe("Tata Digital");
     expect(m.get("u3")?.fields.last_name).toBe("Patel");
     expect(m.has("ghost")).toBe(false);
+  });
+
+  it("reads the contact field plus only the columns variables use", async () => {
+    const a = withVariables({
+      greeting: { source: "computed", expr: "'Hi ' + first_name" },
+      org: { source: "field", field: "company_name" },
+    });
+    const u = (await a.lookupUsers(["u2"], "email")).get("u2")!;
+    expect(u.fields).toEqual({
+      email: "priya@example.com",
+      first_name: "Priya",
+      company_name: "Tata Digital",
+    });
+  });
+
+  it("reads no extra column when no variable needs one", async () => {
+    const u = (await withVariables({}).lookupUsers(["u1"], "email")).get("u1")!;
+    expect(u.fields).toEqual({ email: "u1@example.com" });
+  });
+
+  // One unknown column would fail the whole SELECT and resolve nobody.
+  it("skips a column the view does not have instead of failing the lookup", async () => {
+    const a = withVariables({ city: { source: "field", field: "no_such_column" } });
+    const u = (await a.lookupUsers(["u1"], "email")).get("u1")!;
+    expect(u.email).toBe("u1@example.com");
+    expect(u.fields).not.toHaveProperty("no_such_column");
+  });
+
+  it("lists the source's columns for the field picker", async () => {
+    expect(await adapter.listSourceColumns()).toEqual([
+      "user_id",
+      "first_name",
+      "last_name",
+      "email",
+      "company_name",
+      "phone_no",
+    ]);
+  });
+
+  it("an email lookup never reads the phone column", async () => {
+    const u = (await adapter.lookupUsers(["u1"], "email")).get("u1")!;
+    expect(u.fields).not.toHaveProperty("phone");
+  });
+
+  it("a WhatsApp lookup reads the phone, never the address, and needs a phone", async () => {
+    const m = await adapter.lookupUsers(["u1", "u3"], "whatsapp");
+    expect(m.get("u1")).toMatchObject({ email: "", fields: { phone: "+911" } });
+    expect(m.get("u1")!.fields).not.toHaveProperty("email");
+    expect(m.has("u3")).toBe(false); // no phone_no
   });
 });
 
