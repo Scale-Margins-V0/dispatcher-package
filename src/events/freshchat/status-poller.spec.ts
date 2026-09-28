@@ -19,10 +19,13 @@ import {
   isFinalEvent,
   nextPollDelayMs,
   parseStatusResponse,
+  impliedSteps,
   pollFreshchatStatusesOnce,
+  reconcileWebhookReceipts,
   recordReportedStatuses,
   resetFreshchatStatusPollerForTests,
   statusRank,
+  withImpliedSteps,
 } from "./status-poller.js";
 
 const SEND_URL = "https://acme-123.freshchat.com/v2/outbound-messages/whatsapp";
@@ -321,5 +324,100 @@ describe("webhook and poller together", () => {
     await recordReportedStatuses([{ external_id: "r1", event: "read", occurred_at: "", provider: "freshchat" }]);
     await recordReportedStatuses([{ external_id: "r1", event: "delivered", occurred_at: "", provider: "freshchat" }]);
     expect((await row("r1")).status_event).toBe("read");
+  });
+});
+
+describe("steps a status must have passed", () => {
+  it("fills in only the steps skipped on the ladder", () => {
+    expect(impliedSteps(null, "delivered")).toEqual([]);
+    expect(impliedSteps(null, "read")).toEqual(["delivered"]);
+    expect(impliedSteps("dispatched", "clicked")).toEqual(["delivered", "read"]);
+    expect(impliedSteps("delivered", "read")).toEqual([]);
+    expect(impliedSteps("delivered", "clicked")).toEqual(["read"]);
+    // A failure implies nothing; nothing moves backwards; bounced is off the ladder.
+    expect(impliedSteps(null, "bounced")).toEqual([]);
+    expect(impliedSteps("read", "delivered")).toEqual([]);
+    expect(impliedSteps("bounced", "read")).toEqual([]);
+  });
+
+  it("orders implied receipts just before the real one, carrying its stamp", () => {
+    const at = "2026-09-28T10:00:00.000Z";
+    const out = withImpliedSteps({ external_id: "r", event: "clicked", occurred_at: at, sign: "s", provider: "freshchat" }, null);
+    expect(out.map((r) => [r.event, r.occurred_at, r.sign])).toEqual([
+      ["delivered", "2026-09-28T09:59:59.998Z", "s"],
+      ["read", "2026-09-28T09:59:59.999Z", "s"],
+      ["clicked", at, "s"],
+    ]);
+  });
+});
+
+describe("a status that jumped between two polls", () => {
+  const events = () => analyticsPosts().flatMap((p) => p.receipts.map((r: { event: string }) => r.event));
+
+  it("READ seen first also reports delivered, in order", async () => {
+    await queue("r1");
+    statuses.r1 = { body: statusBody("r1", "READ") };
+    expect(await tick()).toMatchObject({ forwarded: 1 });
+    expect(events()).toEqual(["delivered", "read"]);
+    expect((await row("r1")).status_event).toBe("read");
+  });
+
+  it("CLICKED seen first reports delivered and read too", async () => {
+    await queue("r1");
+    statuses.r1 = { body: statusBody("r1", "CLICKED") };
+    await tick();
+    expect(events()).toEqual(["delivered", "read", "clicked"]);
+  });
+
+  it("READ after DELIVERED was already reported adds nothing", async () => {
+    await queue("r1");
+    statuses.r1 = { body: statusBody("r1", "DELIVERED") };
+    await tick();
+    statuses.r1 = { body: statusBody("r1", "READ") };
+    await pollFreshchatStatusesOnce(new Date(Date.now() + 60_000), fetchMock as unknown as typeof fetch);
+    expect(events()).toEqual(["delivered", "read"]);
+  });
+
+  it("FAILED reports only the failure", async () => {
+    await queue("r1");
+    statuses.r1 = { body: statusBody("r1", "FAILED") };
+    await tick();
+    expect(events()).toEqual(["bounced"]);
+  });
+});
+
+describe("webhook receipts reconciled with what was reported", () => {
+  const rc = (external_id: string, event: string) =>
+    ({ external_id, event, occurred_at: "2026-09-28T10:00:00.000Z", provider: "freshchat" }) as never;
+  const ev = (list: Array<{ external_id: string; event: string }>) => list.map((r) => `${r.external_id}:${r.event}`);
+
+  it("READ with nothing reported yet also sends delivered", async () => {
+    await queue("r1");
+    expect(ev(await reconcileWebhookReceipts([rc("r1", "read")]))).toEqual(["r1:delivered", "r1:read"]);
+  });
+
+  it("drops a step the poller already reported (no double counting)", async () => {
+    await queue("r1");
+    await recordReportedStatuses([rc("r1", "read")]);
+    expect(await reconcileWebhookReceipts([rc("r1", "delivered"), rc("r1", "read")])).toEqual([]);
+  });
+
+  it("replays one message's out-of-order batch in ladder order, without duplicates", async () => {
+    await queue("r1");
+    expect(ev(await reconcileWebhookReceipts([rc("r1", "read"), rc("r1", "delivered")]))).toEqual(["r1:delivered", "r1:read"]);
+  });
+
+  it("forwards a later step after an earlier one was reported", async () => {
+    await queue("r1");
+    await recordReportedStatuses([rc("r1", "delivered")]);
+    expect(ev(await reconcileWebhookReceipts([rc("r1", "read")]))).toEqual(["r1:read"]);
+  });
+
+  it("passes through a message it has no record of, and never drops dispatched or failures", async () => {
+    await queue("r1");
+    await recordReportedStatuses([rc("r1", "delivered")]);
+    // Order only matters within one message.
+    const out = ev(await reconcileWebhookReceipts([rc("unknown", "read"), rc("r1", "dispatched"), rc("r1", "bounced")]));
+    expect(out.sort()).toEqual(["r1:bounced", "r1:dispatched", "unknown:read"]);
   });
 });

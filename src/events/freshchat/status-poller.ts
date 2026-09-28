@@ -47,6 +47,7 @@ import { isDbInitialized } from "../../db/client.js";
 import { describeStatusPollTtl, statusPollTtl } from "../../config/status-poll-ttl.js";
 import { componentLogger } from "../../logging/logger.js";
 import { mapFreshchatStatus, type FreshchatReceipt } from "./adapter.js";
+import type { AnalyticsEventType } from "../../providers/types.js";
 import { forwardFreshchatReceipts } from "./receipt-forwarder.js";
 
 const log = componentLogger("events.freshchat.poller");
@@ -59,8 +60,19 @@ const BATCH_LIMIT = 200;
 const CONCURRENCY = 4;
 const REQUEST_TIMEOUT_MS = 10_000;
 const AUTH_PAUSE_MS = 5 * 60_000;
+/**
+ * Each step can only happen after every earlier one: a read message was
+ * delivered, a clicked one was read. `bounced` is off the ladder — a failure
+ * implies nothing about the others.
+ */
+const LADDER = ["dispatched", "delivered", "read", "clicked"] as const;
+/** The most receipts one status change can expand to (delivered, read, clicked). */
+export const MAX_RECEIPTS_PER_CHANGE = LADDER.length - 1;
+
 /** Backend cap on receipts per request (dispatch_receipts.ts). */
-const FORWARD_CHUNK = 500;
+export const MAX_RECEIPTS_PER_REQUEST = 500;
+/** Status changes per request — each can expand to MAX_RECEIPTS_PER_CHANGE receipts. */
+const FORWARD_CHUNK = Math.floor(MAX_RECEIPTS_PER_REQUEST / MAX_RECEIPTS_PER_CHANGE);
 
 // ── Pure helpers ──────────────────────────────────────────────────────────
 
@@ -72,6 +84,40 @@ export function statusRank(event: string | null | undefined): number {
 /** Events after which Freshchat reports nothing new worth asking about. */
 export function isFinalEvent(event: string | null | undefined): boolean {
   return event === "read" || event === "bounced" || event === "clicked";
+}
+
+/**
+ * The steps that must have happened between the last reported event and a
+ * newly seen one, oldest first — `dispatched → read` gives `["delivered"]`.
+ * Never `dispatched` (the send already reported it); empty for a failure,
+ * a backwards move, or a last event that is not on the ladder.
+ */
+export function impliedSteps(lastReported: string | null | undefined, next: string): AnalyticsEventType[] {
+  const from = LADDER.indexOf((lastReported ?? "dispatched") as (typeof LADDER)[number]);
+  const to = LADDER.indexOf(next as (typeof LADDER)[number]);
+  if (from < 0 || to < 0) return [];
+  return LADDER.slice(from + 1, to) as AnalyticsEventType[];
+}
+
+/**
+ * `receipt` preceded by a receipt for every step it skipped. The implied ones
+ * carry the same message, sender stamp and provider, and sort just before it
+ * (1ms apart) — the real time is unknown, only the order is certain.
+ */
+export function withImpliedSteps(receipt: FreshchatReceipt, lastReported: string | null | undefined): FreshchatReceipt[] {
+  const steps = impliedSteps(lastReported, receipt.event);
+  if (steps.length === 0) return [receipt];
+  const at = Date.parse(receipt.occurred_at);
+  return [
+    ...steps.map((event, i) => ({
+      external_id: receipt.external_id,
+      event,
+      occurred_at: Number.isNaN(at) ? receipt.occurred_at : new Date(at - (steps.length - i)).toISOString(),
+      ...(receipt.sign ? { sign: receipt.sign } : {}),
+      ...(receipt.provider ? { provider: receipt.provider } : {}),
+    })),
+    receipt,
+  ];
 }
 
 /** The sender's poll interval, in ms. */
@@ -212,6 +258,48 @@ export async function recordReportedStatuses(receipts: FreshchatReceipt[], now =
   }
 }
 
+/**
+ * Webhook receipts, made consistent with what was already reported for each
+ * message (by the poller or an earlier webhook):
+ *   - a step already reported is dropped — e.g. the real `delivered` arriving
+ *     after the poller reported it along with `read`;
+ *   - a skipped step is filled in — `read` after only `dispatched` also sends
+ *     `delivered`, like the poller does;
+ *   - one message's receipts go out in ladder order, whatever order they came in.
+ * A message with no recorded send (no state DB, or pruned past message_id_ttl)
+ * passes through untouched: without history there is nothing to compare with.
+ * Never throws — on any error the receipts are forwarded as they came.
+ */
+export async function reconcileWebhookReceipts(receipts: FreshchatReceipt[]): Promise<FreshchatReceipt[]> {
+  if (!isDbInitialized() || receipts.length === 0) return receipts;
+  try {
+    const rows = await findByProviderMessageIds(PROVIDER, [...new Set(receipts.map((r) => r.external_id))]);
+    const reported = new Map(rows.map((r) => [r.provider_message_id, r.status_event ?? null]));
+    const out: FreshchatReceipt[] = [];
+    // Stable by rank: a batch carrying `read` before `delivered` is replayed in order.
+    const ordered = receipts
+      .map((receipt, i) => ({ receipt, i }))
+      .sort((a, b) => statusRank(a.receipt.event) - statusRank(b.receipt.event) || a.i - b.i);
+    for (const { receipt } of ordered) {
+      if (!reported.has(receipt.external_id)) {
+        out.push(receipt);
+        continue;
+      }
+      const last = reported.get(receipt.external_id) ?? null;
+      // `dispatched` is the baseline, reported at send time — only later steps are tracked.
+      const rank = statusRank(receipt.event);
+      // An event outside the ranking (rank 0) is never judged a duplicate.
+      if (last !== null && receipt.event !== "dispatched" && rank > 0 && rank <= statusRank(last)) continue;
+      out.push(...withImpliedSteps(receipt, last));
+      if (rank > statusRank(last)) reported.set(receipt.external_id, receipt.event);
+    }
+    return out;
+  } catch (error) {
+    log.warn({ err: error instanceof Error ? error : new Error(String(error)) }, "Could not reconcile webhook statuses — forwarding them as received");
+    return receipts;
+  }
+}
+
 // ── One tick ──────────────────────────────────────────────────────────────
 
 export type PollTickResult = { polled: number; forwarded: number; unchanged: number; errors: number; expired: boolean };
@@ -325,15 +413,22 @@ export async function pollFreshchatStatusesOnce(
   const secret = process.env.SCALEMARGIN_ANALYTICS_SECRET ?? "";
   for (let i = 0; i < changes.length; i += FORWARD_CHUNK) {
     const chunk = changes.slice(i, i + FORWARD_CHUNK);
-    const receipts: FreshchatReceipt[] = chunk.map(({ row, lookup, event }) => ({
-      external_id: row.provider_message_id,
-      event: event as FreshchatReceipt["event"],
-      // The status API reports no status time — the moment it was observed is the best there is.
-      occurred_at: now.toISOString(),
-      provider: PROVIDER,
-      ...(event === "bounced" && lookup.cause ? { cause: lookup.cause } : {}),
-      ...(event === "bounced" && lookup.errorCode ? { error_code: lookup.errorCode } : {}),
-    }));
+    // A status can move several steps between two polls (delivered and read
+    // inside one interval): report every step it passed, not just the last.
+    const receipts: FreshchatReceipt[] = chunk.flatMap(({ row, lookup, event }) =>
+      withImpliedSteps(
+        {
+          external_id: row.provider_message_id,
+          event: event as FreshchatReceipt["event"],
+          // The status API reports no status time — the moment it was observed is the best there is.
+          occurred_at: now.toISOString(),
+          provider: PROVIDER,
+          ...(event === "bounced" && lookup.cause ? { cause: lookup.cause } : {}),
+          ...(event === "bounced" && lookup.errorCode ? { error_code: lookup.errorCode } : {}),
+        },
+        row.status_event
+      )
+    );
     const sent = await forwardFreshchatReceipts(receipts, secret);
     for (const { row, lookup, event, next } of chunk) {
       const base = {
