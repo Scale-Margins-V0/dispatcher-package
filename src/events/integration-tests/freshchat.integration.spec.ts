@@ -14,6 +14,8 @@ import {
   shutdownEventPipeline,
 } from "../index.js";
 import { loadEventsConfigFromYaml } from "../config.js";
+import { createTestDb, destroyTestDb } from "../../db/test-utils.js";
+import { insertProviderMessageIds } from "../../db/repos/provider-message-ids.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const secret = "freshchat-int-secret";
@@ -193,6 +195,35 @@ describe("POST /api/scalemargin/freshchat-events (integration)", () => {
     expect(posted.receipts?.[0]?.event).toBe("bounced");
     expect(posted.receipts?.[0]?.cause).toBe("Marketing frequency cap reached");
     expect(posted.receipts?.[0]?.error_code).toBe("4131");
+  });
+
+  it("with the send recorded: READ also reports the skipped delivered, and a late DELIVERED is not repeated", async () => {
+    const dbx = await createTestDb();
+    try {
+      await insertProviderMessageIds([
+        { id: crypto.randomUUID(), provider: "freshchat", provider_message_id: "fc-req-12345", user_id: "u1", sent_at: new Date() },
+      ]);
+      const post = (fixture: string) =>
+        request(app)
+          .post("/api/scalemargin/freshchat-events")
+          .set("Content-Type", "application/json")
+          .set("Authorization", `Bearer ${secret}`)
+          .send(readFileSync(join(__dirname, "../__fixtures__/freshchat", fixture), "utf-8"));
+      const forwarded = () =>
+        fetchMock.mock.calls
+          .filter((c) => String(c[0]) === RECEIPTS_URL)
+          .flatMap((c) => (JSON.parse(String((c[1] as RequestInit).body)) as { receipts: Array<{ event: string }> }).receipts)
+          .map((r) => r.event);
+
+      expect((await post("read.json")).status).toBe(200);
+      expect(forwarded()).toEqual(["delivered", "read"]);
+
+      fetchMock.mockClear();
+      expect((await post("delivered.json")).status).toBe(200);
+      expect(forwarded()).toEqual([]);
+    } finally {
+      destroyTestDb(dbx);
+    }
   });
 
   it("also responds on alias /api/scalemargin/freshchat-notifications", async () => {

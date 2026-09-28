@@ -77,7 +77,8 @@ dispatcher:
 
 - Each send from a poller-enabled sender gets `next_poll_at`. Every interval the poller calls `GET https://<org>.freshchat.com/v2/outbound-messages?request_id=<id>` (host taken from the sender's `template_api_url`) for up to 200 due rows, 4 at a time.
 - Only **forward progress** is forwarded: dispatched → delivered → read / bounced → clicked. A change goes to ScaleMargin through the same signed receipt path as the Freshchat webhook, then `status_event` is saved.
-- **Webhook and poller together:** the webhook also records what it reported, so the poller never re-sends a status the webhook already delivered.
+- **No skipped steps:** statuses climb `dispatched → delivered → read → clicked`. If a message moves more than one step between two polls (delivered and read inside one interval), every step it passed is reported, in order — `read` seen first also sends `delivered`, 1 ms earlier. A failure (`bounced`) implies nothing. The Freshchat webhook applies the same rule.
+- **Webhook and poller together:** each records what it reported. The poller never re-sends a status the webhook delivered, and the webhook drops a step already reported — e.g. a late real `delivered` after the poller sent it along with `read`. A webhook receipt for a message with no recorded send passes through unchanged.
 - **Stops polling** a row at a final status (read, failed, clicked) or once it is older than `freshchat_status_poll_ttl`.
 - **Backs off with age:** the interval ×1 for the first 15 min, ×6 up to 2 h, ×30 after that.
 - **Errors:** 429 honours `Retry-After`. 401/403 pauses that sender for 5 min with one warning. A 404 or unknown id retries on the next interval. If ScaleMargin refuses a receipt, the change isn't saved and is retried on the next poll.
