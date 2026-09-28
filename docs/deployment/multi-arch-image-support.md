@@ -1,6 +1,6 @@
 # Publishing the dispatcher image for all platforms
 
-**Status:** proposed, not implemented. Nothing in the repository has changed.
+**Status:** implemented for releases only — `main` publishes `linux/amd64` + `linux/arm64` (QEMU, option §4); `acme` dev images stay `linux/amd64`. The native-runner matrix below is still the upgrade path if build time matters.
 
 Today the image is `linux/amd64` only. A client on Graviton, Ampere, an
 M-series Mac or a Raspberry Pi either cannot run it or runs it under emulation.

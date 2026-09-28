@@ -216,6 +216,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Releases (main) ship linux/amd64 + linux/arm64 under one tag; dev images
+      # (acme) stay amd64-only to keep that loop fast. QEMU builds the arm64 half
+      # on this x64 runner — see docs/deployment/multi-arch-image-support.md.
+      - name: Set up QEMU (release only)
+        if: needs.meta.outputs.is_release == 'true'
+        uses: docker/setup-qemu-action@v3
+
       # Blacksmith's builder keeps the BuildKit layer cache on a sticky NVMe
       # disk mounted at /var/lib/buildkit, so no cache-from/cache-to is needed —
       # layers are already local rather than pulled over the network.
@@ -236,7 +243,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64
+          platforms: ${{ needs.meta.outputs.is_release == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           tags: ${{ needs.meta.outputs.tags }}
           provenance: false
           build-args: |
