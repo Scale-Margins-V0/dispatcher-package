@@ -69,13 +69,21 @@ export interface FreshchatWhatsAppPayload {
             data: string;
           }>;
         };
-        button?: Array<{
-          subType?: string;
-          sub_type?: string;
-          params?: Array<{
-            data: string;
-          }>;
-        }>;
+        button?:
+          | {
+              subType?: string;
+              sub_type?: string;
+              params?: Array<{
+                data: string;
+              }>;
+            }
+          | Array<{
+              subType?: string;
+              sub_type?: string;
+              params?: Array<{
+                data: string;
+              }>;
+            }>;
       };
     };
   };
@@ -492,7 +500,15 @@ export class FreshchatWhatsAppProvider {
       explicitMediaUrl = msg.mediaUrl;
 
       if (msg.freshchatSpec) {
-        templateSpec = msg.freshchatSpec;
+        templateSpec = {
+          ...msg.freshchatSpec,
+          has_cta: msg.freshchatSpec.has_cta ?? msg.hasCta,
+          cta_value: msg.freshchatSpec.cta_value ?? msg.ctaValue,
+          cta_values: msg.freshchatSpec.cta_values ?? msg.ctaValues,
+        };
+        if (!templateSpec.media_url && explicitMediaUrl) {
+          templateSpec.media_url = explicitMediaUrl;
+        }
       } else if (msg.template) {
         templateSpec = {
           template_id: msg.template.template_id || msg.template.id,
@@ -564,17 +580,12 @@ export class FreshchatWhatsAppProvider {
 
     // Collect dynamic CTA buttons / values if supplied
     const ctaItems: string[] = [];
-    const rawCtaList = templateSpec.cta_values;
-    if (Array.isArray(rawCtaList) && rawCtaList.length > 0) {
-      for (const u of rawCtaList) {
-        if (typeof u === "string" && u.trim()) {
-          ctaItems.push(u.trim());
-        }
-      }
-    } else {
-      const singleCta = templateSpec.cta_value;
-      if (typeof singleCta === "string" && singleCta.trim()) {
-        ctaItems.push(singleCta.trim());
+    const rawCtaList =
+      templateSpec.cta_values ??
+      (templateSpec.cta_value ? [templateSpec.cta_value] : []);
+    for (const u of rawCtaList) {
+      if (typeof u === "string" && u.trim()) {
+        ctaItems.push(u.trim());
       }
     }
 
@@ -616,10 +627,10 @@ export class FreshchatWhatsAppProvider {
           return item;
         });
 
-        messageTemplate.rich_template_data.button = personalizedCtas.map((cta) => ({
+        messageTemplate.rich_template_data.button = {
           subType: "url",
-          params: [{ data: String(cta) }],
-        }));
+          params: personalizedCtas.map((cta) => ({ data: String(cta) })),
+        };
       }
     }
 

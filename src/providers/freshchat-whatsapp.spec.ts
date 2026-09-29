@@ -246,16 +246,13 @@ describe("freshchat-whatsapp provider", () => {
     expect(result.success).toBe(true);
     const [, req] = fetchMock.mock.calls[0];
     const body = JSON.parse(req.body);
-    expect(body.data.message_template.rich_template_data.button).toEqual([
-      {
-        subType: "url",
-        params: [{ data: "https://example.com/orders/ORD-999" }],
-      },
-      {
-        subType: "url",
-        params: [{ data: "https://example.com/support/Priya" }],
-      },
-    ]);
+    expect(body.data.message_template.rich_template_data.button).toEqual({
+      subType: "url",
+      params: [
+        { data: "https://example.com/orders/ORD-999" },
+        { data: "https://example.com/support/Priya" },
+      ],
+    });
   });
 
   it("sends Dynamic with Values template resolving unresolved placeholders and keeping resolved strings", async () => {

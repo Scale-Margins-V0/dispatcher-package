@@ -320,6 +320,25 @@ export async function processWhatsAppDispatch(
           })
         : null;
       message.caption = applyOnsiteUrl(message.caption, onsiteUrl);
+      if (typeof message.ctaValue === "string") {
+        message.ctaValue = applyOnsiteUrl(message.ctaValue, onsiteUrl);
+      }
+      if (Array.isArray(message.ctaValues)) {
+        message.ctaValues = message.ctaValues.map((v: string) =>
+          applyOnsiteUrl(v, onsiteUrl)
+        );
+      }
+      if (message.freshchatSpec?.cta_value) {
+        message.freshchatSpec.cta_value = applyOnsiteUrl(
+          message.freshchatSpec.cta_value,
+          onsiteUrl
+        );
+      }
+      if (Array.isArray(message.freshchatSpec?.cta_values)) {
+        message.freshchatSpec.cta_values = message.freshchatSpec.cta_values.map(
+          (v: string) => applyOnsiteUrl(v, onsiteUrl)
+        );
+      }
     }
 
     recordMetric(program, "message_resolve", "", {
