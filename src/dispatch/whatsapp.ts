@@ -307,9 +307,32 @@ export async function processWhatsAppDispatch(
           freshchatSpec: freshchatSpec ?? undefined,
         };
 
-    // Reserved {{onsite_url}} in the caption → per-recipient landing URL, or
+    // Reserved {{onsite_url}} in caption or CTA → per-recipient landing URL, or
     // stripped when no link was issued (fail closed) so it never ships literally.
-    if (typeof message.caption === "string" && message.caption.length > 0) {
+    const hasCaption =
+      typeof message.caption === "string" && message.caption.length > 0;
+    const hasCtaValue =
+      typeof message.ctaValue === "string" && message.ctaValue.length > 0;
+    const hasCtaValues =
+      Array.isArray(message.ctaValues) && message.ctaValues.length > 0;
+    const hasTemplateCta = Boolean(
+      message.template?.cta_value ||
+        (Array.isArray(message.template?.cta_values) &&
+          message.template.cta_values.length > 0)
+    );
+    const hasFreshchatCta = Boolean(
+      message.freshchatSpec?.cta_value ||
+        (Array.isArray(message.freshchatSpec?.cta_values) &&
+          message.freshchatSpec.cta_values.length > 0)
+    );
+
+    if (
+      hasCaption ||
+      hasCtaValue ||
+      hasCtaValues ||
+      hasTemplateCta ||
+      hasFreshchatCta
+    ) {
       const onsiteUrl = onsite
         ? await onsite.issue({
             userId,
@@ -319,13 +342,27 @@ export async function processWhatsAppDispatch(
               personalize(input, user, personalizeCtx),
           })
         : null;
-      message.caption = applyOnsiteUrl(message.caption, onsiteUrl);
+
+      if (hasCaption) {
+        message.caption = applyOnsiteUrl(message.caption!, onsiteUrl);
+      }
       if (typeof message.ctaValue === "string") {
         message.ctaValue = applyOnsiteUrl(message.ctaValue, onsiteUrl);
       }
       if (Array.isArray(message.ctaValues)) {
         message.ctaValues = message.ctaValues.map((v: string) =>
           applyOnsiteUrl(v, onsiteUrl)
+        );
+      }
+      if (message.template?.cta_value) {
+        message.template.cta_value = applyOnsiteUrl(
+          message.template.cta_value,
+          onsiteUrl
+        );
+      }
+      if (Array.isArray(message.template?.cta_values)) {
+        message.template.cta_values = message.template.cta_values.map(
+          (v: string) => applyOnsiteUrl(v, onsiteUrl)
         );
       }
       if (message.freshchatSpec?.cta_value) {

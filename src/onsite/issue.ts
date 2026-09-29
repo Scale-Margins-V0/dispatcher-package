@@ -43,19 +43,24 @@ export type OnsiteContent = {
   html_body?: string;
   text_body?: string;
   caption?: string;
+  cta_value?: string;
+  cta_values?: string[];
 };
 
-/** True when any content field references {{onsite_url}} (email or WhatsApp caption). */
+/** True when any content field references {{onsite_url}} (email, WhatsApp caption, or CTA). */
 export function contentReferencesOnsite(
   content: OnsiteContent | undefined
 ): boolean {
   if (!content) return false;
-  return [
+  const fields = [
     content.subject,
     content.html_body,
     content.text_body,
     content.caption,
-  ].some(
+    content.cta_value,
+    ...(Array.isArray(content.cta_values) ? content.cta_values : []),
+  ];
+  return fields.some(
     (value) => typeof value === "string" && ONSITE_PLACEHOLDER_TEST.test(value)
   );
 }
