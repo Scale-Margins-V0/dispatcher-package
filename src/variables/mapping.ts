@@ -6,7 +6,8 @@
 
 import type { ApiConfig, VariableRow } from "../db/schema/index.js";
 import type { PlaceholderEntry } from "../user-lookup/config.js";
-import { primitiveFieldsOnly, type ResponseField } from "./api-response.js";
+import { isValidResponsePath, primitiveFieldsOnly, type ResponseField } from "./api-response.js";
+import { MAX_SAVED_PATHS } from "./api-config-schema.js";
 
 function readApiConfig(config: Record<string, unknown> | null): ApiConfig {
   const cfg = (config ?? {}) as Partial<ApiConfig>;
@@ -27,6 +28,14 @@ function readApiConfig(config: Record<string, unknown> | null): ApiConfig {
         )
       )
     : [];
+  // Same trust rule: a malformed or unknown-provider block saves nothing.
+  const savedPaths = Array.isArray(cfg.save_response?.paths)
+    ? cfg.save_response.paths.filter((p): p is string => typeof p === "string" && isValidResponsePath(p)).slice(0, MAX_SAVED_PATHS)
+    : [];
+  const saved =
+    cfg.save_response?.provider === "freshchat" && savedPaths.length > 0
+      ? { provider: "freshchat" as const, paths: savedPaths }
+      : null;
   return {
     method: cfg.method === "POST" ? "POST" : "GET",
     url: typeof cfg.url === "string" ? cfg.url : "",
@@ -39,6 +48,7 @@ function readApiConfig(config: Record<string, unknown> | null): ApiConfig {
     ...(cfg.metadata && typeof cfg.metadata.id === "string"
       ? { metadata: { id: cfg.metadata.id, required: cfg.metadata.required !== false } }
       : {}),
+    ...(saved ? { save_response: saved } : {}),
   };
 }
 

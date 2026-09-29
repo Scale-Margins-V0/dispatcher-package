@@ -20,6 +20,9 @@ import {
 import { ZVariableMetadataSchema } from "./call-metadata.js";
 
 const MAX_QUERY_ROWS = 50;
+/** Providers a response can be saved against — the message id it is keyed on. */
+export const SAVE_RESPONSE_PROVIDERS = ["freshchat"] as const;
+export const MAX_SAVED_PATHS = 5;
 const MAX_SAMPLE_BYTES = 256 * 1024;
 
 export const apiExtrasShape = {
@@ -52,6 +55,31 @@ export const apiExtrasShape = {
     .optional(),
   /** One call metadata schema; its keys become {{key.k}} / {{key.v}} in the request. */
   metadata: ZVariableMetadataSchema.optional(),
+  /**
+   * Save these response values against the message they were sent with, when
+   * `provider` accepts it (table api_response_refs). `null` turns it off.
+   */
+  save_response: z
+    .object({
+      provider: z.enum(SAVE_RESPONSE_PROVIDERS, {
+        errorMap: () => ({ message: `Responses can only be saved for: ${SAVE_RESPONSE_PROVIDERS.join(", ")}` }),
+      }),
+      paths: z
+        .array(
+          z
+            .string()
+            .trim()
+            .refine(
+              isValidResponsePath,
+              `Path must be dot-separated keys (letters, digits, _) or array indexes, at most ${MAX_PATH_DEPTH} deep, e.g. offer.id`
+            )
+        )
+        .min(1, "Pick at least one response path to save")
+        .max(MAX_SAVED_PATHS, `At most ${MAX_SAVED_PATHS} response paths can be saved`),
+    })
+    .strict()
+    .nullable()
+    .optional(),
   /** Write-only. A sample JSON response; its paths are merged into `response_schema`. */
   response_sample: z
     .string()
@@ -60,6 +88,7 @@ export const apiExtrasShape = {
 };
 
 type ApiInput = {
+  save_response?: { provider: string; paths: string[] } | null;
   method?: string;
   headers?: Record<string, string>;
   json_path?: string;
@@ -124,6 +153,25 @@ export function checkApiConfig(api: ApiInput, ctx: z.RefinementCtx): void {
         path: ["json_path"],
         message: `"${jsonPath}" is an object (it contains ${under.path}) — point the default value path at a single value inside it`,
       });
+    }
+  }
+  // Saved paths must each end at one value — the same rule as json_path.
+  if (api.save_response) {
+    const known = [...(api.response_schema ?? []), ...sampleSchema(api.response_sample)];
+    const savedSeen = new Set<string>();
+    for (const [i, path] of api.save_response.paths.entries()) {
+      if (savedSeen.has(path)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["save_response", "paths", i], message: `Path "${path}" is listed twice` });
+      }
+      savedSeen.add(path);
+      const under = known.find((f) => f.path.startsWith(`${path}.`));
+      if (under) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["save_response", "paths", i],
+          message: `"${path}" is an object (it contains ${under.path}) — save a single value inside it`,
+        });
+      }
     }
   }
   const seen = new Set<string>();

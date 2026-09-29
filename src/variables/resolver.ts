@@ -308,7 +308,10 @@ function pathsToExtract(
   const out = new Map<string, Set<string>>();
   for (const [name, entry] of dynamic) {
     if (entry.source !== "api") continue;
-    out.set(name, new Set((entry.api.response_schema ?? []).map((f) => f.path)));
+    out.set(
+      name,
+      new Set([...(entry.api.response_schema ?? []).map((f) => f.path), ...(entry.api.save_response?.paths ?? [])])
+    );
   }
   for (const content of contents) {
     if (!content) continue;

@@ -8,6 +8,7 @@ import {
 import { componentLogger } from "../logging/logger.js";
 import { LogComponent } from "../logging/conventions.js";
 import { verifySnsMessage } from "../events/sns-verify.js";
+import { createClientEventsHandler } from "../events/client/client-events.js";
 
 /**
  * Log the raw inbound Gupshup webhook payload (headers + body) for inspection.
@@ -189,5 +190,13 @@ export function registerInboundWebhookRoutes(app: Express): void {
     "/api/scalemargin/freshchat-notifications",
     express.text({ type: () => true, limit: "1mb" }),
     handleFreshchatWebhook
+  );
+
+  // Your own systems reporting events for sent messages. Off until
+  // events.client_webhook_secret is set — see src/events/client/client-events.ts.
+  app.post(
+    "/api/scalemargin/client-events",
+    express.text({ type: () => true, limit: "1mb" }),
+    createClientEventsHandler()
   );
 }

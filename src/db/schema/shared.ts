@@ -22,6 +22,8 @@ export type ApiConfig = {
   timeout_ms?: number;
   /** Attached call metadata schema, by id — see src/variables/call-metadata.ts. */
   metadata?: { id: string; required: boolean } | null;
+  /** Response values saved against the sent message — see apiResponseRefs. */
+  save_response?: { provider: "freshchat"; paths: string[] } | null;
   /** Addressable response paths — see src/variables/api-response.ts. */
   response_schema?: Array<{
     path: string;
@@ -127,6 +129,30 @@ export type SendLogStatus = "sent" | "failed";
  * Pruned on `DISPATCHER_MESSAGE_ID_TTL`, which is mandatory — see
  * src/config/duration.ts.
  */
+/** One saved value from an API variable's response — see `apiResponseRefs`. */
+export type ApiResponseRefRow = {
+  id: string;
+  /** The provider that accepted the message — only `freshchat` today. */
+  provider: string;
+  /** The provider's id for the message. Freshchat: `request_id`. */
+  provider_message_id: string;
+  channel: string;
+  user_id: string;
+  organization_id: string | null;
+  /** The campaign id as dispatched (drip: `drip_<sequence>_<step>`). */
+  campaign_id: string;
+  /** ScaleMargin's id for this recipient's dispatch (`dispatch_ids[user_id]`), when it sent one. */
+  dispatch_id: string | null;
+  template_name: string | null;
+  /** The `senders:` entry that sent it. */
+  sender_id: string | null;
+  variable_name: string;
+  /** Dot path into the API response, e.g. `offer.id`. */
+  path: string;
+  value: string;
+  sent_at: Date;
+};
+
 export type ProviderMessageIdRow = {
   id: string;
   /** `freshchat` | `gupshup` — only WhatsApp sends are recorded. */

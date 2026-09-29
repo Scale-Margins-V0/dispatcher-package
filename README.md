@@ -277,7 +277,7 @@ dispatcher:
 | `atlas_key` | The key ScaleMargin uses to read health, variables, campaigns, logs and metrics. Generate with `openssl rand -base64 32` and share the same value with us | **The management API is off** — 503 on every route |
 | `atlas_cors_origins` | Browser origins allowed to call that API. Leave it out unless we ask | No CORS headers — server-to-server only, the safe default |
 | `database.*` | The dispatcher's own database. `url:` may replace the discrete fields; `dialect: sqlite` takes `file:` instead | A local SQLite file — fine for trials, not production |
-| `retention.message_id_ttl` | How long provider message IDs are kept, as a duration: `"5d 2h"`, `"12h"`, `"30d"`. Minimum `1h` | **Refuses to start** — there is no safe default |
+| `retention.message_id_ttl` | How long provider message IDs — and the values an API variable's **Save response** keeps with them — are kept, as a duration: `"5d 2h"`, `"12h"`, `"30d"`. Minimum `1h` | **Refuses to start** — there is no safe default |
 | `retention.metrics_days` | Days of per-minute campaign metrics (API latency, failures, throughput) to keep. Max 30 | `7` |
 | `retention.freshchat_status_poll_ttl` | How long the Freshchat status poller keeps asking about one message. Capped at `message_id_ttl` | `3d` |
 | `retention.log_days`, `campaign_event_days` | Log and event history windows | `14`, `90` |
@@ -505,12 +505,15 @@ links:
   unsubscribe_url_base: https://dispatcher.your-company.com
   # logo_url: https://cdn.your-company.com/logo.png
   # unsubscribe_redirect_url: https://your-company.com/goodbye
+
+events:
+  client_webhook_secret: "replace-with-openssl-rand-hex-32"   # turns on /api/scalemargin/client-events
 ```
 
 | Block | Set it when |
 | --- | --- |
 | `links:` | You use the built-in unsubscribe and preference links |
-| `events:` | You want to tune how provider webhooks are batched and forwarded. Defaults are fine |
+| `events:` | You want to tune how provider webhooks are batched and forwarded (defaults are fine), or let your own systems report events for sent messages — set `client_webhook_secret` (section 8.2) |
 | `storage:` | Campaign images should live in S3 or GCS rather than on local disk |
 
 ## 6.7 env: — optional escape hatch
@@ -699,6 +702,7 @@ events:
   providers_disabled: []
   sendgrid_inbound_events: "*"     # or [delivered, open, click, bounce]
   debug: false
+  client_webhook_secret: "replace-with-openssl-rand-hex-32"   # your own systems → /client-events; off if unset
 
 # ── Campaign images ───────────────────────────────────────────────────────
 storage:
@@ -885,6 +889,7 @@ events:
   providers_disabled: []
   sendgrid_inbound_events: "*"     # or [delivered, open, click, bounce]
   debug: false
+  client_webhook_secret: "replace-with-openssl-rand-hex-32"   # your own systems → /client-events; off if unset
 
 # ── Campaign images ───────────────────────────────────────────────────────
 storage:
@@ -939,6 +944,7 @@ Each provider reports what happened to a message — delivered, opened, bounced 
 | Amazon SES | `https://<dispatcher>/api/scalemargin/ses-notifications` (as an SNS subscription) | AWS SNS message signature — automatic | `ses.configuration_set` |
 | Gupshup | `https://<dispatcher>/api/scalemargin/gupshup-events?token=<webhook_secret>` | The `token` in the URL (or an `X-Gupshup-Signature` HMAC) | `gupshup.webhook_secret` |
 | Freshchat | `https://<dispatcher>/api/scalemargin/freshchat-events` | `Authorization: Bearer <webhook_secret>` (or an `X-Freshchat-Signature` HMAC) | `freshchat.webhook_secret` |
+| Your own systems (client events) | `https://<dispatcher>/api/scalemargin/client-events` — you call it, nothing to register | `Authorization: Bearer <client_webhook_secret>` (or an `X-ScaleMargin-Signature` HMAC) | `events.client_webhook_secret` |
 
 ### SendGrid
 
@@ -971,6 +977,62 @@ Each provider reports what happened to a message — delivered, opened, bounced 
 
 **Can't register a Freshchat webhook?** Set `status_poller: true` inside the `freshchat:` block instead. The dispatcher then asks Freshchat for each sent message's status every `status_poll_interval_seconds` (default 10), and forwards every change (delivered, read, failed) to ScaleMargin exactly as the webhook would. It stops at a final status or after `retention.freshchat_status_poll_ttl` (default `3d`), and it backs off as a message ages: the interval ×6 after 15 minutes, ×30 after 2 hours. Webhook and poller can both run, and a status is never reported twice. Run a single replica with the poller on.
 
+### Your own systems — client events
+
+Your website, app or CRM can report what happened to a WhatsApp message the dispatcher sent — a click on your site, a read seen in your app. The dispatcher finds the message and forwards the event to ScaleMargin exactly like a Freshchat webhook: skipped steps are filled in (`clicked` also reports `delivered` and `read` if they never were) and nothing already reported is sent twice.
+
+1. Generate a secret: `openssl rand -hex 32`. Set it as `events.client_webhook_secret` (16+ characters). Until it is set the endpoint answers `404`.
+2. Restart the dispatcher.
+3. From your system: `POST https://dispatcher.your-company.com/api/scalemargin/client-events` with `Authorization: Bearer <that secret>` — or sign the raw body: `X-ScaleMargin-Signature: sha256=<hex HMAC-SHA256 of the raw body>`.
+
+**Naming the message** — either:
+
+- its **`request_id`** — the id Freshchat returned when it accepted the message; or
+- a **value an API variable saved with it** — turn on **Save response** on the API variable in ScaleMargin (Dispatcher → Variables). The dispatcher then keeps the picked response values (up to 5, e.g. your offer id) against each Freshchat message, in the table `api_response_refs`, for `message_id_ttl`.
+
+| `api_response_refs` column | What it holds |
+| --- | --- |
+| `provider_message_id` | The Freshchat `request_id` — the message |
+| `user_id` · `organization_id` | The recipient, as ScaleMargin sent them · the organization |
+| `campaign_id` · `dispatch_id` | The campaign as dispatched (drip: `drip_<sequence>_<step>`) · ScaleMargin's id for this recipient's send |
+| `template_name` · `sender_id` · `channel` · `provider` | The template actually sent · the sender that sent it · `whatsapp` · `freshchat` |
+| `variable_name` · `path` · `value` | The saved value, e.g. `offer` · `offer.id` · `OF-123` |
+| `sent_at` | When Freshchat accepted it |
+
+**The event** — one object, an array, or `{ "events": [...] }`, at most 500:
+
+| Field | Meaning |
+| --- | --- |
+| `event` | **Required.** `delivered`, `read`, `clicked` or `failed` (Freshchat statuses such as `READ` work too). `dispatched` is refused — the send already reported it |
+| `occurred_at` | ISO 8601 time. Default: now |
+| `request_id` | The message — or instead: |
+| `variable_name` + `path` + `value` | A saved value from `api_response_refs` |
+| `user_id` · `campaign_id` · `organization_id` · `dispatch_id` | Narrow a value that was sent with more than one message. `user_id` also checks a `request_id` |
+| `cause` · `error_code` | Kept on `failed` |
+
+Any other column of an `api_response_refs` row may be sent back as-is; it is ignored.
+
+```json
+{
+  "events": [
+    { "event": "clicked", "request_id": "cda23519-7124-4ebf-9c2c-c8eab0756bee", "occurred_at": "2026-09-29T10:15:00Z" },
+    { "event": "clicked", "variable_name": "offer", "path": "offer.id", "value": "OF-123", "user_id": "u_42" }
+  ]
+}
+```
+
+**The answer** — `200 { "received", "receipts", "results": [{ "index", "status", "request_id", "error" }] }`, one result per event:
+
+| `status` | Meaning |
+| --- | --- |
+| `forwarded` | Found and sent to ScaleMargin |
+| `already_reported` | That step was already reported for the message — nothing sent |
+| `not_found` | No such message (or it is older than `message_id_ttl`), or the `request_id` belongs to another `user_id` |
+| `ambiguous` | The value was sent with more than one message — add `user_id`, `campaign_id` or `dispatch_id` |
+| `invalid` | Unknown event, or no way to name the message |
+
+Other answers: `401` wrong secret · `400` bad JSON · `413` more than 500 events · `502 { "retryable": true }` ScaleMargin did not accept them — retry the batch.
+
 ### Check each webhook
 
 ```bash
@@ -982,6 +1044,11 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/j
 curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $FRESHCHAT_SECRET" -d '{}' \
   https://dispatcher.your-company.com/api/scalemargin/freshchat-events                          # not 401
+
+# Client events — the secret passes (a made-up request_id answers not_found, not 401)
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $CLIENT_EVENTS_SECRET" -d '{"event":"clicked","request_id":"test"}' \
+  https://dispatcher.your-company.com/api/scalemargin/client-events
 
 # Every sender: are credentials and webhook verification in place?
 curl -s -H "Authorization: Bearer $ATLAS_KEY" \
@@ -1097,6 +1164,7 @@ docker compose down -v     # stop and DELETE all campaign history — careful
 | ScaleMargin cannot reach the dispatcher | Not exposed, or `atlas_key` unset | Set `atlas_key` and `public_url`, put a TLS proxy in front |
 | `exec format error` | ARM host, amd64 image | Runs under emulation; ask us for a native build |
 | `EADDRINUSE` on 3100 | Something else uses the port | Change the host side: `"127.0.0.1:3200:3100"` |
+| `/api/scalemargin/client-events` answers `404` | `events.client_webhook_secret` is not set — the endpoint is off | Set it (16+ characters) and restart |
 | Container exits: `status_poll_interval_seconds must be at least 5` | Interval under 5 s — Freshchat rate-limits its API | Use 5–3600; `10` is the default |
 | Log: `Freshchat status API rejected sender 'X' (401) … polling paused 5 min` | That sender's `freshchat.api_key` is wrong or lacks access | Fix the key and restart. Other Freshchat senders keep polling |
 | Freshchat statuses never reach ScaleMargin | No webhook registered and `status_poller` is off | Register the webhook (8.2) or set `status_poller: true` on the sender |
