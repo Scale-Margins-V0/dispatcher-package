@@ -120,14 +120,16 @@ export async function runRetentionSweep(now: Date = new Date()): Promise<void> {
   // No row cap either: the operator chose a duration, and deleting inside their
   // window because some count was reached would make the setting a lie.
   try {
+    const cutoff = new Date(now.getTime() - messageIdTtlMs());
     const messageIds = tableFor(dbx, "providerMessageIds");
-    await q
-      .delete(messageIds)
-      .where(lt(messageIds.sent_at, new Date(now.getTime() - messageIdTtlMs())));
+    await q.delete(messageIds).where(lt(messageIds.sent_at, cutoff));
+    // Saved API response values live exactly as long as the message ids they key on.
+    const responseRefs = tableFor(dbx, "apiResponseRefs");
+    await q.delete(responseRefs).where(lt(responseRefs.sent_at, cutoff));
   } catch (error) {
     log.warn(
       { err: error instanceof Error ? error : new Error(String(error)) },
-      `Skipped pruning provider_message_ids — ${MESSAGE_ID_TTL_SETTING} is unusable. ` +
+      `Skipped pruning provider_message_ids and api_response_refs — ${MESSAGE_ID_TTL_SETTING} is unusable. ` +
         "The table will grow until this is fixed; every other table was still swept."
     );
   }

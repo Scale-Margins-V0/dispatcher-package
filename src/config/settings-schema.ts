@@ -98,8 +98,21 @@ export const eventsSchema = z
     debug: z.boolean().optional(),
     /** Path to the events config file. Default ./config/events.yaml */
     config_path: z.string().min(1).optional(),
+    /**
+     * Turns on POST /api/scalemargin/client-events — your own systems reporting
+     * events (clicked, read, …) for messages the dispatcher sent. Off (404)
+     * until set. Sent as `Authorization: Bearer <secret>` or used to sign the
+     * body (`X-ScaleMargin-Signature: sha256=<hmac>`).
+     */
+    client_webhook_secret: z.string().min(16, "client_webhook_secret must be at least 16 characters").optional(),
+    client_webhook_secret_env: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .refine((e) => !(e.client_webhook_secret && e.client_webhook_secret_env), {
+    message:
+      "set client_webhook_secret or client_webhook_secret_env, not both — the inline value would win and the reference would be silently ignored",
+    path: ["client_webhook_secret_env"],
+  });
 
 // ── Campaign image storage ───────────────────────────────────────────────────
 export const storageSchema = z

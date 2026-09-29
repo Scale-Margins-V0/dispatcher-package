@@ -370,6 +370,18 @@ dispatcher:
     expect(process.env.EVENTS_CONFIG_PATH).toBe("/etc/dispatcher/events.yaml");
   });
 
+  it("binds events.client_webhook_secret (inline or _env), and refuses both or a short one", () => {
+    process.env.MY_CLIENT_SECRET = "c".repeat(24);
+    useYaml(`version: 1\nsenders: []\nevents:\n  client_webhook_secret_env: MY_CLIENT_SECRET\n`);
+    hydrateEnvFromYaml();
+    expect(process.env.CLIENT_EVENTS_WEBHOOK_SECRET).toBe("c".repeat(24));
+
+    useYaml(`version: 1\nsenders: []\nevents:\n  client_webhook_secret: short\n`);
+    expect(() => hydrateEnvFromYaml()).toThrow(/at least 16 characters/);
+    useYaml(`version: 1\nsenders: []\nevents:\n  client_webhook_secret: ${"x".repeat(20)}\n  client_webhook_secret_env: B\n`);
+    expect(() => hydrateEnvFromYaml()).toThrow(/not both/);
+  });
+
   it("binds dispatcher.onsite and retention.onsite_days, and refuses a short key", () => {
     process.env.MY_ONSITE_KEY = "k".repeat(32);
     useYaml(`version: 1\nsenders: []\ndispatcher:\n  onsite:\n    state_encryption_key_env: MY_ONSITE_KEY\n  retention:\n    onsite_days: 14\n`);

@@ -31,6 +31,7 @@ import { readCallMetadataPayload } from "../variables/call-metadata.js";
 import { programOf } from "../db/repos/dispatch-programs.js";
 import { SendLogRecorder } from "./send-log-recorder.js";
 import { MessageIdRecorder } from "./message-id-recorder.js";
+import { ResponseRefRecorder } from "./response-ref-recorder.js";
 import { initialPollAt } from "../events/freshchat/status-poller.js";
 import { deriveTemplateRef } from "./template-ref.js";
 import type { DispatchPayload } from "./types.js";
@@ -98,6 +99,12 @@ export async function processWhatsAppDispatch(
   // and poll the provider with. Independent of the send log: that table is
   // pruned on its own window, this one on DISPATCHER_MESSAGE_ID_TTL.
   const messageIds = new MessageIdRecorder();
+  // API response values saved against the message id (api variable save_response).
+  const responseRefs = new ResponseRefRecorder({
+    campaignId: campaign_id,
+    organizationId: metadata.organization_id ?? null,
+    channel: "whatsapp",
+  });
 
   const sendLogs = new SendLogRecorder({
     dispatch_run_id: dispatchRunId,
@@ -376,6 +383,15 @@ export async function processWhatsAppDispatch(
         // Queued for the Freshchat status poller when that sender has it on.
         pollAt: initialPollAt(result.finalSender.config),
       });
+      responseRefs.add({
+        provider: result.finalSender.config.provider,
+        providerMessageId: result.messageId,
+        userId,
+        dispatchId: payload.dispatch_ids?.[userId] ?? null,
+        senderId: result.finalSender.config.id,
+        templateName: sentTemplateName(message, result.finalSender.config),
+        resolution,
+      });
     }
     sendResults.push({
       userId,
@@ -406,6 +422,7 @@ export async function processWhatsAppDispatch(
 
   sendLogs.flush();
   messageIds.flush();
+  responseRefs.flush();
 
   const sent = sendResults.filter((r) => r.success).length;
   const failed = sendResults.filter((r) => !r.success).length;
@@ -522,5 +539,23 @@ async function emitWhatsAppEvent(args: {
       provider_message_id: messageId ?? null,
     },
     "Send event emitted"
+  );
+}
+
+/**
+ * The template name the provider actually sent — the same order the Freshchat
+ * provider picks it in, ending at the accepting sender's own default.
+ */
+function sentTemplateName(
+  message: { freshchatSpec?: { template_name?: string; template_id?: string }; template?: { template_id?: string; id?: string } },
+  sender: { freshchat?: { default_template?: string } }
+): string | null {
+  return (
+    message.freshchatSpec?.template_name ||
+    message.freshchatSpec?.template_id ||
+    message.template?.template_id ||
+    message.template?.id ||
+    sender.freshchat?.default_template ||
+    null
   );
 }

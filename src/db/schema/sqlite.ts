@@ -621,3 +621,40 @@ export const dispatchMetrics = sqliteTable(
     index("dispatch_metrics_minute_idx").on(t.minute),
   ]
 );
+
+/**
+ * Values picked out of an API variable's response (its `save_response` paths),
+ * saved against the message they were sent with. One row per value, so a value
+ * can be looked up directly ("which message carried offer OF-123?"). Only
+ * written when the message was accepted by the provider the variable names
+ * (Freshchat), never for a fallback. Pruned with provider_message_ids, on
+ * dispatcher.retention.message_id_ttl.
+ */
+export const apiResponseRefs = sqliteTable(
+  "api_response_refs",
+  {
+    id: text("id").primaryKey(),
+    provider: text("provider").notNull(),
+    provider_message_id: text("provider_message_id").notNull(),
+    channel: text("channel").notNull(),
+    user_id: text("user_id").notNull(),
+    organization_id: text("organization_id"),
+    campaign_id: text("campaign_id").notNull(),
+    dispatch_id: text("dispatch_id"),
+    template_name: text("template_name"),
+    sender_id: text("sender_id"),
+    variable_name: text("variable_name").notNull(),
+    path: text("path").notNull(),
+    value: text("value").notNull(),
+    sent_at: ts("sent_at").notNull(),
+  },
+  (t) => [
+    // "What was saved for this message?"
+    index("api_response_refs_message_idx").on(t.provider, t.provider_message_id),
+    // "Which message carried this value?" — the reason this is a table of rows.
+    index("api_response_refs_value_idx").on(t.variable_name, t.path, t.value),
+    index("api_response_refs_campaign_idx").on(t.campaign_id),
+    // The pruning sweep.
+    index("api_response_refs_sent_at_idx").on(t.sent_at),
+  ]
+);

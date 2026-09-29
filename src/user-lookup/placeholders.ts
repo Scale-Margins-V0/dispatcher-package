@@ -21,6 +21,8 @@ const apiConfigSchema = z.object({
   timeout_ms: z.number().int().positive().optional(),
   /** Attached call metadata schema — see variables/call-metadata.ts. */
   metadata: z.object({ id: z.string(), required: z.boolean() }).nullable().optional(),
+  /** Response values saved against the sent message — see db/schema apiResponseRefs. */
+  save_response: z.object({ provider: z.literal("freshchat"), paths: z.array(z.string()) }).nullable().optional(),
   /** The response's addressable paths — for discovery, never a gate. See api-response.ts. */
   response_schema: z
     .array(

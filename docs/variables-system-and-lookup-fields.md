@@ -387,6 +387,39 @@ JSON.
 - **One request per recipient** fills every path, however many a template uses.
 - **Works on every channel:** email, Freshchat and Gupshup WhatsApp.
 
+### 5.1 Saving response values against the message (`save_response`)
+
+An api variable can keep values from its response against the WhatsApp message
+they went out with — e.g. the offer id your API returned for that recipient.
+
+```json
+"save_response": { "provider": "freshchat", "paths": ["offer.id", "offer.code"] }
+```
+
+- **When:** after Freshchat accepts the message. Its `request_id` is the key.
+  A message that failed over to another provider saves nothing.
+- **What:** only values the API actually returned — a fallback is never saved;
+  a value over 191 characters is skipped (with a warning naming the path).
+- **Where:** the `api_response_refs` table, one row per value: `provider`,
+  `provider_message_id`, `channel`, `user_id`, `organization_id`, `campaign_id`,
+  `dispatch_id`, `template_name`, `sender_id`, `variable_name`, `path`, `value`, `sent_at`.
+- **Used by:** `POST /api/scalemargin/client-events` — your systems can report
+  a click for "the message that carried offer OF-123" (see message-ids-and-analytics.md §1.0.1).
+- **Rules:** 1–5 paths; each must be a single value (an object path is refused).
+  Saved paths are read from the response even when no template uses them.
+- **How long:** pruned with provider message ids, on `dispatcher.retention.message_id_ttl`.
+- The saved values themselves are never sent to ScaleMargin.
+
+```sql
+-- What did we send u_42, and with which offer?
+SELECT campaign_id, template_name, path, value, sent_at
+FROM api_response_refs WHERE user_id = 'u_42' ORDER BY sent_at DESC;
+
+-- Which message carried offer OF-123?
+SELECT provider_message_id, user_id, campaign_id
+FROM api_response_refs WHERE variable_name = 'offer' AND path = 'offer.id' AND value = 'OF-123';
+```
+
 ## 6. Acceptance checklist
 
 - [ ] System and user variables appear in separate, clearly labelled groups.

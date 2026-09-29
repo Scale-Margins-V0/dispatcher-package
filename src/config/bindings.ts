@@ -125,6 +125,8 @@ export const BINDINGS: Binding[] = [
     ["EVENT_SENDGRID_INBOUND_EVENTS", "sendgrid_inbound_events"],
     ["EVENT_DEBUG", "debug"],
     ["EVENTS_CONFIG_PATH", "config_path"],
+    ["CLIENT_EVENTS_WEBHOOK_SECRET", "client_webhook_secret"],
+    ["CLIENT_EVENTS_WEBHOOK_SECRET", "client_webhook_secret_env", true],
   ]),
 
   // ── Campaign image storage ────────────────────────────────────────────────

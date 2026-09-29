@@ -58,6 +58,42 @@ FROM provider_message_ids
 WHERE provider = 'freshchat' AND provider_message_id = 'req_abc123';
 ```
 
+### 1.0 Saved API response values (`api_response_refs`)
+
+A sibling table, written when an api variable has `save_response` — values from
+its response kept against the Freshchat `request_id` the message went out with,
+with the campaign, template, sender and organization. Pruned on the same
+`message_id_ttl`. Details: `docs/variables-system-and-lookup-fields.md` §5.1.
+
+### 1.0.1 Client events — `POST /api/scalemargin/client-events`
+
+Your own systems can report what happened to a sent WhatsApp message (a click
+on your site, a read seen in your app). Off (404) until
+`events.client_webhook_secret` is set; authenticated with
+`Authorization: Bearer <secret>` or `X-ScaleMargin-Signature: sha256=<HMAC-SHA256 of the raw body>`.
+
+Body: one event, an array, or `{ "events": [...] }` — at most 500.
+
+| Field | |
+|---|---|
+| `event` | `delivered`, `read`, `clicked` or `failed` (Freshchat statuses like `READ` work too). `dispatched` is refused |
+| `occurred_at` | ISO 8601; default now |
+| `request_id` | The Freshchat `request_id` — **or** name it by a saved value: |
+| `variable_name` + `path` + `value` | A row of `api_response_refs` |
+| `user_id`, `campaign_id`, `organization_id`, `dispatch_id` | Narrow a value sent with more than one message; `user_id` also checks a `request_id` |
+| `cause`, `error_code` | Kept on `failed` |
+
+The other columns of an `api_response_refs` row may be sent back as-is and are
+ignored. Each event is forwarded to ScaleMargin as a Freshchat receipt for its
+message — skipped steps are filled in (`clicked` also reports `delivered` and
+`read` if they never were) and nothing already reported is sent twice.
+
+Response `200 { received, receipts, results: [{ index, status, request_id?, error? }] }`
+with `status` = `forwarded` · `already_reported` · `not_found` · `ambiguous`
+(add `user_id` / `campaign_id` / `dispatch_id`) · `invalid`. `401` wrong secret,
+`413` over 500 events, `502 { retryable: true }` if ScaleMargin did not accept
+them — retry the batch.
+
 ### 1.1 Freshchat status poller
 
 For deployments that can't register a Freshchat webhook. Off by default, per sender:

@@ -1562,6 +1562,22 @@ components:
             id: { type: string }
             required: { type: boolean, default: true, description: Stored; enforced once values are wired }
             name: { type: string, nullable: true, readOnly: true, description: The schema's current name }
+        save_response:
+          type: object
+          nullable: true
+          description: >
+            Save values from this API's response against the message they were
+            sent with, in the dispatcher's `api_response_refs` table — only when
+            `provider` accepted the message, and never a fallback. `null` turns
+            it off. Rows are pruned on `dispatcher.retention.message_id_ttl`.
+          required: [provider, paths]
+          properties:
+            provider: { type: string, enum: [freshchat] }
+            paths:
+              type: array
+              minItems: 1
+              maxItems: 5
+              items: { type: string, description: "Dot path to a single value, e.g. offer.id — an object path is refused" }
         response_sample:
           type: string
           writeOnly: true
