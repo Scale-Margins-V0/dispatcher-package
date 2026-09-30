@@ -30,6 +30,8 @@ export type WhatsAppTemplateSpec = {
   params?: string[];
   attributes?: string[];
   has_cta?: boolean;
+  cta_value?: string;
+  cta_values?: string[];
 };
 
 export type WhatsAppMediaSpec = {
@@ -39,6 +41,8 @@ export type WhatsAppMediaSpec = {
   msg_type?: string;
   is_template?: boolean;
   has_cta?: boolean;
+  cta_value?: string;
+  cta_values?: string[];
 };
 
 export type GupshupWhatsAppMessage = {
@@ -51,6 +55,8 @@ export type GupshupWhatsAppMessage = {
   mediaMsgType?: string;
   isTemplate?: boolean;
   hasCta?: boolean;
+  ctaValue?: string;
+  ctaValues?: string[];
   context?: SendContext;
 };
 
@@ -288,7 +294,15 @@ function parseHasCta(value: unknown): boolean | undefined {
 
 /** Parse template spec from dispatch content or env fallback. */
 export function parseWhatsAppTemplateSpec(
-  content: { html_body?: string; text_body?: string; has_cta?: boolean } | undefined,
+  content:
+    | {
+        html_body?: string;
+        text_body?: string;
+        has_cta?: boolean;
+        cta_value?: string;
+        cta_values?: string[];
+      }
+    | undefined,
   envFallback?: string
 ): WhatsAppTemplateSpec | null {
   const raw =
@@ -299,6 +313,10 @@ export function parseWhatsAppTemplateSpec(
     process.env.GUPSHUP_EVENT_TEST_TEMPLATE?.trim();
 
   let has_cta = parseHasCta(content?.has_cta);
+  let cta_value = content?.cta_value?.trim();
+  let cta_values = Array.isArray(content?.cta_values)
+    ? content.cta_values.map((v) => String(v).trim()).filter(Boolean)
+    : undefined;
 
   if (!raw) return null;
 
@@ -312,9 +330,25 @@ export function parseWhatsAppTemplateSpec(
       if (has_cta === undefined) {
         has_cta = parseHasCta(obj.has_cta) ?? parseHasCta(obj.hasCTA);
       }
+      if (!cta_value && typeof obj.cta_value === "string" && obj.cta_value.trim()) {
+        cta_value = obj.cta_value.trim();
+      } else if (!cta_value && typeof obj.ctaValue === "string" && obj.ctaValue.trim()) {
+        cta_value = obj.ctaValue.trim();
+      }
+      if (!cta_values && Array.isArray(obj.cta_values) && obj.cta_values.length > 0) {
+        cta_values = obj.cta_values.map((v) => String(v).trim()).filter(Boolean);
+      } else if (!cta_values && Array.isArray(obj.ctaValues) && obj.ctaValues.length > 0) {
+        cta_values = obj.ctaValues.map((v) => String(v).trim()).filter(Boolean);
+      }
       const spec = { ...(parsed as WhatsAppTemplateSpec) };
       if (has_cta !== undefined) {
         spec.has_cta = has_cta;
+      }
+      if (cta_value) {
+        spec.cta_value = cta_value;
+      }
+      if (cta_values && cta_values.length > 0) {
+        spec.cta_values = cta_values;
       }
       return spec;
     }
@@ -327,6 +361,8 @@ export function parseWhatsAppTemplateSpec(
       template_id: raw,
       params: [],
       ...(has_cta !== undefined ? { has_cta } : {}),
+      ...(cta_value ? { cta_value } : {}),
+      ...(cta_values && cta_values.length > 0 ? { cta_values } : {}),
     };
   }
 
@@ -339,6 +375,8 @@ type ContentWithMedia = {
   html_body?: string;
   text_body?: string;
   has_cta?: boolean;
+  cta_value?: string;
+  cta_values?: string[];
 };
 
 type DispatchImage = {
@@ -359,6 +397,10 @@ export function parseWhatsAppMediaSpec(
   let msg_type: string | undefined;
   let is_template: boolean | undefined;
   let has_cta = parseHasCta(content?.has_cta);
+  let cta_value = content?.cta_value?.trim();
+  let cta_values = Array.isArray(content?.cta_values)
+    ? content.cta_values.map((v) => String(v).trim()).filter(Boolean)
+    : undefined;
 
   if (!caption) {
     const raw = content?.text_body?.trim() || content?.html_body?.trim();
@@ -381,6 +423,16 @@ export function parseWhatsAppMediaSpec(
           }
           if (has_cta === undefined) {
             has_cta = parseHasCta(parsed.has_cta) ?? parseHasCta(parsed.hasCTA);
+          }
+          if (!cta_value && typeof parsed.cta_value === "string" && parsed.cta_value.trim()) {
+            cta_value = parsed.cta_value.trim();
+          } else if (!cta_value && typeof parsed.ctaValue === "string" && parsed.ctaValue.trim()) {
+            cta_value = parsed.ctaValue.trim();
+          }
+          if (!cta_values && Array.isArray(parsed.cta_values) && parsed.cta_values.length > 0) {
+            cta_values = parsed.cta_values.map((v) => String(v).trim()).filter(Boolean);
+          } else if (!cta_values && Array.isArray(parsed.ctaValues) && parsed.ctaValues.length > 0) {
+            cta_values = parsed.ctaValues.map((v) => String(v).trim()).filter(Boolean);
           }
         }
       } catch {
@@ -423,6 +475,8 @@ export function parseWhatsAppMediaSpec(
     ...(msg_type ? { msg_type } : {}),
     ...(is_template !== undefined ? { is_template } : {}),
     ...(has_cta !== undefined ? { has_cta } : {}),
+    ...(cta_value ? { cta_value } : {}),
+    ...(cta_values && cta_values.length > 0 ? { cta_values } : {}),
   };
 }
 
@@ -826,6 +880,14 @@ export function previewGupshupSendRequest(
       template: ioTemplate,
     };
     if (message.hasCta) params.isTemplate = "true";
+    const ctaVal =
+      message.ctaValue ||
+      message.template?.cta_value ||
+      message.ctaValues?.[0] ||
+      message.template?.cta_values?.[0];
+    if (ctaVal) {
+      params.buttonUrlParam = ctaVal;
+    }
     if (tagJson) params.tag = tagJson;
     const body = new URLSearchParams(params);
     return {
@@ -969,6 +1031,14 @@ async function sendViaApiKey(
   body.set("template", templateJson);
   if (message.hasCta) {
     body.set("isTemplate", "true");
+  }
+  const ctaVal =
+    message.ctaValue ||
+    message.template?.cta_value ||
+    message.ctaValues?.[0] ||
+    message.template?.cta_values?.[0];
+  if (ctaVal) {
+    body.set("buttonUrlParam", ctaVal);
   }
   if (tagJson) {
     body.set("tag", tagJson);
@@ -1136,6 +1206,13 @@ export function buildWhatsAppMediaMessageForUser(
   sendContext?: SendContext,
   resolved?: Record<string, string>
 ): GupshupWhatsAppMessage {
+  const ctaValue = spec.cta_value
+    ? personalize(spec.cta_value, user, ctx, resolved)
+    : undefined;
+  const ctaValues = spec.cta_values
+    ? spec.cta_values.map((v) => personalize(v, user, ctx, resolved))
+    : undefined;
+
   return {
     to,
     caption: personalize(spec.caption, user, ctx, resolved),
@@ -1143,6 +1220,8 @@ export function buildWhatsAppMediaMessageForUser(
     mediaMsgType: spec.msg_type,
     isTemplate: spec.is_template ?? true,
     ...(spec.has_cta !== undefined ? { hasCta: spec.has_cta } : {}),
+    ...(ctaValue ? { ctaValue } : {}),
+    ...(ctaValues && ctaValues.length > 0 ? { ctaValues } : {}),
     ...(sendContext ? { context: sendContext } : {}),
   };
 }
@@ -1157,14 +1236,25 @@ export function buildWhatsAppMessageForUser(
 ): GupshupWhatsAppMessage {
   const rawParams = templateParamKeys(spec);
   const personalized = personalizeTemplateValues(rawParams, user, ctx, resolved);
+  const ctaValue = spec.cta_value
+    ? personalize(spec.cta_value, user, ctx, resolved)
+    : undefined;
+  const ctaValues = spec.cta_values
+    ? spec.cta_values.map((v) => personalize(v, user, ctx, resolved))
+    : undefined;
+
   return {
     to,
     template: {
       ...spec,
       params: personalized,
       attributes: personalized,
+      ...(ctaValue ? { cta_value: ctaValue } : {}),
+      ...(ctaValues && ctaValues.length > 0 ? { cta_values: ctaValues } : {}),
     },
     ...(spec.has_cta !== undefined ? { hasCta: spec.has_cta } : {}),
+    ...(ctaValue ? { ctaValue } : {}),
+    ...(ctaValues && ctaValues.length > 0 ? { ctaValues } : {}),
     ...(sendContext ? { context: sendContext } : {}),
   };
 }
