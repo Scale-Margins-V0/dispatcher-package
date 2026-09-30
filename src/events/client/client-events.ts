@@ -22,7 +22,7 @@ import { isDbInitialized } from "../../db/state.js";
 import { componentLogger } from "../../logging/logger.js";
 import type { AnalyticsEventType } from "../../providers/types.js";
 import { mapFreshchatStatus, type FreshchatReceipt } from "../freshchat/adapter.js";
-import { forwardFreshchatReceipts } from "../freshchat/receipt-forwarder.js";
+import { forwardFreshchatReceiptsIsolating } from "../freshchat/receipt-forwarder.js";
 import { MAX_RECEIPTS_PER_REQUEST, reconcileWebhookReceipts, recordReportedStatuses } from "../freshchat/status-poller.js";
 
 const log = componentLogger("events.client");
@@ -86,7 +86,7 @@ export function verifyClientEventsRequest(req: Pick<Request, "headers">, rawBody
 
 export type ClientEventResult = {
   index: number;
-  status: "forwarded" | "already_reported" | "not_found" | "ambiguous" | "invalid";
+  status: "forwarded" | "already_reported" | "rejected" | "not_found" | "ambiguous" | "invalid";
   request_id?: string;
   error?: string;
 };
@@ -209,20 +209,32 @@ export function createClientEventsHandler(): RequestHandler {
         result.status = "already_reported";
       }
     }
+    const refusedByMessage = new Map<string, string>();
     for (let i = 0; i < toForward.length; i += MAX_RECEIPTS_PER_REQUEST) {
       const batch = toForward.slice(i, i + MAX_RECEIPTS_PER_REQUEST);
-      const forwarded = await forwardFreshchatReceipts(batch, process.env.SCALEMARGIN_ANALYTICS_SECRET ?? "");
-      if (!forwarded.success) {
-        log.warn({ receipts: batch.length, error: forwarded.error }, "Client events could not be forwarded to ScaleMargin");
+      // A receipt refused on its own (its campaign or step was deleted) is
+      // reported per event as `rejected`; the rest of the batch still goes.
+      const forwarded = await forwardFreshchatReceiptsIsolating(batch, process.env.SCALEMARGIN_ANALYTICS_SECRET ?? "");
+      if (forwarded.accepted.length > 0) await recordReportedStatuses(forwarded.accepted);
+      for (const r of forwarded.rejected) refusedByMessage.set(r.receipt.external_id, r.error);
+      if (forwarded.failed.length > 0) {
+        log.warn({ receipts: forwarded.failed.length, error: forwarded.error }, "Client events could not be forwarded to ScaleMargin");
         res.status(502).json({ error: "ScaleMargin did not accept the events — retry", retryable: true, results: results.sort((a, b) => a.index - b.index) });
         return;
       }
-      await recordReportedStatuses(batch);
+    }
+    for (const r of receipts) {
+      const refusal = refusedByMessage.get(r.receipt.external_id);
+      const result = results.find((x) => x.index === r.index)!;
+      if (refusal !== undefined && result.status === "forwarded") {
+        result.status = "rejected";
+        result.error = `ScaleMargin refused it: ${refusal.slice(0, 200)}`;
+      }
     }
 
     const tally = (s: ClientEventResult["status"]) => results.filter((r) => r.status === s).length;
     log.info(
-      { received: items.length, forwarded: tally("forwarded"), already_reported: tally("already_reported"), not_found: tally("not_found"), ambiguous: tally("ambiguous"), invalid: tally("invalid") },
+      { received: items.length, forwarded: tally("forwarded"), already_reported: tally("already_reported"), rejected: tally("rejected"), not_found: tally("not_found"), ambiguous: tally("ambiguous"), invalid: tally("invalid") },
       "Client events processed"
     );
     res.status(200).json({ received: items.length, receipts: toForward.length, results: results.sort((a, b) => a.index - b.index) });

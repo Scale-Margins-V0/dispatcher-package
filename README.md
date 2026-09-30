@@ -1027,6 +1027,7 @@ Any other column of an `api_response_refs` row may be sent back as-is; it is ign
 | --- | --- |
 | `forwarded` | Found and sent to ScaleMargin |
 | `already_reported` | That step was already reported for the message — nothing sent |
+| `rejected` | ScaleMargin refused this one on its own — e.g. its campaign or drip step was deleted after the send. Not retried; the other events still went through |
 | `not_found` | No such message (or it is older than `message_id_ttl`), or the `request_id` belongs to another `user_id` |
 | `ambiguous` | The value was sent with more than one message — add `user_id`, `campaign_id` or `dispatch_id` |
 | `invalid` | Unknown event, or no way to name the message |

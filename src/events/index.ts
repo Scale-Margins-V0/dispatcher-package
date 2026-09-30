@@ -31,7 +31,7 @@ import {
   extractFreshchatReceipt,
   type FreshchatReceipt,
 } from "./freshchat/adapter.js";
-import { forwardFreshchatReceipts } from "./freshchat/receipt-forwarder.js";
+import { forwardFreshchatReceiptsIsolating } from "./freshchat/receipt-forwarder.js";
 import {
   MAX_RECEIPTS_PER_REQUEST,
   reconcileWebhookReceipts,
@@ -584,9 +584,10 @@ export function createInboundWebhookHandler(
       const toForward = await reconcileWebhookReceipts(freshchatReceipts);
       for (let i = 0; i < toForward.length; i += MAX_RECEIPTS_PER_REQUEST) {
         const batch = toForward.slice(i, i + MAX_RECEIPTS_PER_REQUEST);
-        const forwarded = await forwardFreshchatReceipts(batch, getSecret());
+        // One refused receipt (its drip deleted after the send) no longer sinks the rest.
+        const forwarded = await forwardFreshchatReceiptsIsolating(batch, getSecret());
         // Tell the status poller these are reported, so it never repeats them.
-        if (forwarded.success) await recordReportedStatuses(batch);
+        if (forwarded.accepted.length > 0) await recordReportedStatuses(forwarded.accepted);
       }
     }
 

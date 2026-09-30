@@ -22,7 +22,15 @@ const URL_PATH = "/api/scalemargin/client-events";
 let app: Express;
 let dbx: DispatcherDb;
 let analyticsStatus = 200;
-const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("{}", { status: analyticsStatus }));
+/** ScaleMargin refuses any batch holding one of these request ids (a deleted drip). */
+let refuseIds: string[] = [];
+const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+  const sent = JSON.parse(String(init?.body ?? "{}")) as { receipts?: Array<{ external_id: string }> };
+  if (sent.receipts?.some((r) => refuseIds.includes(r.external_id))) {
+    return new Response(JSON.stringify({ error: "Drip step not found" }), { status: 404 });
+  }
+  return new Response("{}", { status: analyticsStatus });
+});
 const forwarded = () =>
   fetchMock.mock.calls
     .filter((c) => String(c[0]) === ANALYTICS)
@@ -54,6 +62,7 @@ beforeAll(() => {
 beforeEach(async () => {
   dbx = await createTestDb();
   analyticsStatus = 200;
+  refuseIds = [];
   fetchMock.mockClear();
   vi.stubGlobal("fetch", fetchMock);
   process.env.CLIENT_EVENTS_WEBHOOK_SECRET = SECRET;
@@ -159,4 +168,16 @@ describe("finding the message and forwarding", () => {
     const big = await post(Array.from({ length: 501 }, () => ({ event: "read", request_id: "req-1" })));
     expect(big.status).toBe(413);
   });
+
+  it("an event ScaleMargin refuses on its own is `rejected`; the others are still forwarded", async () => {
+    refuseIds = ["req-2"];
+    const res = await post([
+      { event: "read", request_id: "req-1" },
+      { event: "read", request_id: "req-2" },
+    ]);
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((r: { status: string }) => r.status)).toEqual(["forwarded", "rejected"]);
+    expect(res.body.results[1].error).toContain("Drip step not found");
+  });
 });
+
