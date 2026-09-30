@@ -15,11 +15,30 @@ describe("contentReferencesOnsite", () => {
     expect(contentReferencesOnsite({ caption: "See {{onsite_url}}" })).toBe(
       true
     );
+    expect(
+      contentReferencesOnsite({
+        cta_value: "https://example.com/click?t={{onsite_url}}",
+      })
+    ).toBe(true);
+    expect(
+      contentReferencesOnsite({
+        cta_values: [
+          "https://example.com/static",
+          "https://example.com/click?t={{onsite_url}}",
+        ],
+      })
+    ).toBe(true);
   });
 
   it("is false when absent", () => {
     expect(
       contentReferencesOnsite({ html_body: "<a>{{unsubscribe_url}}</a>" })
+    ).toBe(false);
+    expect(
+      contentReferencesOnsite({
+        cta_value: "https://example.com/static",
+        cta_values: ["https://example.com/1", "https://example.com/2"],
+      })
     ).toBe(false);
     expect(contentReferencesOnsite(undefined)).toBe(false);
   });

@@ -508,3 +508,100 @@ describe("Gupshup params use pre-resolved query/api values", () => {
     }
   });
 });
+
+describe("Gupshup CTA variable resolution and buttonUrlParam", () => {
+  it("parses cta_value and cta_values from content and JSON", () => {
+    const tpl = parseWhatsAppTemplateSpec({
+      text_body: JSON.stringify({
+        template_id: "tpl_order",
+        params: ["{{first_name}}"],
+        has_cta: true,
+        cta_value: "https://example.com/track/{{order_id}}",
+      }),
+    });
+    expect(tpl?.has_cta).toBe(true);
+    expect(tpl?.cta_value).toBe("https://example.com/track/{{order_id}}");
+
+    const media = parseWhatsAppMediaSpec({
+      caption: "Your package is on the way",
+      has_cta: true,
+      cta_value: "{{link}}",
+    });
+    expect(media?.has_cta).toBe(true);
+    expect(media?.cta_value).toBe("{{link}}");
+  });
+
+  it("personalizes cta_value in buildWhatsAppMediaMessageForUser and buildWhatsAppMessageForUser", () => {
+    const user: UserRecord = {
+      user_id: "u123",
+      email: "user@example.com",
+      fields: {
+        first_name: "John",
+        link: "https://www.gradding.com/sh/My0APsaJ",
+      },
+    };
+    const ctx = { campaign_id: "camp_1", organization_id: "org_1" };
+
+    const mediaMsg = buildWhatsAppMediaMessageForUser(
+      {
+        caption: "Hi {{first_name}}",
+        has_cta: true,
+        cta_value: "{{link}}",
+      },
+      user,
+      "+919876543210",
+      ctx
+    );
+    expect(mediaMsg.caption).toBe("Hi John");
+    expect(mediaMsg.ctaValue).toBe("https://www.gradding.com/sh/My0APsaJ");
+
+    const tplMsg = buildWhatsAppMessageForUser(
+      {
+        template_id: "test_tpl",
+        params: ["{{first_name}}"],
+        has_cta: true,
+        cta_value: "https://site.com/go?u={{link}}",
+      },
+      user,
+      "+919876543210",
+      ctx
+    );
+    expect(tplMsg.template?.params).toEqual(["John"]);
+    expect(tplMsg.ctaValue).toBe("https://site.com/go?u=https://www.gradding.com/sh/My0APsaJ");
+  });
+
+  it("sets buttonUrlParam in apikey mode when ctaValue is present", () => {
+    const cfg = {
+      mode: "apikey" as const,
+      apiKey: "test-api-key",
+      srcName: "TestApp",
+      source: "919876543210",
+      msgType: "HSM",
+      templateApiUrl: "https://api.gupshup.io/wa/api/v1/template/msg",
+      enterpriseApiUrl: "https://smsgupshup.com",
+      mediaApiUrl: "https://mediaapi.smsgupshup.com/GatewayAPI/rest",
+      textApiUrl: "https://mediaapi.smsgupshup.com/GatewayAPI/rest",
+      mediaMsgType: "IMAGE",
+      templateLanguage: "en",
+    };
+
+    const preview = previewGupshupSendRequest(
+      {
+        to: "+919876543211",
+        template: {
+          template_id: "order_cta",
+          params: ["Alice"],
+        },
+        hasCta: true,
+        ctaValue: "https://example.com/sh/My0APsaJ",
+      },
+      cfg
+    );
+
+    expect(preview.mode).toBe("io_template");
+    expect(preview.params.buttonUrlParam).toBe("https://example.com/sh/My0APsaJ");
+    expect(preview.wireBody).toContain(
+      "buttonUrlParam=https%3A%2F%2Fexample.com%2Fsh%2FMy0APsaJ"
+    );
+  });
+});
