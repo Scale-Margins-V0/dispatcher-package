@@ -49,6 +49,8 @@ const statusBody = (requestId: string, status: string, extra: Record<string, unk
 let dbx: DispatcherDb;
 let statuses: Record<string, { status?: number; body?: unknown; retryAfter?: string }>;
 let analyticsStatus: number;
+/** ScaleMargin refuses any receipts batch holding one of these request ids (a deleted drip). */
+let refuseIds: string[];
 let fetchMock: ReturnType<typeof vi.fn>;
 
 async function queue(requestId: string, opts: { sender?: string; sentAgoMs?: number; dueAgoMs?: number } = {}) {
@@ -94,9 +96,16 @@ beforeEach(async () => {
   useSenders([fcSender("fc")]);
   statuses = {};
   analyticsStatus = 200;
-  fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  refuseIds = [];
+  fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url === ANALYTICS) return new Response("{}", { status: analyticsStatus });
+    if (url === ANALYTICS) {
+      const sent = JSON.parse(String(init?.body ?? "{}")) as { receipts?: Array<{ external_id: string }> };
+      if (sent.receipts?.some((r) => refuseIds.includes(r.external_id))) {
+        return new Response(JSON.stringify({ error: "Drip step not found" }), { status: 404 });
+      }
+      return new Response("{}", { status: analyticsStatus });
+    }
     const requestId = new URL(url).searchParams.get("request_id")!;
     const s = statuses[requestId] ?? { status: 404 };
     return new Response(s.body === undefined ? "" : JSON.stringify(s.body), {
@@ -421,3 +430,31 @@ describe("webhook receipts reconciled with what was reported", () => {
     expect(out.sort()).toEqual(["r1:bounced", "r1:dispatched", "unknown:read"]);
   });
 });
+
+describe("a receipt ScaleMargin refuses on its own (its drip was deleted)", () => {
+  it("stops polling that message, and still delivers the rest of the batch", async () => {
+    await queue("r1");
+    await queue("r-gone");
+    statuses.r1 = { body: statusBody("r1", "DELIVERED") };
+    statuses["r-gone"] = { body: statusBody("r-gone", "DELIVERED") };
+    refuseIds = ["r-gone"];
+    const res = await tick();
+    expect(res).toMatchObject({ forwarded: 1, errors: 1 });
+    expect(await row("r1")).toMatchObject({ status_event: "delivered", poll_error: null });
+    const gone = await row("r-gone");
+    expect(gone.next_poll_at).toBeNull();
+    expect(String(gone.poll_error)).toContain("rejected by ScaleMargin");
+    expect(gone.status_event ?? null).toBeNull();
+  });
+
+  it("an endpoint refusing everything without naming the receipts is retried, not dropped", async () => {
+    await queue("r1");
+    statuses.r1 = { body: statusBody("r1", "DELIVERED") };
+    analyticsStatus = 404;
+    await tick();
+    const r = await row("r1");
+    expect(r.next_poll_at).not.toBeNull();
+    expect(String(r.poll_error)).toContain("forward failed");
+  });
+});
+

@@ -89,7 +89,8 @@ message — skipped steps are filled in (`clicked` also reports `delivered` and
 `read` if they never were) and nothing already reported is sent twice.
 
 Response `200 { received, receipts, results: [{ index, status, request_id?, error? }] }`
-with `status` = `forwarded` · `already_reported` · `not_found` · `ambiguous`
+with `status` = `forwarded` · `already_reported` · `rejected` (ScaleMargin refused it on
+its own, e.g. its drip was deleted — not retried) · `not_found` · `ambiguous`
 (add `user_id` / `campaign_id` / `dispatch_id`) · `invalid`. `401` wrong secret,
 `413` over 500 events, `502 { retryable: true }` if ScaleMargin did not accept
 them — retry the batch.
@@ -117,7 +118,7 @@ dispatcher:
 - **Webhook and poller together:** each records what it reported. The poller never re-sends a status the webhook delivered, and the webhook drops a step already reported — e.g. a late real `delivered` after the poller sent it along with `read`. A webhook receipt for a message with no recorded send passes through unchanged.
 - **Stops polling** a row at a final status (read, failed, clicked) or once it is older than `freshchat_status_poll_ttl`.
 - **Backs off with age:** the interval ×1 for the first 15 min, ×6 up to 2 h, ×30 after that.
-- **Errors:** 429 honours `Retry-After`. 401/403 pauses that sender for 5 min with one warning. A 404 or unknown id retries on the next interval. If ScaleMargin refuses a receipt, the change isn't saved and is retried on the next poll.
+- **Errors:** 429 honours `Retry-After`. 401/403 pauses that sender for 5 min with one warning. A 404 or unknown id retries on the next interval. If ScaleMargin can't be reached or refuses the whole batch without naming a receipt, the change isn't saved and is retried on the next poll. If it refuses one receipt on its own (e.g. `Drip step not found` — its drip was deleted after the send), the batch is split until that receipt is isolated: the rest is delivered, and that message stops being polled (`poll_error: rejected by ScaleMargin: …`). The same isolation applies to the Freshchat webhook and `/client-events`.
 - The poller assumes **one dispatcher replica**. Two replicas can poll the same row and report one change twice.
 
 ---

@@ -48,7 +48,7 @@ import { describeStatusPollTtl, statusPollTtl } from "../../config/status-poll-t
 import { componentLogger } from "../../logging/logger.js";
 import { mapFreshchatStatus, type FreshchatReceipt } from "./adapter.js";
 import type { AnalyticsEventType } from "../../providers/types.js";
-import { forwardFreshchatReceipts } from "./receipt-forwarder.js";
+import { forwardFreshchatReceiptsIsolating } from "./receipt-forwarder.js";
 
 const log = componentLogger("events.freshchat.poller");
 
@@ -429,7 +429,13 @@ export async function pollFreshchatStatusesOnce(
         row.status_event
       )
     );
-    const sent = await forwardFreshchatReceipts(receipts, secret);
+    // A receipt ScaleMargin refuses on its own (its drip was deleted after the
+    // send) no longer takes the rest of the chunk down with it.
+    const sent = await forwardFreshchatReceiptsIsolating(receipts, secret);
+    const keyOf = (r: FreshchatReceipt) => `${r.external_id}|${r.event}`;
+    const accepted = new Set(sent.accepted.map(keyOf));
+    const failed = new Set(sent.failed.map(keyOf));
+    const rejected = new Map(sent.rejected.map((r) => [keyOf(r.receipt), r.error]));
     for (const { row, lookup, event, next } of chunk) {
       const base = {
         status: lookup.status,
@@ -437,7 +443,24 @@ export async function pollFreshchatStatusesOnce(
         last_polled_at: now,
         poll_attempts: (row.poll_attempts ?? 0) + 1,
       };
-      if (sent.success) {
+      const mine = receipts.filter((r) => r.external_id === row.provider_message_id);
+      const refusal = mine.map((r) => rejected.get(keyOf(r))).find((e) => e !== undefined);
+      if (!mine.some((r) => failed.has(keyOf(r))) && refusal !== undefined) {
+        // Refused on its own: resending can never be accepted, so stop polling
+        // it. Steps ScaleMargin did accept are still recorded as reported.
+        result.errors++;
+        const reached = mine
+          .filter((r) => accepted.has(keyOf(r)))
+          .reduce<string | null>((top, r) => (statusRank(r.event) > statusRank(top) ? r.event : top), null);
+        await updatePoll(row.id, {
+          ...base,
+          ...(reached && statusRank(reached) > statusRank(row.status_event) ? { status_event: reached, status_at: now } : {}),
+          poll_error: clip(`rejected by ScaleMargin: ${refusal}`),
+          next_poll_at: null,
+        });
+        continue;
+      }
+      if (mine.every((r) => accepted.has(keyOf(r)))) {
         result.forwarded++;
         await updatePoll(row.id, { ...base, status_event: event, status_at: now, poll_error: null, next_poll_at: next });
       } else {
